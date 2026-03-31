@@ -23,15 +23,46 @@ _patch_applied = False
 
 
 @lru_cache(maxsize=16)
-def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Random orthogonal rotation via QR decomposition (cached)."""
+def _random_signs(dim: int, seed: int = 0) -> mx.array:
+    """Random diagonal sign matrix D for randomized Hadamard: R = D @ H."""
     key = mx.random.key(seed)
-    Q, R = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
-    signs = mx.sign(mx.diag(R))
-    signs = mx.where(signs == 0, mx.ones_like(signs), signs)
-    Q = (Q * signs[None, :]).astype(mx.float32)
-    mx.eval(Q)
-    return Q
+    signs = mx.where(mx.random.uniform(shape=(dim,), key=key) > 0.5,
+                     mx.ones(dim), -mx.ones(dim))
+    mx.eval(signs)
+    return signs.astype(mx.float32)
+
+
+def _fast_hadamard_transform(x: mx.array, signs: mx.array) -> mx.array:
+    """In-place fast Walsh-Hadamard transform: O(D log D) instead of O(D^2).
+
+    Applies the randomized Hadamard: y = (x * signs) @ H / sqrt(D)
+    where H is the Walsh-Hadamard matrix computed via butterfly operations.
+
+    Args:
+        x: (..., D) input tensor, D must be power of 2
+        signs: (D,) random sign vector
+
+    Returns:
+        (..., D) transformed tensor
+    """
+    # Apply random signs
+    y = x * signs
+
+    D = y.shape[-1]
+    h = 1
+    while h < D:
+        # Butterfly: swap pairs at stride h
+        y_even = y[..., 0::2*h]  # won't work for in-place, need reshape
+        # Use reshape-based butterfly instead
+        y = y.reshape(*y.shape[:-1], D // (2 * h), 2, h)
+        a = y[..., 0, :]  # first half
+        b = y[..., 1, :]  # second half
+        y = mx.concatenate([a + b, a - b], axis=-1).reshape(*x.shape[:-1], D // (2 * h), 2 * h)
+        y = y.reshape(*x.shape[:-1], D)
+        h *= 2
+
+    # Normalize
+    return y / (D ** 0.5)
 
 
 def _get_layer_index(name: str) -> int:
@@ -106,11 +137,17 @@ def apply_turboquant_runtime_patch(
         # QuantizedLinear/QuantizedSwitchLinear: in_dim = scales.shape[-1] * group_size
         in_dim = module.scales.shape[-1] * module.group_size
 
-        # Get the shared rotation matrix for this dimension
-        R = _rotation_matrix(in_dim, seed=in_dim)
+        # Power-of-2 dims use fast WHT, others use dense rotation matrix
+        is_pow2 = in_dim > 0 and (in_dim & (in_dim - 1)) == 0
 
-        # Store rotation on the module — we'll use a class-level patch
-        module._tq_rotation = R
+        if is_pow2:
+            signs = _random_signs(in_dim, seed=in_dim)
+            module._tq_wht_signs = signs
+        else:
+            # Fallback: dense rotation (slower but correct for non-power-of-2)
+            from omlx.turboquant_convert import _rotation_matrix
+            module._tq_dense_rotation = _rotation_matrix(in_dim, seed=in_dim)
+
         patched += 1
 
     # Class-level monkey-patch for QuantizedLinear
@@ -131,8 +168,10 @@ def _patch_quantized_linear_class():
         _orig_ql_call = nn.QuantizedLinear.__call__
 
         def _rotated_ql_call(self, x):
-            if hasattr(self, '_tq_rotation'):
-                x = x @ self._tq_rotation
+            if hasattr(self, '_tq_wht_signs'):
+                x = _fast_hadamard_transform(x, self._tq_wht_signs)
+            elif hasattr(self, '_tq_dense_rotation'):
+                x = x @ self._tq_dense_rotation
             return _orig_ql_call(self, x)
 
         nn.QuantizedLinear.__call__ = _rotated_ql_call
@@ -143,8 +182,10 @@ def _patch_quantized_linear_class():
         _orig_qsl_call = QuantizedSwitchLinear.__call__
 
         def _rotated_qsl_call(self, x, indices, sorted_indices=False):
-            if hasattr(self, '_tq_rotation'):
-                x = x @ self._tq_rotation
+            if hasattr(self, '_tq_wht_signs'):
+                x = _fast_hadamard_transform(x, self._tq_wht_signs)
+            elif hasattr(self, '_tq_dense_rotation'):
+                x = x @ self._tq_dense_rotation
             return _orig_qsl_call(self, x, indices, sorted_indices=sorted_indices)
 
         QuantizedSwitchLinear.__call__ = _rotated_qsl_call

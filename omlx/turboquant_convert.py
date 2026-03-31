@@ -26,15 +26,53 @@ logger = logging.getLogger(__name__)
 _MAX_SHARD_BYTES = 4 * 1024 * 1024 * 1024  # 4GB per shard
 
 
-def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Random orthogonal rotation via QR decomposition."""
+def _random_signs(dim: int, seed: int = 0) -> mx.array:
+    """Random diagonal sign vector for randomized Hadamard transform."""
     key = mx.random.key(seed)
-    Q, R = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
-    signs = mx.sign(mx.diag(R))
-    signs = mx.where(signs == 0, mx.ones_like(signs), signs)
-    Q = (Q * signs[None, :]).astype(mx.float32)
-    mx.eval(Q)
-    return Q
+    signs = mx.where(mx.random.uniform(shape=(dim,), key=key) > 0.5,
+                     mx.ones(dim), -mx.ones(dim))
+    mx.eval(signs)
+    return signs.astype(mx.float32)
+
+
+def _hadamard_matrix(dim: int) -> mx.array:
+    """Build dense Walsh-Hadamard matrix for offline weight rotation.
+
+    For the converter we can afford O(D^2) since it runs once.
+    At runtime, the fast O(D log D) butterfly is used instead.
+    """
+    import numpy as np
+    # Recursive Hadamard construction
+    H = np.array([[1.0]])
+    while H.shape[0] < dim:
+        H = np.block([[H, H], [H, -H]])
+    H = H[:dim, :dim] / (dim ** 0.5)
+    return mx.array(H, dtype=mx.float32)
+
+
+def _is_power_of_2(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
+    """Rotation matrix for TQ3.5 weight rotation.
+
+    Uses randomized Walsh-Hadamard (O(D log D) at runtime) for power-of-2 dims,
+    falls back to random QR orthogonal rotation for others.
+    """
+    if _is_power_of_2(dim):
+        signs = _random_signs(dim, seed=seed)
+        H = _hadamard_matrix(dim)
+        R = signs[:, None] * H  # diag(signs) @ H
+    else:
+        # Fallback: random orthogonal via QR for non-power-of-2
+        key = mx.random.key(seed)
+        Q, Rq = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
+        s = mx.sign(mx.diag(Rq))
+        s = mx.where(s == 0, mx.ones_like(s), s)
+        R = (Q * s[None, :]).astype(mx.float32)
+    mx.eval(R)
+    return R
 
 
 def _get_layer_index(tensor_name: str) -> int:
