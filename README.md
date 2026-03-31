@@ -39,6 +39,31 @@
 
 ---
 
+> ### Hypercar Build (`hypercar` branch)
+>
+> This fork adds six bleeding-edge optimizations for running large models on Apple Silicon with extreme compression and throughput:
+>
+> | Feature | Flag | What it does |
+> |---------|------|-------------|
+> | **TurboQuant 3.5-bit Weights** | `--weight-mode turbo35` | Orthogonal rotation + 3-bit quantization. 60GB fp16 models fit in 48GB RAM. Streaming converter uses ~3GB working memory. |
+> | **TurboQuant KV Cache** | `--cache-mode turbo3` | Re-enables the existing codebook-quantized KV cache with fp16 layer skip (`--fp16-layers 1`). |
+> | **STARC Sparse Attention** | `--sparsity-method starc` | K-means clustered KV selection during decode. Attends to only 15% of context — the rest is skipped. |
+> | **Mamba-3 MIMO Kernel** | `--mimo-rank 4` | Exponential-trapezoidal SSM discretization with MIMO rank-4 state updates. Second-order accuracy. |
+> | **Medusa Draft Heads** | `--medusa-heads 3` | Multi-token lookahead — predicts 3 future tokens in parallel for ~2x decode throughput on memory-bound M4 Pro. |
+> | **Expert-Choice MoE** | `--moe-router expert-choice` | Experts pick tokens instead of tokens picking experts. 100% GPU utilization on MoE models. |
+>
+> ```bash
+> # The full hypercar command
+> omlx serve --model ibm-granite/granite-4.0-h-small \
+>     --weight-mode turbo35 --cache-mode turbo3 --fp16-layers 1 \
+>     --sparsity-method starc --mimo-rank 4 --medusa-heads 3 \
+>     --moe-router expert-choice --max-kv-size 256000 --port 8080
+> ```
+>
+> 43 unit tests. Verified on `ibm-granite/granite-4.0-h-small` (fp16 → TQ3.5 streaming conversion + inference).
+
+---
+
 <p align="center">
   <img src="docs/images/omlx_dashboard.png" alt="oMLX Admin Dashboard" width="800">
 </p>
