@@ -149,6 +149,11 @@ def main():
     parser.add_argument("--skip-decode", action="store_true", help="Skip decode benchmark")
     parser.add_argument("--skip-stress", action="store_true", help="Skip context stress test")
     parser.add_argument("--sanitize-patch", action="store_true", help="Apply TQ3.5 sanitize patch")
+    parser.add_argument("--tq-runtime", action="store_true", help="Apply TQ3.5 runtime rotation")
+    parser.add_argument("--fp16-layers", type=int, default=0, help="Layers to skip rotation")
+    parser.add_argument("--expert-choice", action="store_true", help="Apply Expert-Choice MoE")
+    parser.add_argument("--medusa", type=int, default=0, help="Medusa draft heads")
+    parser.add_argument("--starc", action="store_true", help="Apply STARC sparse attention")
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
@@ -159,6 +164,33 @@ def main():
 
     from mlx_lm import load
     model, tokenizer = load(args.model)
+
+    # Apply hypercar patches
+    if args.tq_runtime:
+        from omlx.patches.turboquant_runtime import apply_turboquant_runtime_patch
+        n = apply_turboquant_runtime_patch(model, fp16_layers=args.fp16_layers)
+        print(f"  TQ3.5 runtime rotation: {n} layers patched")
+
+    if args.expert_choice:
+        import omlx.patches.expert_choice_router as ecr
+        ecr._patch_applied = False
+        from omlx.patches.expert_choice_router import apply_expert_choice_patch
+        n = apply_expert_choice_patch(model, capacity_factor=1.2)
+        print(f"  Expert-Choice MoE: {n} routers replaced")
+
+    if args.medusa > 0:
+        import omlx.patches.medusa_patch as mp
+        mp._patch_applied = False
+        from omlx.patches.medusa_patch import apply_medusa_patch
+        apply_medusa_patch(model, num_heads=args.medusa)
+        print(f"  Medusa: {args.medusa} draft heads attached")
+
+    if args.starc:
+        import omlx.patches.starc_attention as sa
+        sa._PATCHED = False
+        from omlx.patches.starc_attention import apply_starc_attention_patch
+        apply_starc_attention_patch(budget_pct=0.15, min_seq_len=512)
+        print(f"  STARC: sparse attention enabled (15% budget)")
 
     print(f"Model type: {model.model_type}")
     if hasattr(model, 'args'):

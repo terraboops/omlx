@@ -213,12 +213,20 @@ class BatchedEngine(BaseEngine):
 
         # Hypercar: TurboQuant 3.5-bit weight quantization (--weight-mode turbo35)
         if scheduler_config.weight_mode == "turbo35":
-            from ..patches.turboquant_weights import apply_turboquant_weights_patch
             fp16_layers = scheduler_config.turboquant_fp16_layers
-            converted = apply_turboquant_weights_patch(
-                self._model, fp16_layers=fp16_layers, group_size=64, bits=3
-            )
-            logger.info(f"TurboQuant weights: converted {converted} layers to 3.5-bit")
+            # If model is already TQ3.5-converted (QuantizedLinear with rotated weights),
+            # just apply the runtime activation rotation patch
+            from ..patches.turboquant_runtime import apply_turboquant_runtime_patch
+            patched = apply_turboquant_runtime_patch(self._model, fp16_layers=fp16_layers)
+            if patched > 0:
+                logger.info(f"TurboQuant runtime: {patched} layers with activation rotation")
+            else:
+                # Model not pre-converted — do live conversion (for smaller models)
+                from ..patches.turboquant_weights import apply_turboquant_weights_patch
+                converted = apply_turboquant_weights_patch(
+                    self._model, fp16_layers=fp16_layers, group_size=64, bits=3
+                )
+                logger.info(f"TurboQuant weights: converted {converted} layers to 3.5-bit")
 
         # Hypercar: Expert-Choice MoE routing (--moe-router expert-choice)
         if scheduler_config.moe_router == "expert-choice":
