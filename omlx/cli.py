@@ -186,6 +186,26 @@ def serve_command(args):
     else:
         scheduler_config.hot_cache_max_size = 0
 
+    # --- Wire hypercar flags to scheduler_config ---
+    if args.cache_mode in ("turbo3", "turbo4"):
+        tq_bits = 3 if args.cache_mode == "turbo3" else 4
+        scheduler_config.turboquant_kv_bits = tq_bits
+        scheduler_config.turboquant_fp16_layers = args.fp16_layers or 0
+    if args.fp16_layers is not None:
+        scheduler_config.turboquant_fp16_layers = args.fp16_layers
+    if args.weight_mode is not None:
+        scheduler_config.weight_mode = args.weight_mode
+    if args.sparsity_method is not None:
+        scheduler_config.sparsity_method = args.sparsity_method
+    if args.mimo_rank is not None:
+        scheduler_config.mimo_rank = args.mimo_rank
+    if args.medusa_heads is not None:
+        scheduler_config.medusa_heads = args.medusa_heads
+    if args.moe_router is not None:
+        scheduler_config.moe_router = args.moe_router
+    if args.max_kv_size is not None:
+        scheduler_config.max_kv_size = args.max_kv_size
+
     if args.no_cache:
         print("Mode: Multi-model serving (no oMLX cache, mlx-lm BatchGenerator only)")
     elif paged_ssd_cache_dir:
@@ -198,6 +218,30 @@ def serve_command(args):
             print(f"Hot cache: {hot_display} (in-memory)")
     else:
         print("Mode: Multi-model serving (continuous batching, no cache)")
+
+    # Display hypercar features
+    features = []
+    if scheduler_config.turboquant_kv_bits is not None:
+        msg = f"TurboQuant KV: {scheduler_config.turboquant_kv_bits}-bit"
+        if scheduler_config.turboquant_fp16_layers > 0:
+            msg += f" (first {scheduler_config.turboquant_fp16_layers} layer(s) fp16)"
+        features.append(msg)
+    if scheduler_config.weight_mode == "turbo35":
+        features.append("TurboQuant Weights: 3.5-bit (orthogonal rotation)")
+    if scheduler_config.sparsity_method == "starc":
+        features.append("STARC: clustered sparse attention (15% budget)")
+    if scheduler_config.mimo_rank is not None:
+        features.append(f"Mamba-3: MIMO rank-{scheduler_config.mimo_rank}")
+    if scheduler_config.medusa_heads is not None:
+        features.append(f"Medusa: {scheduler_config.medusa_heads} draft heads")
+    if scheduler_config.moe_router == "expert-choice":
+        features.append("MoE: expert-choice routing")
+    if scheduler_config.max_kv_size is not None:
+        features.append(f"Max KV size: {scheduler_config.max_kv_size:,} tokens")
+    if features:
+        print("Hypercar features:")
+        for f in features:
+            print(f"  • {f}")
 
     # Set MLX buffer cache limit high to prevent the allocator from
     # immediately releasing Metal buffers when the cache is full.
@@ -463,6 +507,65 @@ Example directory structure:
         default=None,
         help="Number of cache blocks to pre-allocate at startup (default: 256). "
         "Higher values reduce dynamic allocation overhead for large contexts.",
+    )
+
+    # --- Hypercar features ---
+    serve_parser.add_argument(
+        "--cache-mode",
+        type=str,
+        choices=["normal", "turbo3", "turbo4"],
+        default=None,
+        help="KV cache compression mode: 'normal' (fp16), 'turbo3' (3-bit TurboQuant), "
+        "'turbo4' (4-bit TurboQuant). Default: normal.",
+    )
+    serve_parser.add_argument(
+        "--fp16-layers",
+        type=int,
+        default=None,
+        help="Number of initial layers to keep in fp16 (bypass TurboQuant/weight quantization). "
+        "E.g., --fp16-layers 1 keeps layer 0 in fp16.",
+    )
+    serve_parser.add_argument(
+        "--weight-mode",
+        type=str,
+        choices=["normal", "turbo35"],
+        default=None,
+        help="Weight quantization mode: 'normal' (default/model quant), "
+        "'turbo35' (3.5-bit with orthogonal rotation).",
+    )
+    serve_parser.add_argument(
+        "--sparsity-method",
+        type=str,
+        choices=["none", "starc"],
+        default=None,
+        help="Attention sparsity method: 'starc' enables STARC clustered sparse attention "
+        "(15%% budget decode). Default: none.",
+    )
+    serve_parser.add_argument(
+        "--mimo-rank",
+        type=int,
+        default=None,
+        help="Mamba-3 MIMO rank (e.g., 4). Enables exponential-trapezoidal SSM kernel.",
+    )
+    serve_parser.add_argument(
+        "--medusa-heads",
+        type=int,
+        default=None,
+        help="Number of Medusa draft heads for multi-token lookahead (e.g., 3).",
+    )
+    serve_parser.add_argument(
+        "--moe-router",
+        type=str,
+        choices=["token-choice", "expert-choice"],
+        default=None,
+        help="MoE routing strategy: 'token-choice' (standard), "
+        "'expert-choice' (balanced GPU utilization).",
+    )
+    serve_parser.add_argument(
+        "--max-kv-size",
+        type=int,
+        default=None,
+        help="Maximum KV cache size in tokens (e.g., 256000).",
     )
 
     # MCP options

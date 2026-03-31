@@ -183,14 +183,58 @@ class BatchedEngine(BaseEngine):
             self._model, self._model_settings
         )
 
-        # TurboQuant KV cache: patch attention and set kv_bits on scheduler
-        if self._model_settings is not None:
+        # TurboQuant KV cache: determine bits from scheduler_config (CLI) or model_settings
+        tq_bits = None
+        tq_fp16_layers = 0
+
+        # Priority 1: CLI --cache-mode (stored on scheduler_config)
+        if scheduler_config.turboquant_kv_bits is not None:
+            tq_bits = scheduler_config.turboquant_kv_bits
+            tq_fp16_layers = scheduler_config.turboquant_fp16_layers
+
+        # Priority 2: per-model settings (legacy path, currently force-disabled)
+        elif self._model_settings is not None:
             tq_enabled = getattr(self._model_settings, "turboquant_kv_enabled", False)
             if tq_enabled:
-                from ..patches.turboquant_attention import apply_turboquant_attention_patch
-                apply_turboquant_attention_patch()
                 tq_bits = int(getattr(self._model_settings, "turboquant_kv_bits", 4))
-                logger.info(f"TurboQuant KV cache enabled: {tq_bits} bits")
+
+        if tq_bits is not None:
+            from ..patches.turboquant_attention import apply_turboquant_attention_patch
+            apply_turboquant_attention_patch()
+            logger.info(
+                f"TurboQuant KV cache enabled: {tq_bits} bits"
+                + (f", fp16 layers: {tq_fp16_layers}" if tq_fp16_layers > 0 else "")
+            )
+
+        # Hypercar: TurboQuant 3.5-bit weight quantization (--weight-mode turbo35)
+        if scheduler_config.weight_mode == "turbo35":
+            from ..patches.turboquant_weights import apply_turboquant_weights_patch
+            fp16_layers = scheduler_config.turboquant_fp16_layers
+            converted = apply_turboquant_weights_patch(
+                self._model, fp16_layers=fp16_layers, group_size=64, bits=3
+            )
+            logger.info(f"TurboQuant weights: converted {converted} layers to 3.5-bit")
+
+        # Hypercar: Expert-Choice MoE routing (--moe-router expert-choice)
+        if scheduler_config.moe_router == "expert-choice":
+            from ..patches.expert_choice_router import apply_expert_choice_patch
+            replaced = apply_expert_choice_patch(self._model, capacity_factor=1.2)
+            logger.info(f"Expert-choice MoE: replaced {replaced} routers")
+
+        # Hypercar: STARC sparse attention (--sparsity-method starc)
+        if scheduler_config.sparsity_method == "starc":
+            from ..patches.starc_attention import apply_starc_attention_patch
+            apply_starc_attention_patch(
+                budget_pct=0.15, cluster_ratio=1/32,
+                recluster_interval=128, min_seq_len=512,
+            )
+            logger.info("STARC: clustered sparse attention enabled (15% budget)")
+
+        # Hypercar: Medusa draft heads (--medusa-heads N)
+        if scheduler_config.medusa_heads is not None:
+            from ..patches.medusa_patch import apply_medusa_patch
+            apply_medusa_patch(self._model, num_heads=scheduler_config.medusa_heads)
+            logger.info(f"Medusa: {scheduler_config.medusa_heads} draft heads attached")
 
         # Create engine config (copy to avoid mutating the shared instance)
         scheduler_config = copy.copy(self._scheduler_config) if self._scheduler_config else SchedulerConfig()
@@ -210,12 +254,10 @@ class BatchedEngine(BaseEngine):
 
         await self._engine.engine.start()
 
-        # TurboQuant KV cache: propagate bits to scheduler
-        if self._model_settings is not None:
-            tq_enabled = getattr(self._model_settings, "turboquant_kv_enabled", False)
-            if tq_enabled:
-                tq_bits = int(getattr(self._model_settings, "turboquant_kv_bits", 4))
-                self._engine.engine.scheduler._turboquant_kv_bits = tq_bits
+        # TurboQuant KV cache: propagate bits and fp16_layers to scheduler
+        if tq_bits is not None:
+            self._engine.engine.scheduler._turboquant_kv_bits = tq_bits
+            self._engine.engine.scheduler._turboquant_fp16_layers = tq_fp16_layers
 
         # SpecPrefill: load draft model and pass to scheduler
         if self._model_settings is not None:

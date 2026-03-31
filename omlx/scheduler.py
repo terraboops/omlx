@@ -127,6 +127,7 @@ class _BoundarySnapshotBatchGenerator(BatchGenerator):
         self._prefill_boundary_callback = prefill_boundary_callback
         self._abort_check_callback = abort_check_callback
         self._turboquant_kv_bits: Optional[float] = None  # Set by Scheduler if enabled
+        self._turboquant_fp16_layers: int = 0  # Number of initial layers to skip TQ conversion
         # Memory limits for inline prefill checking (set by Scheduler).
         # mx.get_active_memory() is ~20ns, negligible vs ~5s prefill chunks.
         self._memory_limit_bytes: int = 0  # soft limit, 0 = disabled
@@ -142,14 +143,24 @@ class _BoundarySnapshotBatchGenerator(BatchGenerator):
     })
 
     def _apply_turboquant_kv(self, prompt_cache: List[Any]) -> None:
-        """Convert BatchKVCache layers to BatchTurboQuantKVCache."""
+        """Convert BatchKVCache layers to BatchTurboQuantKVCache.
+
+        Layers with index < self._turboquant_fp16_layers are kept in fp16.
+        """
         from .turboquant_kv import BatchTurboQuantKVCache, TurboQuantKVCache
         from mlx_lm.models.cache import KVCache, CacheList
 
         converted = 0
-
+        skipped = 0
         bits = int(self._turboquant_kv_bits)
+        fp16_layers = self._turboquant_fp16_layers
+
         for i, cache_obj in enumerate(prompt_cache):
+            # Skip layers that should remain in fp16
+            if i < fp16_layers:
+                skipped += 1
+                continue
+
             cls_name = type(cache_obj).__name__
             if cls_name == "BatchKVCache":
                 left_padding = cache_obj.left_padding.tolist()
@@ -172,8 +183,11 @@ class _BoundarySnapshotBatchGenerator(BatchGenerator):
                     else:
                         new_caches.append(c)
                 cache_obj.caches = tuple(new_caches)
-        if converted > 0:
-            logger.info(f"TurboQuant: converted {converted}/{len(prompt_cache)} cache layers to {bits}-bit")
+        if converted > 0 or skipped > 0:
+            logger.info(
+                f"TurboQuant: converted {converted}/{len(prompt_cache)} cache layers "
+                f"to {bits}-bit (skipped {skipped} fp16 layer(s))"
+            )
 
     def _boundary_capture_enabled(self) -> bool:
         return (
@@ -1082,6 +1096,16 @@ class SchedulerConfig:
     gc_cleanup_interval: int = 0  # Steps between gc.collect() calls (0=disabled)
     mlx_cache_cleanup_interval: int = 512  # Steps between mx.clear_cache() calls
 
+    # Hypercar features (set by CLI)
+    turboquant_kv_bits: Optional[int] = None  # None=disabled, 3 or 4
+    turboquant_fp16_layers: int = 0  # Initial layers kept in fp16
+    weight_mode: Optional[str] = None  # "turbo35" or None
+    sparsity_method: Optional[str] = None  # "starc" or None
+    mimo_rank: Optional[int] = None  # e.g. 4 for Mamba-3 MIMO
+    medusa_heads: Optional[int] = None  # e.g. 3 for draft heads
+    moe_router: Optional[str] = None  # "expert-choice" or None
+    max_kv_size: Optional[int] = None  # max KV cache tokens
+
 
 @dataclass
 class SchedulerOutput:
@@ -1204,6 +1228,7 @@ class Scheduler:
 
         # TurboQuant KV cache (set by engine if model_settings has it enabled)
         self._turboquant_kv_bits: Optional[float] = None
+        self._turboquant_fp16_layers: int = 0
 
         # Request management - following vLLM's design
         self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
@@ -1780,9 +1805,11 @@ class Scheduler:
         bg._memory_limit_bytes = self._memory_limit_bytes
         bg._memory_hard_limit_bytes = self._memory_hard_limit_bytes
 
-        # TurboQuant KV cache: propagate bits setting from Scheduler config
+        # TurboQuant KV cache: propagate bits and fp16_layers from Scheduler config
         if hasattr(self, "_turboquant_kv_bits") and self._turboquant_kv_bits is not None:
             bg._turboquant_kv_bits = self._turboquant_kv_bits
+        if hasattr(self, "_turboquant_fp16_layers"):
+            bg._turboquant_fp16_layers = self._turboquant_fp16_layers
 
         return bg
 
