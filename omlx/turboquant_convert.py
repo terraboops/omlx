@@ -156,14 +156,58 @@ def convert_turbo35_streaming(
                     w_f32 = w.astype(mx.float32)
                     w_rotated = w_f32 @ mx.broadcast_to(R, (shape[0], *R.shape))
                     del w_f32
-                    # Keep original tensor name — model's sanitize() will split/rename
-                    # Store as bfloat16 rotated (not quantized) because sanitize()
-                    # needs to split input_linear → gate_proj + up_proj before the
-                    # model's own quantization path handles it
-                    out_shard_data[name] = w_rotated.astype(mx.bfloat16)
-                    mx.eval(out_shard_data[name])
+
+                    # Split input_linear → gate_proj + up_proj (granitemoehybrid sanitize)
+                    # and quantize each sub-tensor to QuantizedSwitchLinear format
+                    if "input_linear" in name:
+                        expert_hidden = shape[1]
+                        gate = w_rotated[:, :expert_hidden // 2, :]
+                        up = w_rotated[:, expert_hidden // 2:, :]
+
+                        for sub_name, sub_w in [("gate_proj", gate), ("up_proj", up)]:
+                            qw, sc, *rest = mx.quantize(sub_w, group_size=group_size, bits=bits)
+                            bi = rest[0] if rest else None
+                            mx.eval(qw, sc)
+                            if bi is not None:
+                                mx.eval(bi)
+                            switch_base = base.replace("input_linear", f"switch_mlp.{sub_name}")
+                            out_shard_data[f"{switch_base}.weight"] = qw
+                            out_shard_data[f"{switch_base}.scales"] = sc
+                            if bi is not None:
+                                out_shard_data[f"{switch_base}.biases"] = bi
+                            per_layer_config[switch_base] = {"bits": bits, "group_size": group_size, "mode": "affine"}
+
+                    elif "output_linear" in name:
+                        qw, sc, *rest = mx.quantize(w_rotated, group_size=group_size, bits=bits)
+                        bi = rest[0] if rest else None
+                        mx.eval(qw, sc)
+                        if bi is not None:
+                            mx.eval(bi)
+                        switch_base = base.replace("output_linear", "switch_mlp.down_proj")
+                        out_shard_data[f"{switch_base}.weight"] = qw
+                        out_shard_data[f"{switch_base}.scales"] = sc
+                        if bi is not None:
+                            out_shard_data[f"{switch_base}.biases"] = bi
+                        per_layer_config[switch_base] = {"bits": bits, "group_size": group_size, "mode": "affine"}
+
+                    else:
+                        # Other 3D: quantize under original name
+                        qw, sc, *rest = mx.quantize(w_rotated, group_size=group_size, bits=bits)
+                        bi = rest[0] if rest else None
+                        mx.eval(qw, sc)
+                        if bi is not None:
+                            mx.eval(bi)
+                        out_shard_data[f"{base}.weight"] = qw
+                        out_shard_data[f"{base}.scales"] = sc
+                        if bi is not None:
+                            out_shard_data[f"{base}.biases"] = bi
+                        per_layer_config[base] = {"bits": bits, "group_size": group_size, "mode": "affine"}
+
                     del w, w_rotated, R
                     converted += 1
+                    # Flush eagerly after large 3D tensors
+                    mx.synchronize()
+                    mx.clear_cache()
                     continue
                 else:
                     w_rotated = w.astype(mx.float32) @ R

@@ -165,6 +165,11 @@ class BatchedEngine(BaseEngine):
         # while ensuring no concurrent Metal operations. See issue #85.
         from ..engine_core import get_mlx_executor
 
+        # Hypercar: patch sanitize before model load so TQ3.5 pre-split MoE weights are accepted
+        if scheduler_config.weight_mode == "turbo35":
+            from ..patches.granitemoehybrid_sanitize import apply_sanitize_patch
+            apply_sanitize_patch()
+
         def _load_model_sync():
             return load(
                 self._model_name,
