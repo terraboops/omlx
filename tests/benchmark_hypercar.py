@@ -93,6 +93,56 @@ def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     return tok_per_sec
 
 
+def benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096]):
+    """Needle-in-a-haystack coherence test."""
+    print("\n--- Needle-in-Haystack Coherence Test ---")
+
+    needle = "The secret code is BLUE ELEPHANT 42."
+    hay_sentence = "This is filler text about various topics in science and technology. "
+
+    for ctx_len in context_sizes:
+        # Build haystack with needle buried in the middle
+        n_hay = ctx_len // len(tokenizer.encode(hay_sentence))
+        haystack = hay_sentence * n_hay
+        hay_tokens = tokenizer.encode(haystack)
+
+        # Insert needle at ~middle
+        needle_tokens = tokenizer.encode(needle)
+        mid = len(hay_tokens) // 2
+        full_tokens = hay_tokens[:mid] + needle_tokens + hay_tokens[mid:]
+        full_tokens = full_tokens[:ctx_len]
+
+        # Add retrieval question
+        question = "\n\nQuestion: What is the secret code mentioned above?\nAnswer: The secret code is"
+        q_tokens = tokenizer.encode(question)
+        all_tokens = full_tokens + q_tokens
+
+        x = mx.array([all_tokens])
+        cache = model.make_cache() if hasattr(model, 'make_cache') else None
+
+        # Prefill
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+
+        # Generate 20 tokens
+        generated = []
+        for _ in range(20):
+            tok = mx.argmax(logits[:, -1, :], axis=-1)
+            mx.eval(tok)
+            generated.append(tok.item())
+            logits = model(tok.reshape(1, 1), cache=cache)
+            mx.eval(logits)
+
+        answer = tokenizer.decode(generated)
+        found = "BLUE" in answer.upper() or "ELEPHANT" in answer.upper() or "42" in answer
+        status = "FOUND" if found else "MISSED"
+        print(f"  {len(all_tokens):>6,} tokens: [{status}] {answer.strip()!r}")
+
+        del logits, x, cache
+        mx.synchronize()
+        mx.clear_cache()
+
+
 def benchmark_context_stress(model, tokenizer, max_ctx=None):
     """Find the maximum context length before OOM."""
     print("\n--- Context Window Stress Test ---")
@@ -210,6 +260,7 @@ def main():
                         max_tokens=args.max_tokens)
 
     if not args.skip_stress:
+        benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096, 16384])
         benchmark_context_stress(model, tokenizer, max_ctx=args.max_ctx)
 
     print(f"\nFinal memory: {mx.get_active_memory()/1e9:.1f}GB "
