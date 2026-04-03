@@ -58,7 +58,7 @@ def benchmark_prefill(model, tokenizer, context_lengths, warmup=True):
 
 def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     """Measure decode throughput (autoregressive generation)."""
-    print("\n--- Decode Benchmark ---")
+    print("\n--- Decode Benchmark (Standard) ---")
 
     tokens = tokenizer.encode(prompt)
     cache = model.make_cache() if hasattr(model, 'make_cache') else None
@@ -91,6 +91,29 @@ def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     print(f"Memory: {mx.get_active_memory()/1e9:.1f}GB")
 
     return tok_per_sec
+
+
+def benchmark_medusa_decode(model, tokenizer, prompt, max_tokens=50, num_heads=3):
+    """Measure decode throughput with Medusa speculative decoding."""
+    print(f"\n--- Decode Benchmark (Medusa, {num_heads} heads) ---")
+
+    from omlx.medusa_decode import medusa_generate
+
+    generated, stats = medusa_generate(
+        model, tokenizer, prompt,
+        max_tokens=max_tokens, num_heads=num_heads,
+    )
+
+    text = tokenizer.decode(generated)
+    print(f"Prompt: {prompt!r}")
+    print(f"Generated {stats.total_tokens} tokens in {stats.elapsed_seconds:.2f}s "
+          f"({stats.tokens_per_second:.1f} tok/s)")
+    print(f"Steps: {stats.total_steps} | Tok/step: {stats.tokens_per_step:.2f} | "
+          f"Draft acceptance: {stats.acceptance_rate:.1%}")
+    print(f"Output: {text!r}")
+    print(f"Memory: {mx.get_active_memory()/1e9:.1f}GB")
+
+    return stats
 
 
 def benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096]):
@@ -258,6 +281,11 @@ def main():
         benchmark_decode(model, tokenizer,
                         "The meaning of life is",
                         max_tokens=args.max_tokens)
+        if args.medusa > 0:
+            benchmark_medusa_decode(model, tokenizer,
+                                   "The meaning of life is",
+                                   max_tokens=args.max_tokens,
+                                   num_heads=args.medusa)
 
     if not args.skip_stress:
         benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096, 16384])
