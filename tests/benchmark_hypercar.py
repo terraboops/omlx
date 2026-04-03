@@ -10,10 +10,13 @@ Measures:
 """
 
 import argparse
+import logging
 import time
 import sys
 
 import mlx.core as mx
+
+logger = logging.getLogger(__name__)
 
 
 def sample_token(logits: mx.array, temperature: float = 0.7, top_p: float = 0.9) -> mx.array:
@@ -192,6 +195,26 @@ def benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096]):
         mx.clear_cache()
 
 
+def _apply_tq_to_cache(cache, tq_bits):
+    """Convert KVCache entries to TurboQuantKVCache in-place."""
+    if tq_bits <= 0:
+        return cache
+    from mlx_lm.models.cache import KVCache
+    from omlx.turboquant_kv import TurboQuantKVCache
+    converted = 0
+    for i, c in enumerate(cache):
+        if isinstance(c, KVCache):
+            cache[i] = TurboQuantKVCache(bits=tq_bits)
+            converted += 1
+    if converted > 0:
+        logger.info(f"TQ KV: converted {converted} cache layers to {tq_bits}-bit")
+    return cache
+
+
+# Module-level tq_kv_bits for cache creation (set by main)
+_tq_kv_bits = 0
+
+
 def benchmark_context_stress(model, tokenizer, max_ctx=None):
     """Find the maximum context length before OOM."""
     print("\n--- Context Window Stress Test ---")
@@ -214,8 +237,13 @@ def benchmark_context_stress(model, tokenizer, max_ctx=None):
             mx.synchronize()
             mx.clear_cache()
 
+            # Create cache with optional TQ KV
+            cache = model.make_cache() if hasattr(model, 'make_cache') else None
+            if cache is not None and _tq_kv_bits > 0:
+                cache = _apply_tq_to_cache(cache, _tq_kv_bits)
+
             start = time.perf_counter()
-            logits = model(x)
+            logits = model(x, cache=cache)
             mx.eval(logits)
             elapsed = time.perf_counter() - start
 
@@ -254,6 +282,7 @@ def main():
     parser.add_argument("--medusa", type=int, default=0, help="Medusa draft heads")
     parser.add_argument("--medusa-distill", type=int, default=0, help="Medusa distillation steps (0=random heads)")
     parser.add_argument("--starc", action="store_true", help="Apply STARC sparse attention")
+    parser.add_argument("--tq-kv", type=int, default=0, help="TurboQuant KV cache bits (3 or 4, 0=disabled)")
     args = parser.parse_args()
 
     print(f"Loading model: {args.model}")
@@ -291,6 +320,13 @@ def main():
         from omlx.patches.starc_attention import apply_starc_attention_patch
         apply_starc_attention_patch(budget_pct=0.15, min_seq_len=512)
         print(f"  STARC: sparse attention enabled (15% budget)")
+
+    if args.tq_kv > 0:
+        from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
+        apply_turboquant_attention_patch()
+        global _tq_kv_bits
+        _tq_kv_bits = args.tq_kv
+        print(f"  TQ KV cache: {args.tq_kv}-bit (attention patches installed)")
 
     print(f"Model type: {model.model_type}")
     if hasattr(model, 'args'):
