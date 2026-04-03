@@ -16,6 +16,29 @@ import sys
 import mlx.core as mx
 
 
+def sample_token(logits: mx.array, temperature: float = 0.7, top_p: float = 0.9) -> mx.array:
+    """Sample a token with temperature and top-p (nucleus) sampling."""
+    if temperature <= 0:
+        return mx.argmax(logits, axis=-1)
+
+    logits = logits / temperature
+
+    # Top-p filtering
+    probs = mx.softmax(logits, axis=-1)
+    sorted_indices = mx.argsort(-probs, axis=-1)
+    sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+    cumulative = mx.cumsum(sorted_probs, axis=-1)
+
+    # Zero out tokens beyond top_p
+    cutoff = (cumulative - sorted_probs) >= top_p
+    sorted_probs = mx.where(cutoff, 0.0, sorted_probs)
+
+    # Renormalize and sample
+    sorted_probs = sorted_probs / sorted_probs.sum(axis=-1, keepdims=True)
+    token_idx = mx.random.categorical(mx.log(sorted_probs + 1e-10))
+    return mx.take_along_axis(sorted_indices, token_idx[..., None], axis=-1).squeeze(-1)
+
+
 def benchmark_prefill(model, tokenizer, context_lengths, warmup=True):
     """Measure prefill throughput at various context lengths."""
     print("\n--- Prefill Benchmark ---")
@@ -68,12 +91,12 @@ def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     logits = model(x, cache=cache)
     mx.eval(logits)
 
-    # Decode loop
+    # Decode loop (temperature sampling to avoid repetition)
     generated = []
     start = time.perf_counter()
 
     for i in range(max_tokens):
-        next_token = mx.argmax(logits[:, -1, :], axis=-1)
+        next_token = sample_token(logits[:, -1, :], temperature=0.7, top_p=0.9)
         mx.eval(next_token)
         generated.append(next_token.item())
 
@@ -93,15 +116,18 @@ def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     return tok_per_sec
 
 
-def benchmark_medusa_decode(model, tokenizer, prompt, max_tokens=50, num_heads=3):
+def benchmark_medusa_decode(model, tokenizer, prompt, max_tokens=50, num_heads=3, draft_heads=None):
     """Measure decode throughput with Medusa speculative decoding."""
-    print(f"\n--- Decode Benchmark (Medusa, {num_heads} heads) ---")
+    label = "distilled" if draft_heads is not None else "random"
+    print(f"\n--- Decode Benchmark (Medusa {num_heads} heads, {label}) ---")
 
     from omlx.medusa_decode import medusa_generate
 
     generated, stats = medusa_generate(
         model, tokenizer, prompt,
         max_tokens=max_tokens, num_heads=num_heads,
+        draft_heads=draft_heads,
+        temperature=0.7, top_p=0.9,
     )
 
     text = tokenizer.decode(generated)
@@ -226,6 +252,7 @@ def main():
     parser.add_argument("--fp16-layers", type=int, default=0, help="Layers to skip rotation")
     parser.add_argument("--expert-choice", action="store_true", help="Apply Expert-Choice MoE")
     parser.add_argument("--medusa", type=int, default=0, help="Medusa draft heads")
+    parser.add_argument("--medusa-distill", type=int, default=0, help="Medusa distillation steps (0=random heads)")
     parser.add_argument("--starc", action="store_true", help="Apply STARC sparse attention")
     args = parser.parse_args()
 
@@ -277,6 +304,17 @@ def main():
     if not args.skip_prefill:
         benchmark_prefill(model, tokenizer, [128, 512, 1024, 2048, 4096])
 
+    # Medusa distillation (if requested, run before benchmarks)
+    distilled_heads = None
+    if args.medusa > 0 and args.medusa_distill > 0:
+        print(f"\n--- Medusa Distillation ({args.medusa_distill} steps) ---")
+        from omlx.medusa_distill import distill_medusa_heads
+        distilled_heads = distill_medusa_heads(
+            model, tokenizer,
+            num_heads=args.medusa,
+            num_steps=args.medusa_distill,
+        )
+
     if not args.skip_decode:
         benchmark_decode(model, tokenizer,
                         "The meaning of life is",
@@ -285,7 +323,8 @@ def main():
             benchmark_medusa_decode(model, tokenizer,
                                    "The meaning of life is",
                                    max_tokens=args.max_tokens,
-                                   num_heads=args.medusa)
+                                   num_heads=args.medusa,
+                                   draft_heads=distilled_heads)
 
     if not args.skip_stress:
         benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096, 16384])

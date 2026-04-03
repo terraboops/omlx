@@ -69,6 +69,22 @@ def _get_hidden_states(model: Any, inputs: mx.array, cache: Any) -> Tuple[mx.arr
     return hidden, logits
 
 
+def _sample_token(logits: mx.array, temperature: float = 0.7, top_p: float = 0.9) -> int:
+    """Sample a single token with temperature and top-p."""
+    if temperature <= 0:
+        return mx.argmax(logits, axis=-1).item()
+    logits = logits / temperature
+    probs = mx.softmax(logits, axis=-1)
+    sorted_indices = mx.argsort(-probs, axis=-1)
+    sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+    cumulative = mx.cumsum(sorted_probs, axis=-1)
+    cutoff = (cumulative - sorted_probs) >= top_p
+    sorted_probs = mx.where(cutoff, 0.0, sorted_probs)
+    sorted_probs = sorted_probs / sorted_probs.sum(axis=-1, keepdims=True)
+    token_idx = mx.random.categorical(mx.log(sorted_probs + 1e-10))
+    return mx.take_along_axis(sorted_indices, token_idx[..., None], axis=-1).squeeze(-1).item()
+
+
 def medusa_generate(
     model: Any,
     tokenizer: Any,
@@ -76,6 +92,8 @@ def medusa_generate(
     max_tokens: int = 100,
     draft_heads: Optional[MedusaDraftHeads] = None,
     num_heads: int = 3,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
 ) -> Tuple[List[int], MedusaStats]:
     """Generate tokens using Medusa speculative decoding.
 
@@ -117,8 +135,8 @@ def medusa_generate(
     while len(generated) < max_tokens:
         stats.total_steps += 1
 
-        # Sample the main token (greedy)
-        main_token = mx.argmax(logits[:, -1, :], axis=-1).item()
+        # Sample the main token
+        main_token = _sample_token(logits[0, -1, :], temperature, top_p)
         generated.append(main_token)
         stats.total_tokens += 1
 
