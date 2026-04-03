@@ -26,51 +26,43 @@ logger = logging.getLogger(__name__)
 _MAX_SHARD_BYTES = 4 * 1024 * 1024 * 1024  # 4GB per shard
 
 
-def _random_signs(dim: int, seed: int = 0) -> mx.array:
-    """Random diagonal sign vector for randomized Hadamard transform."""
+def _givens_angles(dim: int, seed: int = 0):
+    """Generate random Givens rotation angles for D/2 coordinate pairs."""
     key = mx.random.key(seed)
-    signs = mx.where(mx.random.uniform(shape=(dim,), key=key) > 0.5,
-                     mx.ones(dim), -mx.ones(dim))
-    mx.eval(signs)
-    return signs.astype(mx.float32)
-
-
-def _hadamard_matrix(dim: int) -> mx.array:
-    """Build dense Walsh-Hadamard matrix for offline weight rotation.
-
-    For the converter we can afford O(D^2) since it runs once.
-    At runtime, the fast O(D log D) butterfly is used instead.
-    """
-    import numpy as np
-    # Recursive Hadamard construction
-    H = np.array([[1.0]])
-    while H.shape[0] < dim:
-        H = np.block([[H, H], [H, -H]])
-    H = H[:dim, :dim] / (dim ** 0.5)
-    return mx.array(H, dtype=mx.float32)
-
-
-def _is_power_of_2(n: int) -> bool:
-    return n > 0 and (n & (n - 1)) == 0
+    n_pairs = dim // 2
+    angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
+    cos_a = mx.cos(angles).astype(mx.float32)
+    sin_a = mx.sin(angles).astype(mx.float32)
+    mx.eval(cos_a, sin_a)
+    return cos_a, sin_a
 
 
 def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Rotation matrix for TQ3.5 weight rotation.
+    """Build dense rotation matrix from PlanarQuant Givens rotations.
 
-    Uses randomized Walsh-Hadamard (O(D log D) at runtime) for power-of-2 dims,
-    falls back to random QR orthogonal rotation for others.
+    For the offline converter, we build the full D×D matrix from D/2
+    independent 2×2 Givens rotations. At runtime, the fast O(D) Givens
+    application is used instead (no dense matrix needed).
+
+    The matrix is block-diagonal with 2×2 rotation blocks:
+        [[cos θ_i, -sin θ_i],
+         [sin θ_i,  cos θ_i]]
     """
-    if _is_power_of_2(dim):
-        signs = _random_signs(dim, seed=seed)
-        H = _hadamard_matrix(dim)
-        R = signs[:, None] * H  # diag(signs) @ H
-    else:
-        # Fallback: random orthogonal via QR for non-power-of-2
-        key = mx.random.key(seed)
-        Q, Rq = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
-        s = mx.sign(mx.diag(Rq))
-        s = mx.where(s == 0, mx.ones_like(s), s)
-        R = (Q * s[None, :]).astype(mx.float32)
+    import numpy as np
+
+    cos_a, sin_a = _givens_angles(dim, seed=seed)
+    cos_np = np.array(cos_a)
+    sin_np = np.array(sin_a)
+
+    R = np.eye(dim, dtype=np.float32)
+    for i in range(dim // 2):
+        j = 2 * i
+        R[j, j] = cos_np[i]
+        R[j, j+1] = -sin_np[i]
+        R[j+1, j] = sin_np[i]
+        R[j+1, j+1] = cos_np[i]
+
+    R = mx.array(R, dtype=mx.float32)
     mx.eval(R)
     return R
 

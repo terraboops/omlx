@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
-from typing import Any
+from typing import Any, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -23,46 +23,47 @@ _patch_applied = False
 
 
 @lru_cache(maxsize=16)
-def _random_signs(dim: int, seed: int = 0) -> mx.array:
-    """Random diagonal sign matrix D for randomized Hadamard: R = D @ H."""
+def _givens_angles(dim: int, seed: int = 0) -> Tuple[mx.array, mx.array]:
+    """Generate random Givens rotation angles for D/2 coordinate pairs.
+
+    Returns (cos_angles, sin_angles) each of shape (D/2,).
+    """
     key = mx.random.key(seed)
-    signs = mx.where(mx.random.uniform(shape=(dim,), key=key) > 0.5,
-                     mx.ones(dim), -mx.ones(dim))
-    mx.eval(signs)
-    return signs.astype(mx.float32)
+    n_pairs = dim // 2
+    angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
+    cos_a = mx.cos(angles).astype(mx.float32)
+    sin_a = mx.sin(angles).astype(mx.float32)
+    mx.eval(cos_a, sin_a)
+    return cos_a, sin_a
 
 
-def _fast_hadamard_transform(x: mx.array, signs: mx.array) -> mx.array:
-    """In-place fast Walsh-Hadamard transform: O(D log D) instead of O(D^2).
+def _apply_givens_rotation(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
+    """Apply D/2 independent 2D Givens rotations: O(D) per vector.
 
-    Applies the randomized Hadamard: y = (x * signs) @ H / sqrt(D)
-    where H is the Walsh-Hadamard matrix computed via butterfly operations.
+    Each pair (x[..., 2i], x[..., 2i+1]) is rotated by angle_i:
+        x_new[2i]   = cos(a_i) * x[2i] - sin(a_i) * x[2i+1]
+        x_new[2i+1] = sin(a_i) * x[2i] + cos(a_i) * x[2i+1]
 
     Args:
-        x: (..., D) input tensor, D must be power of 2
-        signs: (D,) random sign vector
+        x: (..., D) input tensor, D must be even
+        cos_a: (D/2,) cosines of rotation angles
+        sin_a: (D/2,) sines of rotation angles
 
     Returns:
-        (..., D) transformed tensor
+        (..., D) rotated tensor
     """
-    # Apply random signs
-    y = x * signs
+    # Split into even/odd pairs
+    x_even = x[..., 0::2]  # (..., D/2)
+    x_odd = x[..., 1::2]   # (..., D/2)
 
-    D = y.shape[-1]
-    h = 1
-    while h < D:
-        # Butterfly: swap pairs at stride h
-        y_even = y[..., 0::2*h]  # won't work for in-place, need reshape
-        # Use reshape-based butterfly instead
-        y = y.reshape(*y.shape[:-1], D // (2 * h), 2, h)
-        a = y[..., 0, :]  # first half
-        b = y[..., 1, :]  # second half
-        y = mx.concatenate([a + b, a - b], axis=-1).reshape(*x.shape[:-1], D // (2 * h), 2 * h)
-        y = y.reshape(*x.shape[:-1], D)
-        h *= 2
+    # Apply 2D rotation to each pair
+    y_even = cos_a * x_even - sin_a * x_odd
+    y_odd = sin_a * x_even + cos_a * x_odd
 
-    # Normalize
-    return y / (D ** 0.5)
+    # Interleave back: stack and reshape
+    # (..., D/2) + (..., D/2) → (..., D/2, 2) → (..., D)
+    y = mx.stack([y_even, y_odd], axis=-1).reshape(*x.shape)
+    return y
 
 
 def _get_layer_index(name: str) -> int:
@@ -137,16 +138,17 @@ def apply_turboquant_runtime_patch(
         # QuantizedLinear/QuantizedSwitchLinear: in_dim = scales.shape[-1] * group_size
         in_dim = module.scales.shape[-1] * module.group_size
 
-        # Power-of-2 dims use fast WHT, others use dense rotation matrix
-        is_pow2 = in_dim > 0 and (in_dim & (in_dim - 1)) == 0
-
-        if is_pow2:
-            signs = _random_signs(in_dim, seed=in_dim)
-            module._tq_wht_signs = signs
+        # PlanarQuant: D/2 independent Givens rotations — O(D) per vector
+        if in_dim % 2 == 0:
+            cos_a, sin_a = _givens_angles(in_dim, seed=in_dim)
+            module._tq_givens_cos = cos_a
+            module._tq_givens_sin = sin_a
         else:
-            # Fallback: dense rotation (slower but correct for non-power-of-2)
-            from omlx.turboquant_convert import _rotation_matrix
-            module._tq_dense_rotation = _rotation_matrix(in_dim, seed=in_dim)
+            # Odd dimension: pad to even, rotate, slice back (rare edge case)
+            cos_a, sin_a = _givens_angles(in_dim + 1, seed=in_dim)
+            module._tq_givens_cos = cos_a
+            module._tq_givens_sin = sin_a
+            module._tq_givens_odd = True
 
         patched += 1
 
@@ -168,10 +170,8 @@ def _patch_quantized_linear_class():
         _orig_ql_call = nn.QuantizedLinear.__call__
 
         def _rotated_ql_call(self, x):
-            if hasattr(self, '_tq_wht_signs'):
-                x = _fast_hadamard_transform(x, self._tq_wht_signs)
-            elif hasattr(self, '_tq_dense_rotation'):
-                x = x @ self._tq_dense_rotation
+            if hasattr(self, '_tq_givens_cos'):
+                x = _apply_givens_rotation(x, self._tq_givens_cos, self._tq_givens_sin)
             return _orig_ql_call(self, x)
 
         nn.QuantizedLinear.__call__ = _rotated_ql_call
@@ -182,10 +182,8 @@ def _patch_quantized_linear_class():
         _orig_qsl_call = QuantizedSwitchLinear.__call__
 
         def _rotated_qsl_call(self, x, indices, sorted_indices=False):
-            if hasattr(self, '_tq_wht_signs'):
-                x = _fast_hadamard_transform(x, self._tq_wht_signs)
-            elif hasattr(self, '_tq_dense_rotation'):
-                x = x @ self._tq_dense_rotation
+            if hasattr(self, '_tq_givens_cos'):
+                x = _apply_givens_rotation(x, self._tq_givens_cos, self._tq_givens_sin)
             return _orig_qsl_call(self, x, indices, sorted_indices=sorted_indices)
 
         QuantizedSwitchLinear.__call__ = _rotated_qsl_call
