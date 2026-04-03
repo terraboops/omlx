@@ -18,33 +18,15 @@ import mlx.core as mx
 
 
 def generate(model, tokenizer, prompt, max_tokens=300, temperature=0.3):
-    """Generate text with low temperature for deterministic-ish output."""
-    tokens = tokenizer.encode(prompt)
-    cache = model.make_cache()
-    x = mx.array([tokens])
-    logits = model(x, cache=cache)
-    mx.eval(logits)
-
-    generated = []
-    for _ in range(max_tokens):
-        if temperature <= 0:
-            tok = mx.argmax(logits[:, -1, :], axis=-1)
-        else:
-            probs = mx.softmax(logits[:, -1, :] / temperature, axis=-1)
-            tok = mx.random.categorical(mx.log(probs + 1e-10))
-        mx.eval(tok)
-        t = tok.item()
-        generated.append(t)
-        decoded = tokenizer.decode([t])
-        if "<|end" in decoded or "<|im_end" in decoded:
-            break
-        logits = model(tok.reshape(1, 1), cache=cache)
-        mx.eval(logits)
-
-    del cache
+    """Generate text using mlx-lm's generate function."""
+    from mlx_lm import generate as mlx_generate
+    output = mlx_generate(
+        model, tokenizer, prompt=prompt,
+        max_tokens=max_tokens, verbose=False,
+    )
     mx.synchronize()
     mx.clear_cache()
-    return tokenizer.decode(generated)
+    return output
 
 
 # ═══════════════════════════════════════════════════════════════════
