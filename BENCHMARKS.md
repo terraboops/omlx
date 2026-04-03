@@ -191,6 +191,13 @@ Theoretical max context:
   Needle partial (99 found, PURPLE UNICORN missed — prompt engineering needed)
 
 256K projected: ~50GB peak — tight but feasible with TQ KV 3-bit
+
+DECODE speed vs context length (pure generation, after prefill):
+  1K:  78.9 tok/s (2.6x above 30 tok/s target)
+  4K:  68.3 tok/s (2.3x)
+  16K: 44.7 tok/s (1.5x)
+  65K: ~20-25 tok/s estimated (attention becomes bottleneck)
+  With STARC 15%: 65K → ~10K effective → ~45 tok/s (1.5x target)
 ```
 
 ---
