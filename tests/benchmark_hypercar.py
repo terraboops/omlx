@@ -119,6 +119,30 @@ def benchmark_decode(model, tokenizer, prompt, max_tokens=50):
     return tok_per_sec
 
 
+def benchmark_prompt_lookup_decode(model, tokenizer, prompt, max_tokens=50):
+    """Measure decode throughput with prompt lookup speculative decoding."""
+    print(f"\n--- Decode Benchmark (Prompt Lookup) ---")
+
+    from omlx.prompt_lookup import prompt_lookup_generate
+
+    generated, stats = prompt_lookup_generate(
+        model, tokenizer, prompt,
+        max_tokens=max_tokens, ngram_size=3, max_draft=5,
+        temperature=0.7, top_p=0.9,
+    )
+
+    text = tokenizer.decode(generated)
+    print(f"Prompt: {prompt[:80]!r}...")
+    print(f"Generated {stats.total_tokens} tokens in {stats.elapsed_seconds:.2f}s "
+          f"({stats.tokens_per_second:.1f} tok/s)")
+    print(f"Steps: {stats.total_steps} | Tok/step: {stats.tokens_per_step:.2f} | "
+          f"Lookup hit rate: {stats.hit_rate:.1%} | Accepted: {stats.lookup_tokens_accepted}")
+    print(f"Output: {text[:200]!r}")
+    print(f"Memory: {mx.get_active_memory()/1e9:.1f}GB")
+
+    return stats
+
+
 def benchmark_medusa_decode(model, tokenizer, prompt, max_tokens=50, num_heads=3, draft_heads=None):
     """Measure decode throughput with Medusa speculative decoding."""
     label = "distilled" if draft_heads is not None else "random"
@@ -340,6 +364,7 @@ def main():
     parser.add_argument("--medusa", type=int, default=0, help="Medusa draft heads")
     parser.add_argument("--medusa-distill", type=int, default=0, help="Medusa distillation steps (0=random heads)")
     parser.add_argument("--starc", action="store_true", help="Apply STARC sparse attention")
+    parser.add_argument("--prompt-lookup", action="store_true", help="Run prompt lookup decode benchmark")
     parser.add_argument("--tq-kv", type=int, default=0, help="TurboQuant KV cache bits (3 or 4, 0=disabled)")
     args = parser.parse_args()
 
@@ -419,6 +444,51 @@ def main():
                                    max_tokens=args.max_tokens,
                                    num_heads=args.medusa,
                                    draft_heads=distilled_heads)
+        if args.prompt_lookup:
+            # Code completion prompt — lots of repeating identifiers
+            code_prompt = '''"""Module for calculating total price with tax and discount."""
+
+def calculate_total_price(items, tax_rate=0.08, discount_pct=0.0):
+    """Calculate the total price for a list of items.
+
+    Args:
+        items: List of dicts with 'name', 'price', and 'quantity' keys.
+        tax_rate: Tax rate as decimal (default 0.08 = 8%).
+        discount_pct: Discount percentage as decimal.
+
+    Returns:
+        Total price after tax and discount.
+    """
+    subtotal = sum(item['price'] * item['quantity'] for item in items)
+    discount = subtotal * discount_pct
+    taxed = (subtotal - discount) * (1 + tax_rate)
+    return round(taxed, 2)
+
+def format_receipt(items, tax_rate=0.08, discount_pct=0.0):
+    """Format a receipt string for the given items.
+
+    Args:
+        items: List of item dicts.
+        tax_rate: Tax rate.
+        discount_pct: Discount percentage.
+
+    Returns:
+        Formatted receipt string.
+    """
+    lines = []
+    for item in items:
+        line = f"{item[\'name\']:30} {item[\'price\']:>8.2f} x {item[\'quantity\']}"
+        lines.append(line)
+
+    total = calculate_total_price(items, tax_rate, discount_pct)
+    lines.append(f"{'Total':30} ${total:>8.2f}")
+    return "\\n".join(lines)
+
+# Now implement the test:
+def test_'''
+            benchmark_prompt_lookup_decode(model, tokenizer,
+                                          code_prompt,
+                                          max_tokens=args.max_tokens)
 
     if not args.skip_stress:
         benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096, 16384])
