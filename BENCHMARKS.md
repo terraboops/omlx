@@ -136,6 +136,29 @@ TQ KV 3-bit: Needle FOUND at 16K (previously OOM)
 Context with TQ KV: 1K-16K tested, up to 62.3GB at 16K (swap)
 ```
 
+### Run 5: Clean Single-Process (temp sampling + distillation + strict needle)
+```
+Date: 2026-04-03
+Standard decode (temp=0.7): 35.7 tok/s — COHERENT output!
+  "a question that has puzzled philosophers for centuries..."
+Medusa (distilled, temp=0.7): 29.2 tok/s (30.6% accept, 2.63 tok/step)
+  Lower acceptance with temperature sampling (drafts harder to predict)
+
+Strict Needle-in-Haystack (EXACT "BLUE ELEPHANT 42" required):
+  fp16 KV:
+    1K: pos=25% 1/3 | pos=50% EXACT | pos=75% EXACT
+    4K: pos=25% 1/3 | pos=50% 1/3   | pos=75% 1/3
+    8K: pos=25% 1/3 | pos=50% EXACT | pos=75% EXACT
+  TQ KV 3-bit (pos=50%):
+    1K: EXACT | 4K: 1/3 | 8K: EXACT
+
+Key findings:
+  - 4K context is a weak spot (model retrieves "42" but misses "BLUE ELEPHANT")
+  - 50% and 75% needle positions work best
+  - TQ KV 3-bit matches fp16 quality (no degradation from KV compression)
+  - Peak memory: 49.3GB (includes Medusa distillation overhead)
+```
+
 ---
 
 ## Run It Yourself
