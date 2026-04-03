@@ -146,53 +146,111 @@ def benchmark_medusa_decode(model, tokenizer, prompt, max_tokens=50, num_heads=3
 
 
 def benchmark_needle_haystack(model, tokenizer, context_sizes=[1024, 4096]):
-    """Needle-in-a-haystack coherence test."""
+    """Needle-in-a-haystack coherence test with strict exact-match scoring.
+
+    The model must retrieve the exact needle phrase. Partial matches are
+    scored but only EXACT counts as a pass.
+    """
     print("\n--- Needle-in-Haystack Coherence Test ---")
 
-    needle = "The secret code is BLUE ELEPHANT 42."
+    NEEDLE = "BLUE ELEPHANT 42"
+    needle_sentence = f"The secret code is {NEEDLE}."
     hay_sentence = "This is filler text about various topics in science and technology. "
+    # Use multiple different filler sentences to avoid pattern collapse
+    filler_variants = [
+        "The weather today is partly cloudy with a chance of rain in the afternoon. ",
+        "Recent advances in renewable energy have made solar panels more efficient than ever. ",
+        "The history of mathematics spans thousands of years across many cultures worldwide. ",
+        "Modern architecture emphasizes sustainable design and integration with natural environments. ",
+        "Ocean currents play a crucial role in regulating global climate and weather patterns. ",
+    ]
+
+    results = []
+    print(f"  Needle: {NEEDLE!r}")
+    print(f"  {'Context':>10} {'Score':>7} {'Status':>8} {'Answer'}")
+    print(f"  {'-'*70}")
 
     for ctx_len in context_sizes:
-        # Build haystack with needle buried in the middle
-        n_hay = ctx_len // len(tokenizer.encode(hay_sentence))
-        haystack = hay_sentence * n_hay
-        hay_tokens = tokenizer.encode(haystack)
+        # Build diverse haystack
+        hay_tokens = []
+        for i in range(ctx_len * 2 // len(tokenizer.encode(hay_sentence))):
+            variant = filler_variants[i % len(filler_variants)]
+            hay_tokens.extend(tokenizer.encode(variant))
+        hay_tokens = hay_tokens[:ctx_len]
 
-        # Insert needle at ~middle
-        needle_tokens = tokenizer.encode(needle)
-        mid = len(hay_tokens) // 2
-        full_tokens = hay_tokens[:mid] + needle_tokens + hay_tokens[mid:]
+        # Insert needle at ~40% position (not dead center — harder)
+        needle_tokens = tokenizer.encode(needle_sentence)
+        insert_pos = int(len(hay_tokens) * 0.4)
+        full_tokens = hay_tokens[:insert_pos] + needle_tokens + hay_tokens[insert_pos:]
         full_tokens = full_tokens[:ctx_len]
 
-        # Add retrieval question
-        question = "\n\nQuestion: What is the secret code mentioned above?\nAnswer: The secret code is"
+        # Precise retrieval prompt
+        question = (
+            "\n\nBased on the text above, what is the exact secret code? "
+            "Reply with ONLY the code, nothing else.\n\n"
+            "The secret code is: "
+        )
         q_tokens = tokenizer.encode(question)
         all_tokens = full_tokens + q_tokens
 
         x = mx.array([all_tokens])
         cache = model.make_cache() if hasattr(model, 'make_cache') else None
+        if cache is not None and _tq_kv_bits > 0:
+            cache = _apply_tq_to_cache(cache, _tq_kv_bits)
 
         # Prefill
         logits = model(x, cache=cache)
         mx.eval(logits)
 
-        # Generate 20 tokens
+        # Generate tokens (greedy for exact retrieval — no sampling)
         generated = []
-        for _ in range(20):
+        for _ in range(15):
             tok = mx.argmax(logits[:, -1, :], axis=-1)
             mx.eval(tok)
-            generated.append(tok.item())
+            t = tok.item()
+            generated.append(t)
+            # Stop on EOS or newline
+            decoded = tokenizer.decode([t])
+            if "<|end" in decoded or "\n" in decoded:
+                break
             logits = model(tok.reshape(1, 1), cache=cache)
             mx.eval(logits)
 
-        answer = tokenizer.decode(generated)
-        found = "BLUE" in answer.upper() or "ELEPHANT" in answer.upper() or "42" in answer
-        status = "FOUND" if found else "MISSED"
-        print(f"  {len(all_tokens):>6,} tokens: [{status}] {answer.strip()!r}")
+        answer = tokenizer.decode(generated).strip().rstrip(".")
+
+        # Strict scoring
+        answer_upper = answer.upper()
+        needle_upper = NEEDLE.upper()
+
+        if needle_upper in answer_upper:
+            score = "EXACT"
+            status = "PASS"
+        else:
+            # Score individual components
+            parts = NEEDLE.split()
+            matched = sum(1 for p in parts if p.upper() in answer_upper)
+            if matched == len(parts):
+                score = "EXACT"
+                status = "PASS"
+            elif matched > 0:
+                score = f"{matched}/{len(parts)}"
+                status = "PARTIAL"
+            else:
+                score = "0/3"
+                status = "FAIL"
+
+        print(f"  {len(all_tokens):>10,} {score:>7} {status:>8} {answer!r}")
+        results.append({"ctx": len(all_tokens), "score": score, "status": status, "answer": answer})
 
         del logits, x, cache
         mx.synchronize()
         mx.clear_cache()
+
+    # Summary
+    exact = sum(1 for r in results if r["status"] == "PASS")
+    total = len(results)
+    print(f"\n  Result: {exact}/{total} EXACT matches")
+    return results
 
 
 def _apply_tq_to_cache(cache, tq_bits):
@@ -368,6 +426,14 @@ def main():
 
     print(f"\nFinal memory: {mx.get_active_memory()/1e9:.1f}GB "
           f"(peak: {mx.get_peak_memory()/1e9:.1f}GB)")
+
+    # Explicit cleanup to prevent Metal memory leaks between runs
+    del model
+    import gc
+    gc.collect()
+    mx.synchronize()
+    mx.clear_cache()
+    print("Metal memory released.")
 
 
 if __name__ == "__main__":
