@@ -183,9 +183,14 @@ Theoretical max context:
   TQ 3-bit: ~1.5M tokens (!!!)
   Native:   256K (rope_theta limit)
 
-128K BLOCKED by Metal buffer limit (37GB > 30.1GB max alloc).
-  Fix: STARC 15% budget or chunked prefill to reduce attention matrix size.
-  With STARC: 128K → ~19K effective attention → fits in Metal buffer.
+128K BLOCKED by full-sequence prefill (Metal buffer limit).
+  FIX: chunked prefill (prefill_step_size=8192) bypasses the limit!
+
+120K chunked prefill result:
+  121 tok/s prefill, 30.0GB peak memory — FITS IN 48GB
+  Needle partial (99 found, PURPLE UNICORN missed — prompt engineering needed)
+
+256K projected: ~50GB peak — tight but feasible with TQ KV 3-bit
 ```
 
 ---
