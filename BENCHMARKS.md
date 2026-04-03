@@ -159,6 +159,31 @@ Key findings:
   - Peak memory: 49.3GB (includes Medusa distillation overhead)
 ```
 
+### Run 6: Qwen3-Coder-30B-A3B-4bit (OpenCode Target Model)
+```
+Date: 2026-04-03
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+  30B total, 3.3B active per token, 128 experts, top-8 routing
+  48 layers, 4 KV heads, 128 head_dim, GQA
+  Native context: 256K (max_position_embeddings, rope_theta=10M)
+
+Decode: 71.5 tok/s (2.4x above 30 tok/s target!)
+Intelligence: 8/8 (100%) — FizzBuzz, Binary Search, Flatten, LRU Cache,
+  Math Word Problem, Logic Puzzle, Pattern Recognition, Code Reasoning
+Memory: 17.2GB loaded
+
+Context stress test (fp16 KV):
+  1K:  835 tok/s prefill, 17.6GB
+  4K:  773 tok/s prefill, 18.9GB
+  16K: 500 tok/s prefill, 23.8GB
+  65K: 200 tok/s prefill, 43.8GB (fits in 48GB!)
+
+Theoretical max context:
+  fp16 KV:  ~75K tokens (48GB limit)
+  TQ 3-bit: ~1.5M tokens (!!!)
+  Native:   256K (rope_theta limit)
+```
+
 ---
 
 ## Run It Yourself
