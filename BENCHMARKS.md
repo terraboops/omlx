@@ -182,6 +182,10 @@ Theoretical max context:
   fp16 KV:  ~75K tokens (48GB limit)
   TQ 3-bit: ~1.5M tokens (!!!)
   Native:   256K (rope_theta limit)
+
+128K BLOCKED by Metal buffer limit (37GB > 30.1GB max alloc).
+  Fix: STARC 15% budget or chunked prefill to reduce attention matrix size.
+  With STARC: 128K → ~19K effective attention → fits in Metal buffer.
 ```
 
 ---
