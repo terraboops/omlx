@@ -140,7 +140,8 @@ def initialize_starc_for_tq_caches(starc_manager, cache_list):
             keys, n_clusters, n_iters=8
         )
         # Build CSR index for fast subset gathering
-        (state.cluster_sizes, state.sorted_indices, state.cluster_offsets) = \
+        # _build_csr_index returns (sorted_indices, cluster_offsets, cluster_sizes)
+        state.sorted_indices, state.cluster_offsets, state.cluster_sizes = \
             _build_csr_index(state.assignments, n_clusters)
 
         state.num_tokens_clustered = T
