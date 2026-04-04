@@ -668,9 +668,10 @@ class TurboQuantKVCache(_BaseCache):
     Prefill uses dequantize + standard mx.fast.scaled_dot_product_attention.
     """
 
-    def __init__(self, bits: int = 4, seed: int = 0):
+    def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 16384):
         self.bits = bits
         self.seed = seed
+        self._dequant_chunk_size = dequant_chunk_size  # Tokens per dequant chunk
         # Safety: mlx-lm's base.py SDPA checks hasattr(cache, "bits") and then
         # accesses cache.group_size for affine quantized caches.  Prevents
         # AttributeError if our attention patch doesn't intercept.
@@ -685,6 +686,8 @@ class TurboQuantKVCache(_BaseCache):
         self._quantized = False
         self._codec: Optional[TurboQuantMSECodec] = None
         self._step = 256
+        self._streaming_active = False
+        self._new_chunk_start = 0
 
     def _ensure_codec(self, dim: int):
         if self._codec is None:
@@ -756,16 +759,29 @@ class TurboQuantKVCache(_BaseCache):
             self.offset = new_end
             self._quantized = True
 
-            # Dequantize ALL history for attention (temporary — freed after attention)
-            all_k = self._codec.dequantize(
-                self._k_norms[:, :, :self.offset],
-                self._k_packed[:, :, :self.offset],
-            )
-            all_v = self._codec.dequantize(
-                self._v_norms[:, :, :self.offset],
-                self._v_packed[:, :, :self.offset],
-            )
-            return all_k, all_v
+            # Track where the NEW chunk starts in compressed storage
+            # (streaming attention needs to know what's "history" vs "current")
+            self._new_chunk_start = self.offset - T_new
+
+            # For short history: dequantize everything (fast path)
+            history_tokens = self._new_chunk_start
+            if history_tokens <= self._dequant_chunk_size:
+                all_k = self._codec.dequantize(
+                    self._k_norms[:, :, :self.offset],
+                    self._k_packed[:, :, :self.offset],
+                )
+                all_v = self._codec.dequantize(
+                    self._v_norms[:, :, :self.offset],
+                    self._v_packed[:, :, :self.offset],
+                )
+                self._streaming_active = False
+                return all_k, all_v
+            else:
+                # STREAMING MODE: return ONLY the new chunk's fp16 K,V
+                # The attention patch will handle history via streaming_tq_attention
+                # NO ghost concatenation — no full dequant — constant memory
+                self._streaming_active = True
+                return keys, values
         else:
             # Decode: KV is already quantized from streaming prefill
 

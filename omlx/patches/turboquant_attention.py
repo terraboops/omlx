@@ -59,14 +59,53 @@ def apply_turboquant_attention_patch() -> bool:
                     mask=mask,
                 )
             else:
-                # Prefill: fp16 from update_and_fetch
-                return mx.fast.scaled_dot_product_attention(
-                    queries,
-                    keys.astype(queries.dtype),
-                    values.astype(queries.dtype),
-                    scale=scale,
-                    mask=mask,
-                )
+                # Prefill path — check if streaming mode is active
+                if getattr(real_cache, '_streaming_active', False):
+                    # STREAMING MODE: keys/values are ONLY the new chunk
+                    # History is in compressed storage — use streaming attention
+                    from ..streaming_attention import streaming_tq_attention, merge_attention
+
+                    history_end = real_cache._new_chunk_start
+
+                    # 1. Self-attention on the new chunk (with causal mask)
+                    self_out = mx.fast.scaled_dot_product_attention(
+                        queries,
+                        keys.astype(queries.dtype),
+                        values.astype(queries.dtype),
+                        scale=scale,
+                        mask=mask,
+                    )
+
+                    if history_end == 0:
+                        # No history yet — self-attention is all we need
+                        return self_out
+
+                    # 2. Cross-attention on compressed history (no mask — all visible)
+                    history_out, history_lse = streaming_tq_attention(
+                        queries=queries,
+                        codec=real_cache._codec,
+                        k_norms=real_cache._k_norms[:, :, :history_end],
+                        k_packed=real_cache._k_packed[:, :, :history_end],
+                        v_norms=real_cache._v_norms[:, :, :history_end],
+                        v_packed=real_cache._v_packed[:, :, :history_end],
+                        total_tokens=history_end,
+                        scale=scale,
+                        chunk_size=real_cache._dequant_chunk_size,
+                        return_lse=True,
+                    )
+
+                    # 3. Merge self-attention and history-attention
+                    return merge_attention(self_out, history_out, history_lse,
+                                          queries, keys, values, scale, mask)
+                else:
+                    # Short history: fp16 from update_and_fetch (fast path)
+                    return mx.fast.scaled_dot_product_attention(
+                        queries,
+                        keys.astype(queries.dtype),
+                        values.astype(queries.dtype),
+                        scale=scale,
+                        mask=mask,
+                    )
 
         return original_sdpa(queries, keys, values, cache, scale, mask, sinks)
 
