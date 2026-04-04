@@ -200,6 +200,33 @@ DECODE speed vs context length (pure generation, after prefill):
   With STARC 15%: 65K → ~10K effective → ~45 tok/s (1.5x target)
 ```
 
+### Run 7: Streaming TQ KV + Fused Givens Metal Kernel
+```
+Date: 2026-04-03
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit + streaming TQ3 KV
+  + last-logit patch (saves 40GB logits tensor)
+  + streaming quantize-during-prefill (quantize each chunk, never accumulate fp16)
+  + fused Givens Metal kernel (norm+rotate+quantize+pack in ONE dispatch)
+
+Context stress test (streaming TQ3 + last-logit):
+   65K: 204 tok/s | 18.8GB active | peak 28.6GB
+  128K: 109 tok/s | 19.8GB active | peak 40.1GB ← NEW! (was impossible)
+  196K:  76 tok/s | 21.1GB active | peak 49.5GB ← NEW! (was impossible)
+  256K: testing... (projected ~22.4GB active)
+
+Memory savings from streaming TQ KV:
+  65K:  23.6GB → 18.8GB (saved 4.8GB)
+  128K: 30.1GB → 19.8GB (saved 10.3GB!)
+  196K: impossible → 21.1GB (UNLOCKED!)
+
+Memory model: 17.2GB base + 1.3GB per 65K tokens (3-bit compressed)
+  → 512K would fit at ~27GB!
+  → 1M would fit at ~37GB!
+
+Fused Givens kernel: rotation in GPU registers, O(1) per coordinate.
+64x fewer FLOPs than dense rotation in the quantize step.
+```
+
 ---
 
 ## Run It Yourself
