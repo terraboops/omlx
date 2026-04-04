@@ -232,11 +232,10 @@ def _select_clusters(
             if tokens_selected >= budget:
                 break
 
-    # Convert to sorted array, pad to budget
+    # Return sorted indices — no padding needed.
+    # Variable-length output is fine: mx.take works with any size.
     selected = sorted(all_selected)
-    if len(selected) < budget:
-        selected.extend([-1] * (budget - len(selected)))
-    elif len(selected) > budget:
+    if len(selected) > budget:
         selected = selected[:budget]
 
     return mx.array(selected, dtype=mx.int32)
@@ -371,11 +370,9 @@ class StarcManager:
             budget,
         )
 
-        # Filter out padding (-1) — use numpy for boolean indexing
-        import numpy as np
-        idx_np = np.array(indices)
-        valid_np = idx_np[idx_np >= 0]
-        valid = mx.array(valid_np)
+        # _select_clusters returns variable-length sorted valid indices
+        # (no padding). Use as-is — mx.take handles any size.
+        valid = indices
 
         state.decode_steps_since_recluster += 1
         return valid
