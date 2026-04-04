@@ -528,7 +528,7 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
         if r.error_msg:
             logger.info(f"{'':>10}   {r.error_msg}")
 
-    # 7. Phase 2: Quality tests (only if phase 1 passed something)
+    # --- Gate: Phase 1 must pass before continuing ---
     from omlx.turboquant_kv import TurboQuantKVCache
 
     def _cache_factory(n):
@@ -537,9 +537,16 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
             dequant_chunk_size=config.dequant_chunk_size,
         ) for _ in range(n)]
 
+    all_passed = all(r.status == "pass" for r in results)
+    any_passed = any(r.status == "pass" for r in results)
     max_passed_ctx = max((r.context_length for r in results if r.status == "pass"), default=0)
 
-    if config.run_phase2 and max_passed_ctx > 0:
+    if not any_passed:
+        logger.error("\nPhase 1 FAILED — no context lengths passed. Skipping all later phases.")
+
+    # 7. Phase 2: Quality (requires Phase 1 pass)
+    phase2_passed = False
+    if config.run_phase2 and any_passed:
         from .phases import phase2_niah, phase2_tq3_fidelity
 
         logger.info("\n=== PHASE 2: QUALITY ===")
@@ -548,25 +555,38 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
         logger.info("TQ3 vs fp16 fidelity test...")
         fidelity = phase2_tq3_fidelity(model, tokenizer, n_layers)
 
-        # NIAH at the largest passing context
-        niah_ctx = min(max_passed_ctx, 65536)  # Cap NIAH at 65K for speed
-        logger.info(f"Needle-in-a-Haystack at {niah_ctx:,} tokens...")
-        niah = phase2_niah(model, tokenizer, n_layers, niah_ctx, _cache_factory,
-                          config.prefill_chunk)
+        if fidelity["cosine_similarity"] < 0.95:
+            logger.error(
+                f"  TQ3 fidelity FAILED: cosine={fidelity['cosine_similarity']:.6f} < 0.95. "
+                f"Skipping later phases."
+            )
+        else:
+            # NIAH at the largest passing context
+            niah_ctx = min(max_passed_ctx, 65536)
+            logger.info(f"Needle-in-a-Haystack at {niah_ctx:,} tokens...")
+            niah = phase2_niah(model, tokenizer, n_layers, niah_ctx, _cache_factory,
+                              config.prefill_chunk)
 
-        niah_pass = sum(1 for v in niah.values() if v["found"])
-        logger.info(f"  NIAH: {niah_pass}/{len(niah)} depths found needle")
-        logger.info(f"  TQ3 fidelity: cosine={fidelity['cosine_similarity']:.6f} "
-                     f"top1={'match' if fidelity['top1_match'] else 'MISMATCH'}")
+            niah_pass = sum(1 for v in niah.values() if v["found"])
+            niah_total = len(niah)
+            logger.info(f"  NIAH: {niah_pass}/{niah_total} depths found needle")
+            logger.info(f"  TQ3 fidelity: cosine={fidelity['cosine_similarity']:.6f} "
+                         f"top1={'match' if fidelity['top1_match'] else 'MISMATCH'}")
 
-    # 8. Phase 3: Stress tests
-    if config.run_phase3 and max_passed_ctx > 0:
+            # NIAH must find needle in at least 3/5 depths
+            if niah_pass >= 3:
+                phase2_passed = True
+            else:
+                logger.error(f"  NIAH FAILED: only {niah_pass}/{niah_total} depths. Skipping later phases.")
+
+    # 8. Phase 3: Stress (requires Phase 2 pass)
+    phase3_passed = False
+    if config.run_phase3 and phase2_passed:
         from .phases import phase3_sustained_decode
 
         logger.info("\n=== PHASE 3: STRESS ===")
 
-        # Sustained decode at the largest passing context
-        stress_ctx = min(max_passed_ctx, 65536)  # Cap at 65K for speed
+        stress_ctx = min(max_passed_ctx, 65536)
         logger.info(f"Sustained decode (128 tokens) at {stress_ctx:,} context...")
         stress = phase3_sustained_decode(
             model, tokenizer, n_layers, stress_ctx, _cache_factory,
@@ -574,20 +594,50 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
             min_toks=config.min_decode_toks,
         )
 
-    # 9. Phase 4: Intelligence (print setup guide)
-    if config.run_phase4:
+        if stress["has_leak"]:
+            logger.error(f"  Memory leak detected: {stress['mem_delta_gb']:+.3f}GB. Skipping Phase 4.")
+        elif not stress["speed_pass"]:
+            logger.error(
+                f"  Sustained decode too slow: {stress['min_toks']} tok/s < "
+                f"{config.min_decode_toks} minimum. Skipping Phase 4."
+            )
+        else:
+            phase3_passed = True
+
+    # 9. Phase 4: Intelligence (requires Phase 3 pass)
+    if config.run_phase4 and phase3_passed:
         from .phases import phase4_print_setup_guide, phase4_evalplus_quick
 
         logger.info("\n=== PHASE 4: INTELLIGENCE ===")
 
-        # Quick inline EvalPlus (5 problems, no external deps)
         logger.info("Quick EvalPlus (5 problems)...")
         evalplus = phase4_evalplus_quick(model, tokenizer, n_layers, _cache_factory)
 
-        # Print full benchmark setup guide
-        phase4_print_setup_guide()
+        if evalplus["pass_rate"] < 0.6:
+            logger.error(
+                f"  Quick EvalPlus FAILED: {evalplus['pass_rate']*100:.0f}% < 60%. "
+                f"Model quality too low for full benchmarks."
+            )
+        else:
+            # Only print the full benchmark guide if everything passed
+            phase4_print_setup_guide()
 
-    # 10. Cleanup
+    # 10. Final verdict
+    phases_run = ["Phase 1"]
+    if config.run_phase2 and any_passed:
+        phases_run.append(f"Phase 2 {'PASS' if phase2_passed else 'FAIL'}")
+    if config.run_phase3 and phase2_passed:
+        phases_run.append(f"Phase 3 {'PASS' if phase3_passed else 'FAIL'}")
+    if config.run_phase4 and phase3_passed:
+        phases_run.append("Phase 4")
+
+    logger.info(f"\nPhases: {' → '.join(phases_run)}")
+    if all_passed and phase2_passed and phase3_passed:
+        logger.info("ALL PHASES PASSED")
+    else:
+        logger.info("SOME PHASES FAILED — see above for details")
+
+    # 11. Cleanup
     del model
     gc.collect()
     mx.synchronize()
