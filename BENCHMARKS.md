@@ -265,6 +265,46 @@ Benchmark suite (python -m omlx.bench.safe_bench):
   Phase 4: Intelligence (inline EvalPlus, SWE-bench setup guide)
 ```
 
+### Run 9: Vertical Graph Eval + Adaptive Memory Budget
+```
+Date: 2026-04-04
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit (48 layers)
+
+Fixes applied:
+  + vertical_eval patch: mx.eval(h) every 8 layers (kills cross-layer hoarding)
+  + prefill_step: 8192 → 2048 (matches dequant chunk)
+  + adaptive memory budget: chunks scale with available headroom
+  + mx.synchronize() + mx.clear_cache() between prefill chunks
+  + Safety factor tau=1.2 for cross-version MLX variance
+  + Chunk hint computed ONCE per prefill step (avoids 47× overhead)
+
+Memory profile at 65K (chunk=2048 + vertical_eval):
+  active: 17.2 → 18.6GB (flat, compressed KV growth only)
+  peak:   17.2 → 20.6GB (bounded, was 45.3GB — 55% reduction!)
+
+Super benchmark result (65K, 4 phases):
+  Phase 1 prefill: 101 tok/s ✓
+  Phase 1 peak: 23.9GB ✓ (under 38GB limit)
+  Phase 1 swap: 0GB ✓ (no death spiral)
+  Phase 1 decode: 5.1 tok/s ✗ (fails 25 tok/s floor)
+
+Decode bottleneck: fused decode kernel scans all 65K compressed
+KV entries per token. Without sparse attention (STARC), decode
+is O(context) per token. This is the NEXT fix.
+
+Adaptive chunk sizing:
+  fresh prefill (17GB budget):    16K chunks (fast)
+  decode at 65K (14.6GB budget):  8K chunks
+  decode at 256K (10.3GB budget): 8K chunks
+  large L=8192 queries:           4K chunks (scales with L × chunk)
+
+New features this run:
+  - rewind_to(offset): O(1) context rewind, no re-prefill
+  - save_to_disk(): freeze compressed KV (5GB for 256K)
+  - load_from_disk(): instant thaw, no prefill needed
+  - Enables context forking, session persistence, turn undo
+```
+
 ---
 
 ## Run It Yourself
