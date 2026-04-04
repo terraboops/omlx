@@ -41,26 +41,50 @@
 
 > ### Hypercar Build (`hypercar` branch)
 >
-> This fork adds six bleeding-edge optimizations for running large models on Apple Silicon with extreme compression and throughput:
+> Bleeding-edge optimizations for 256K+ context on Apple Silicon with 30B+ MoE models. Target: >1M context, >GPT-4 intelligence, >25 tok/s decode.
 >
-> | Feature | Flag | What it does |
-> |---------|------|-------------|
-> | **TurboQuant 3.5-bit Weights** | `--weight-mode turbo35` | Orthogonal rotation + 3-bit quantization. 60GB fp16 models fit in 48GB RAM. Streaming converter uses ~3GB working memory. |
-> | **TurboQuant KV Cache** | `--cache-mode turbo3` | Re-enables the existing codebook-quantized KV cache with fp16 layer skip (`--fp16-layers 1`). |
-> | **STARC Sparse Attention** | `--sparsity-method starc` | K-means clustered KV selection during decode. Attends to only 15% of context — the rest is skipped. |
-> | **Mamba-3 MIMO Kernel** | `--mimo-rank 4` | Exponential-trapezoidal SSM discretization with MIMO rank-4 state updates. Second-order accuracy. |
-> | **Medusa Draft Heads** | `--medusa-heads 3` | Multi-token lookahead — predicts 3 future tokens in parallel for ~2x decode throughput on memory-bound M4 Pro. |
-> | **Expert-Choice MoE** | `--moe-router expert-choice` | Experts pick tokens instead of tokens picking experts. 100% GPU utilization on MoE models. |
+> **Context window** (`--cache-mode turbo3`):
+> | Feature | What it does |
+> |---------|-------------|
+> | **TurboQuant 3-bit KV** | Codebook quantization + Givens rotation, 8x compression vs fp16 |
+> | **Fused Givens Metal kernel** | Norm + rotate + quantize + pack in ONE GPU dispatch |
+> | **Streaming quantize-during-prefill** | Compresses each 8K chunk immediately, never holds full fp16 |
+> | **Streaming dequant (online softmax)** | FlashAttention at Python level, cosine sim 1.000000 vs standard |
+> | **Vertical graph eval patch** | `mx.eval()` every 8 layers kills MLX cross-layer hoarding (45GB peak → 20GB) |
+> | **Adaptive memory budget** | Chunk size scales with live headroom (16K chunks when fresh, 8K when decoding) |
+> | **fp16 layer 0 anchor** | First layer uncompressed to preserve attention routing quality |
+> | **min_quant_tokens=512** | Short prompts stay fp16 (TQ3 codebook needs dense signal) |
+>
+> **Decode speed** (memory-bound on M4 Pro):
+> | Feature | What it does |
+> |---------|-------------|
+> | **STARC sparse attention** | K-means clustered KV selection, decodes against 15% of context |
+> | **Medusa draft heads** | 3-token lookahead with distillation, ~2x decode throughput |
+> | **Prompt lookup decoding** | N-gram match against context, free speculation for code tasks |
+> | **Mamba-3 MIMO kernel** | Exponential-trapezoidal SSM, MIMO rank-4 state updates |
+> | **Expert-Choice MoE routing** | Experts pick tokens, balanced GPU utilization |
+>
+> **Stateful sessions** (KV cache persistence):
+> | Feature | What it does |
+> |---------|-------------|
+> | **Rewind** | `cache.rewind_to(offset)` — O(1) context undo, no re-prefill |
+> | **Freeze/Thaw** | `save_to_disk()` / `load_from_disk()` — persist 5GB of context in ~1.5s |
+> | **Context forking** | Branch conversations from any snapshot, compare response paths |
+>
+> **Benchmark suite** (`python -m omlx.bench.safe_bench`):
+> 4-phase cascading: Smoke (memory/speed gates) → Quality (NIAH + TQ3 fidelity) → Stress (sustained decode + leak detection) → Intelligence (EvalPlus + external benchmarks). Memory watchdog, swap monitoring, coherence gate, fail-fast.
+>
+> **Verified on Qwen3-Coder-30B-A3B-Instruct-4bit** (48 layers, 17.2GB loaded, Apple M4 Pro 48GB):
+> - 16K prefill: 486 tok/s, peak 18.6GB (1.4GB above model)
+> - 65K prefill: 101 tok/s, peak 20.6GB (was 45.3GB before vertical eval fix)
+> - Active memory grows linearly: +0.02GB per 1K tokens at TQ3
+> - Projected: 512K fits at ~27GB, 1M fits at ~38GB
 >
 > ```bash
-> # The full hypercar command
-> omlx serve --model ibm-granite/granite-4.0-h-small \
->     --weight-mode turbo35 --cache-mode turbo3 --fp16-layers 1 \
->     --sparsity-method starc --mimo-rank 4 --medusa-heads 3 \
->     --moe-router expert-choice --max-kv-size 256000 --port 8080
+> # Run the benchmark
+> python -m omlx.bench.safe_bench --contexts 16384 32768 65536 \
+>   --max-metal-gb 38 --max-swap-gb 8 --prefill-chunk 2048
 > ```
->
-> 43 unit tests. Verified on `ibm-granite/granite-4.0-h-small` (fp16 → TQ3.5 streaming conversion + inference).
 
 ---
 
