@@ -181,9 +181,12 @@ def main():
     from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
 
+    from omlx.patches.vertical_eval import apply_vertical_eval_patch
+
     apply_turboquant_attention_patch()
     model, tokenizer = load('mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit')
     apply_prefill_last_logit_patch(model)
+    apply_vertical_eval_patch(model)
     n_layers = model.args.num_hidden_layers
 
     mem_snapshot("model loaded")

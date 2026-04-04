@@ -203,11 +203,25 @@ def streaming_tq_attention(
         B_size = queries.shape[0]
         q_grouped = queries.reshape(B_size, H_kv, n_groups, L, D)
 
+    # Adaptive chunk size: scale up when queries L is small.
+    # Peak scores tensor = L × chunk_size × H_q × 4 bytes
+    # Target 2GB peak → chunk_size = 2GB / (L × H_q × 4)
+    target_bytes = 2 * 1024**3
+    max_chunk = target_bytes // (L * H_q * 4)
+    # Round to power of 2, cap at 32768
+    if max_chunk >= 32768: adaptive_chunk = 32768
+    elif max_chunk >= 16384: adaptive_chunk = 16384
+    elif max_chunk >= 8192: adaptive_chunk = 8192
+    elif max_chunk >= 4096: adaptive_chunk = 4096
+    elif max_chunk >= 2048: adaptive_chunk = 2048
+    else: adaptive_chunk = max(1024, chunk_size)
+    chunk_size = min(adaptive_chunk, max(chunk_size, adaptive_chunk))
+
     n_chunks = (total_tokens + chunk_size - 1) // chunk_size
     logger.debug(
         "streaming_tq_attention: %d history tokens → %d chunks of %d "
-        "(B=%d H_q=%d L=%d D=%d)",
-        total_tokens, n_chunks, chunk_size, B, H_q, L, D,
+        "(B=%d H_q=%d L=%d D=%d) adaptive_from_L=%d",
+        total_tokens, n_chunks, chunk_size, B, H_q, L, D, L,
     )
 
     # Process compressed history in chunks

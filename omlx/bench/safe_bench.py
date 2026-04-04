@@ -57,7 +57,7 @@ DEFAULT_MAX_METAL_GB = 38.0   # 38 GB Metal active memory
 DEFAULT_MAX_SWAP_GB = 8.0     # 8 GB swap — beyond = SSD thrashing
 DEFAULT_MIN_PREFILL_TOKS = 100.0  # Min prefill tok/s (compute-bound)
 DEFAULT_MIN_DECODE_TOKS = 25.0    # Min decode tok/s (memory-bound at long ctx)
-PREFILL_CHUNK_SIZE = 8192     # Tokens per prefill chunk
+PREFILL_CHUNK_SIZE = 2048     # Tokens per prefill chunk (matches dequant chunk)
 DECODE_TEST_TOKENS = 16       # Tokens to generate for decode speed check
 MONITOR_INTERVAL = 2.0        # Seconds between memory checks
 
@@ -512,9 +512,12 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
     from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
 
+    from omlx.patches.vertical_eval import apply_vertical_eval_patch
+
     apply_turboquant_attention_patch()
     model, tokenizer = load(config.model_path)
     apply_prefill_last_logit_patch(model)
+    apply_vertical_eval_patch(model)
     n_layers = model.args.num_hidden_layers
 
     model_gb = mx.get_active_memory() / 1e9
