@@ -147,11 +147,8 @@ def _pack_contiguous(indices: mx.array, bits: int, dim: int) -> mx.array:
 
 @lru_cache(maxsize=None)
 def _fused_quantize_kernel():
-    """Fused: norm + normalize + rotate + boundary + pack in ONE kernel."""
+    """Fused: norm + normalize + rotate + boundary + pack in ONE kernel (dense rotation)."""
     source = r"""
-        // Grid: (PackedWidth, rows, 1)  Threadgroup: (min(PackedWidth, 32), 1, 1)
-        // Each thread packs one uint32 word of output
-
         auto word = thread_position_in_grid.x;
         auto row = thread_position_in_grid.y;
 
@@ -159,7 +156,7 @@ def _fused_quantize_kernel():
 
         auto vec = vectors + row * Dim;
 
-        // Step 1: Compute norm (cooperative — but for 1 token, single thread is fine)
+        // Step 1: Compute norm
         float norm_sq = 0.0f;
         for (int d = 0; d < Dim; d++) {
             float v = static_cast<float>(vec[d]);
@@ -168,30 +165,27 @@ def _fused_quantize_kernel():
         float norm = sqrt(norm_sq);
         float inv_norm = norm > 1e-10f ? 1.0f / norm : 1.0f;
 
-        // Store norm (only first thread per row)
         if (word == 0) {
             out_norms[row] = norm;
         }
 
-        // Step 2+3+4: For each value this word packs: rotate + boundary + pack
+        // Step 2+3+4: rotate (dense) + boundary + pack
         uint packed_word = 0u;
         int start = max(0, (int(word) * 32 - (Bits - 1)) / Bits);
         int end = min(Dim, ((int(word) + 1) * 32 + (Bits - 1)) / Bits);
 
         for (int idx = start; idx < end; ++idx) {
-            // Rotate: rotated[idx] = sum_j(normalized[j] * rotation[j * Dim + idx])
+            // Dense rotation: O(Dim) per output coordinate
             float rotated_val = 0.0f;
             for (int j = 0; j < Dim; j++) {
                 rotated_val += static_cast<float>(vec[j]) * inv_norm * rotation[j * Dim + idx];
             }
 
-            // Boundary quantize: count how many boundaries this value exceeds
             uint quant_idx = 0u;
             for (int b = 0; b < NLevels - 1; b++) {
                 if (rotated_val > boundaries[b]) quant_idx++;
             }
 
-            // Pack into word
             int bit_offset = idx * Bits;
             int word_idx = bit_offset / 32;
             int offset = bit_offset % 32;
@@ -216,9 +210,88 @@ def _fused_quantize_kernel():
     )
 
 
+@lru_cache(maxsize=None)
+def _fused_quantize_givens_kernel():
+    """Fused: norm + Givens rotate + boundary + pack in ONE kernel.
+
+    RotorQuant/PlanarQuant variant: uses D/2 Givens pair rotations instead
+    of dense D×D matrix. Each coordinate only depends on its paired coordinate.
+    O(1) per output (2 multiplies + 1 add) instead of O(D).
+    """
+    source = r"""
+        auto word = thread_position_in_grid.x;
+        auto row = thread_position_in_grid.y;
+
+        if (row >= vectors_shape[0] || word >= PackedWidth) return;
+
+        auto vec = vectors + row * Dim;
+
+        // Step 1: Compute norm
+        float norm_sq = 0.0f;
+        for (int d = 0; d < Dim; d++) {
+            float v = static_cast<float>(vec[d]);
+            norm_sq += v * v;
+        }
+        float norm = sqrt(norm_sq);
+        float inv_norm = norm > 1e-10f ? 1.0f / norm : 1.0f;
+
+        if (word == 0) {
+            out_norms[row] = norm;
+        }
+
+        // Step 2+3+4: Givens rotate + boundary + pack
+        uint packed_word = 0u;
+        int start = max(0, (int(word) * 32 - (Bits - 1)) / Bits);
+        int end = min(Dim, ((int(word) + 1) * 32 + (Bits - 1)) / Bits);
+
+        for (int idx = start; idx < end; ++idx) {
+            // Givens rotation: O(1) per coordinate — just 2 muls + 1 add
+            // Pair (2i, 2i+1) rotated by angle[i]:
+            //   rotated[2i]   = cos[i] * norm_a - sin[i] * norm_b
+            //   rotated[2i+1] = sin[i] * norm_a + cos[i] * norm_b
+            int pair = idx / 2;
+            float a = static_cast<float>(vec[2 * pair]) * inv_norm;
+            float b = static_cast<float>(vec[2 * pair + 1]) * inv_norm;
+            float c = cos_angles[pair];
+            float s = sin_angles[pair];
+            float rotated_val = (idx % 2 == 0)
+                ? (c * a - s * b)
+                : (s * a + c * b);
+
+            // Boundary quantize
+            uint quant_idx = 0u;
+            for (int bb = 0; bb < NLevels - 1; bb++) {
+                if (rotated_val > boundaries[bb]) quant_idx++;
+            }
+
+            // Pack into word
+            int bit_offset = idx * Bits;
+            int word_idx = bit_offset / 32;
+            int offset = bit_offset % 32;
+            if (word_idx == word) {
+                packed_word |= (quant_idx & ((1u << Bits) - 1u)) << offset;
+            }
+            if (word_idx + 1 == word) {
+                int spill = offset + Bits - 32;
+                if (spill > 0) {
+                    packed_word |= (quant_idx & ((1u << Bits) - 1u)) >> (Bits - spill);
+                }
+            }
+        }
+
+        out_packed[row * PackedWidth + word] = packed_word;
+    """
+    return mx.fast.metal_kernel(
+        name="tq_fused_quantize_givens",
+        input_names=["vectors", "cos_angles", "sin_angles", "boundaries"],
+        output_names=["out_packed", "out_norms"],
+        source=source,
+    )
+
+
 def _fused_quantize(vectors: mx.array, rotation: mx.array, boundaries: mx.array,
                      bits: int, dim: int) -> tuple:
-    """Fused quantize: norm + rotate + boundary + pack in one Metal dispatch."""
+    """Fused quantize: norm + dense rotate + boundary + pack in one Metal dispatch."""
     batch_shape = vectors.shape[:-1]
     flat = vectors.reshape(-1, dim)
     rows = flat.shape[0]
@@ -228,6 +301,33 @@ def _fused_quantize(vectors: mx.array, rotation: mx.array, boundaries: mx.array,
     kernel = _fused_quantize_kernel()
     packed, norms = kernel(
         inputs=[flat.astype(mx.float16), rotation.astype(mx.float32), boundaries.astype(mx.float32)],
+        output_shapes=[(rows, pw), (rows,)],
+        output_dtypes=[mx.uint32, mx.float32],
+        grid=(pw, rows, 1),
+        threadgroup=(min(pw, 32), 1, 1),
+        template=[("Bits", bits), ("Dim", dim), ("PackedWidth", pw), ("NLevels", n_levels)],
+        init_value=0,
+    )
+    return norms.reshape(*batch_shape), packed.reshape(*batch_shape, pw)
+
+
+def _fused_quantize_givens(vectors: mx.array, cos_a: mx.array, sin_a: mx.array,
+                           boundaries: mx.array, bits: int, dim: int) -> tuple:
+    """Fused quantize with Givens rotation: norm + Givens rotate + boundary + pack.
+
+    64x fewer FLOPs in the rotation step vs dense matrix. The Givens rotation
+    happens entirely in GPU registers — zero memory traffic for the rotation.
+    """
+    batch_shape = vectors.shape[:-1]
+    flat = vectors.reshape(-1, dim)
+    rows = flat.shape[0]
+    pw = _packed_width(dim, bits)
+    n_levels = 1 << bits
+
+    kernel = _fused_quantize_givens_kernel()
+    packed, norms = kernel(
+        inputs=[flat.astype(mx.float16), cos_a.astype(mx.float32),
+                sin_a.astype(mx.float32), boundaries.astype(mx.float32)],
         output_shapes=[(rows, pw), (rows,)],
         output_dtypes=[mx.uint32, mx.float32],
         grid=(pw, rows, 1),
@@ -305,25 +405,23 @@ class TurboQuantMSECodec:
         self._boundaries = (cb[:-1] + cb[1:]) / 2  # midpoints between sorted centroids
 
     def quantize(self, vectors: mx.array):
-        """Quantize vectors: (B, H, T, D) → (norms, packed_indices)."""
-        norms = mx.linalg.norm(vectors, axis=-1, keepdims=True)
-        safe_norms = mx.maximum(norms, 1e-10)
-        normalized = vectors / safe_norms
+        """Quantize vectors: (B, H, T, D) → (norms, packed_indices).
 
-        # Rotate (Givens O(D) or dense O(D²))
+        Uses fused Metal kernel (norm + rotate + boundary + pack in one dispatch)
+        with either Givens O(D) or dense O(D²) rotation.
+        """
         if self.use_givens:
-            rotated = _apply_givens(normalized.astype(mx.float32), self._givens_cos, self._givens_sin)
+            # Fused Givens: rotation happens in GPU registers, zero extra memory
+            return _fused_quantize_givens(
+                vectors, self._givens_cos, self._givens_sin,
+                self._boundaries, self.bits, self.dim,
+            )
         else:
-            shape = normalized.shape
-            grouped = normalized.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
-            rotated = (grouped.astype(mx.float32) @ self.rotation).reshape(shape)
-
-        # Boundary-based quantization (19x faster than argmin)
-        indices = (rotated[..., None] > self._boundaries).sum(axis=-1).astype(mx.uint32)
-
-        # Pack
-        packed = _pack_contiguous(indices, self.bits, self.dim)
-        return norms.squeeze(-1), packed
+            # Fused dense: full D×D rotation in kernel
+            return _fused_quantize(
+                vectors, self.rotation, self._boundaries,
+                self.bits, self.dim,
+            )
 
     def dequantize(self, norms: mx.array, packed: mx.array) -> mx.array:
         """Dequantize: (norms, packed) → vectors."""
