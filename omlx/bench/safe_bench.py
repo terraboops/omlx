@@ -96,6 +96,9 @@ class BenchConfig:
     prefill_chunk: int = PREFILL_CHUNK_SIZE
     decode_test_tokens: int = DECODE_TEST_TOKENS
     coherence_test: bool = True
+    run_phase2: bool = True   # Quality: NIAH + TQ3 fidelity
+    run_phase3: bool = True   # Stress: sustained decode + memory leak
+    run_phase4: bool = True   # Intelligence: quick EvalPlus + setup guide
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +528,66 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
         if r.error_msg:
             logger.info(f"{'':>10}   {r.error_msg}")
 
-    # 7. Cleanup
+    # 7. Phase 2: Quality tests (only if phase 1 passed something)
+    from omlx.turboquant_kv import TurboQuantKVCache
+
+    def _cache_factory(n):
+        return [TurboQuantKVCache(
+            bits=config.bits,
+            dequant_chunk_size=config.dequant_chunk_size,
+        ) for _ in range(n)]
+
+    max_passed_ctx = max((r.context_length for r in results if r.status == "pass"), default=0)
+
+    if config.run_phase2 and max_passed_ctx > 0:
+        from .phases import phase2_niah, phase2_tq3_fidelity
+
+        logger.info("\n=== PHASE 2: QUALITY ===")
+
+        # TQ3 fidelity (quick, short context)
+        logger.info("TQ3 vs fp16 fidelity test...")
+        fidelity = phase2_tq3_fidelity(model, tokenizer, n_layers)
+
+        # NIAH at the largest passing context
+        niah_ctx = min(max_passed_ctx, 65536)  # Cap NIAH at 65K for speed
+        logger.info(f"Needle-in-a-Haystack at {niah_ctx:,} tokens...")
+        niah = phase2_niah(model, tokenizer, n_layers, niah_ctx, _cache_factory,
+                          config.prefill_chunk)
+
+        niah_pass = sum(1 for v in niah.values() if v["found"])
+        logger.info(f"  NIAH: {niah_pass}/{len(niah)} depths found needle")
+        logger.info(f"  TQ3 fidelity: cosine={fidelity['cosine_similarity']:.6f} "
+                     f"top1={'match' if fidelity['top1_match'] else 'MISMATCH'}")
+
+    # 8. Phase 3: Stress tests
+    if config.run_phase3 and max_passed_ctx > 0:
+        from .phases import phase3_sustained_decode
+
+        logger.info("\n=== PHASE 3: STRESS ===")
+
+        # Sustained decode at the largest passing context
+        stress_ctx = min(max_passed_ctx, 65536)  # Cap at 65K for speed
+        logger.info(f"Sustained decode (128 tokens) at {stress_ctx:,} context...")
+        stress = phase3_sustained_decode(
+            model, tokenizer, n_layers, stress_ctx, _cache_factory,
+            config.prefill_chunk, decode_tokens=128,
+            min_toks=config.min_decode_toks,
+        )
+
+    # 9. Phase 4: Intelligence (print setup guide)
+    if config.run_phase4:
+        from .phases import phase4_print_setup_guide, phase4_evalplus_quick
+
+        logger.info("\n=== PHASE 4: INTELLIGENCE ===")
+
+        # Quick inline EvalPlus (5 problems, no external deps)
+        logger.info("Quick EvalPlus (5 problems)...")
+        evalplus = phase4_evalplus_quick(model, tokenizer, n_layers, _cache_factory)
+
+        # Print full benchmark setup guide
+        phase4_print_setup_guide()
+
+    # 10. Cleanup
     del model
     gc.collect()
     mx.synchronize()
@@ -587,6 +649,10 @@ def main():
         help="Skip coherence test",
     )
     parser.add_argument(
+        "--phases", nargs="+", type=int, default=[1, 2, 3, 4],
+        help="Which phases to run (default: 1 2 3 4)",
+    )
+    parser.add_argument(
         "--json", type=str, default=None,
         help="Write results to JSON file",
     )
@@ -611,6 +677,9 @@ def main():
         prefill_chunk=args.prefill_chunk,
         dequant_chunk_size=args.dequant_chunk,
         coherence_test=not args.no_coherence,
+        run_phase2=2 in args.phases,
+        run_phase3=3 in args.phases,
+        run_phase4=4 in args.phases,
     )
 
     results = run_benchmark(config)
