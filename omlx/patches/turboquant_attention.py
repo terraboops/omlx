@@ -13,6 +13,12 @@ import mlx.core as mx
 
 logger = logging.getLogger(__name__)
 _sdpa_call_count = 0
+_starc_manager = [None]  # Populated by set_starc_manager()
+
+
+def set_starc_manager(manager) -> None:
+    """Register a StarcManager for sparse TQ decode. Pass None to disable."""
+    _starc_manager[0] = manager
 
 _PATCHED = False
 
@@ -50,8 +56,16 @@ def apply_turboquant_attention_patch() -> bool:
 
         if isinstance(real_cache, (TurboQuantKVCache, BatchTurboQuantKVCache)):
             if queries.shape[-2] == 1 and real_cache._quantized:
-                # Fused decode attention — no dequantize, works for both
-                # single and batch (kernel uses batch_idx from grid)
+                # Decode — check if STARC manager exists for sparse decode
+                from ..patches import starc_tq_bridge
+                if _starc_manager[0] is not None:
+                    layer_idx = _starc_manager[0].get_layer_idx(real_cache)
+                    if layer_idx is not None:
+                        return starc_tq_bridge.starc_tq_decode_attention(
+                            real_cache, _starc_manager[0], layer_idx,
+                            queries, scale, mask,
+                        )
+                # Fused decode attention — no dequantize, scans full context
                 return real_cache.decode_attention(
                     queries,
                     keys_state=keys,
