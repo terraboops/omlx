@@ -23,31 +23,25 @@ from typing import Optional
 import mlx.core as mx
 
 
-def merge_attention(
-    self_out: mx.array,      # (B, H_q, L, D) self-attention output (new chunk)
-    history_out: mx.array,   # (B, H_q, L, D) history attention output
-    history_lse: mx.array,   # (B, H_q, L) history log-sum-exp
-    queries: mx.array,       # (B, H_q, L, D) original queries (for self-attn LSE)
-    keys: mx.array,          # (B, H_kv, L, D) new chunk keys
-    values: mx.array,        # (B, H_kv, L, D) new chunk values
+def self_attention_with_lse(
+    queries: mx.array,  # (B, H_q, L, D)
+    keys: mx.array,     # (B, H_kv, L, D)
+    values: mx.array,   # (B, H_kv, L, D)
     scale: float,
     mask,
-) -> mx.array:
-    """Merge self-attention (on new chunk) with streaming history attention.
+) -> tuple:
+    """Self-attention that returns BOTH output AND log-sum-exp.
 
-    Uses the online softmax merge trick: rescale each output by the ratio
-    of its partition's softmax denominator to the total denominator.
-
-    self_out came from mx.fast.scaled_dot_product_attention (with causal mask).
-    history_out came from streaming_tq_attention (no mask, all past visible).
+    Avoids the wasteful recompute in merge_attention by computing LSE
+    directly from the raw scores alongside the attention output.
     """
-    B, H_q, L, D = self_out.shape
+    B, H_q, L, D = queries.shape
     H_kv = keys.shape[1]
     n_groups = H_q // H_kv
 
-    # Compute self-attention LSE (log-sum-exp of the new chunk's scores)
-    # We need to recompute scores for the self-attention to get its LSE
     q_scaled = queries * scale
+
+    # Compute scores with GQA handling
     if n_groups > 1:
         q_grouped = q_scaled.reshape(B, H_kv, n_groups, L, D)
         K_expanded = mx.expand_dims(keys, axis=2)
@@ -56,36 +50,56 @@ def merge_attention(
     else:
         scores = q_scaled @ keys.swapaxes(-1, -2)
 
-    # Apply causal mask to self-attention scores
+    # Apply causal mask
     if mask is not None:
         if isinstance(mask, str) and mask == "causal":
             qL, kL = scores.shape[-2], scores.shape[-1]
-            q_indices = mx.arange(kL - qL, kL)
-            k_indices = mx.arange(kL)
-            causal = q_indices[:, None] >= k_indices[None]
+            q_idx = mx.arange(kL - qL, kL)
+            k_idx = mx.arange(kL)
+            causal = q_idx[:, None] >= k_idx[None]
             scores = mx.where(causal, scores, -1e9)
-        elif mask is not None:
-            if mask.dtype == mx.bool_:
-                scores = mx.where(mask, scores, -1e9)
-            else:
-                scores = scores + mask
+        elif mask.dtype == mx.bool_:
+            scores = mx.where(mask, scores, -1e9)
+        else:
+            scores = scores + mask
 
-    # Self-attention LSE: log(sum(exp(scores))) per query
-    self_lse = mx.logsumexp(scores, axis=-1)  # (B, H_q, L)
+    # LSE directly from raw scores (no recompute needed)
+    chunk_max = mx.max(scores, axis=-1, keepdims=True)
+    lse = (chunk_max + mx.log(mx.sum(mx.exp(scores - chunk_max), axis=-1, keepdims=True))).squeeze(-1)
 
-    # Merge: weighted combination based on LSE
-    # total_lse = log(exp(self_lse) + exp(history_lse))
+    # Attention output
+    if n_groups > 1:
+        probs = mx.softmax(scores.reshape(B, H_kv, n_groups, L, -1), axis=-1)
+        V_expanded = mx.expand_dims(values, axis=2)
+        output = (probs @ V_expanded).reshape(B, H_q, L, D)
+    else:
+        probs = mx.softmax(scores, axis=-1)
+        output = probs @ values
+
+    return output, lse
+
+
+@mx.compile
+def _merge_outputs(
+    self_out: mx.array,     # (B, H_q, L, D)
+    self_lse: mx.array,     # (B, H_q, L)
+    history_out: mx.array,  # (B, H_q, L, D)
+    history_lse: mx.array,  # (B, H_q, L)
+) -> mx.array:
+    """Merge self-attention and history-attention via LSE weighting.
+
+    Fused with @mx.compile for a single Metal kernel launch.
+    Numerically stable: uses max-subtraction before exp().
+    """
     max_lse = mx.maximum(self_lse, history_lse)
-    self_weight = mx.exp(self_lse - max_lse)      # (B, H_q, L)
-    hist_weight = mx.exp(history_lse - max_lse)    # (B, H_q, L)
-    total_weight = self_weight + hist_weight
+    self_w = mx.exp(self_lse - max_lse)
+    hist_w = mx.exp(history_lse - max_lse)
+    total = self_w + hist_w
 
-    # Normalize weights
-    self_w = (self_weight / mx.maximum(total_weight, 1e-10))[..., None]   # (B, H_q, L, 1)
-    hist_w = (hist_weight / mx.maximum(total_weight, 1e-10))[..., None]
+    self_w = (self_w / mx.maximum(total, 1e-10))[..., None]
+    hist_w = (hist_w / mx.maximum(total, 1e-10))[..., None]
 
-    merged = self_w * self_out + hist_w * history_out
-    return merged.astype(self_out.dtype)
+    return self_w * self_out + hist_w * history_out
 
 
 @mx.compile
@@ -181,46 +195,63 @@ def streaming_tq_attention(
     l = mx.zeros((B, H_q, L), dtype=mx.float32)         # running sum
     m = mx.full((B, H_q, L), float('-inf'), dtype=mx.float32)  # running max
 
+    # Pre-compute GQA reshaping for queries (static, done once)
+    if n_groups > 1:
+        B_size = queries.shape[0]
+        q_grouped = queries.reshape(B_size, H_kv, n_groups, L, D)
+
     # Process compressed history in chunks
     for chunk_start in range(0, total_tokens, chunk_size):
         chunk_end = min(chunk_start + chunk_size, total_tokens)
+        actual_len = chunk_end - chunk_start
 
         # Dequantize ONE chunk — small, temporary
         K_chunk = codec.dequantize(
             k_norms[:, :, chunk_start:chunk_end],
             k_packed[:, :, chunk_start:chunk_end],
-        )  # (B, H_kv, chunk_len, D)
+        )  # (B, H_kv, actual_len, D)
 
         V_chunk = codec.dequantize(
             v_norms[:, :, chunk_start:chunk_end],
             v_packed[:, :, chunk_start:chunk_end],
-        )  # (B, H_kv, chunk_len, D)
+        )  # (B, H_kv, actual_len, D)
+
+        # Pad last chunk to chunk_size for @mx.compile cache hits
+        if actual_len < chunk_size:
+            pad_len = chunk_size - actual_len
+            K_chunk = mx.concatenate([
+                K_chunk,
+                mx.zeros((B, H_kv, pad_len, D), dtype=K_chunk.dtype)
+            ], axis=2)
+            V_chunk = mx.concatenate([
+                V_chunk,
+                mx.zeros((B, H_kv, pad_len, D), dtype=V_chunk.dtype)
+            ], axis=2)
 
         # Compute attention scores: Q @ K^T
-        # queries: (B, H_q, L, D), K_chunk: (B, H_kv, chunk_len, D)
         if n_groups > 1:
-            # GQA: expand K from H_kv to H_q
-            K_expanded = mx.expand_dims(K_chunk, axis=2)  # (B, H_kv, 1, chunk_len, D)
-            B_size = queries.shape[0]
-            q_grouped = queries.reshape(B_size, H_kv, n_groups, L, D)
-            # scores: (B, H_kv, n_groups, L, chunk_len)
+            K_expanded = mx.expand_dims(K_chunk, axis=2)
             scores = q_grouped @ K_expanded.swapaxes(-1, -2)
-            scores = scores.reshape(B_size, H_q, L, -1)  # (B, H_q, L, chunk_len)
+            scores = scores.reshape(B_size, H_q, L, -1)
         else:
-            scores = queries @ K_chunk.swapaxes(-1, -2)  # (B, H_q, L, chunk_len)
+            scores = queries @ K_chunk.swapaxes(-1, -2)
 
-        # Causal masking: only needed if this chunk contains future tokens
-        # For PAST chunks (chunk_end <= current_query_position): no mask needed
-        # For CURRENT chunk: apply causal mask
-        # For simplicity in streaming prefill: all history chunks are PAST
-        # (the current chunk's self-attention is handled by the regular SDPA path)
+        # Mask out padding in last chunk (set padded scores to -inf)
+        if actual_len < chunk_size:
+            pad_mask = mx.concatenate([
+                mx.ones((1, 1, 1, actual_len)),
+                mx.zeros((1, 1, 1, chunk_size - actual_len)),
+            ], axis=-1)
+            scores = mx.where(pad_mask, scores, -1e9)
 
         # Online softmax update (fused via @mx.compile)
         o, l, m = _online_softmax_update(o, l, m, scores, V_chunk, n_groups)
 
-        # K_chunk, V_chunk go out of scope — MLX can free them
-        # (lazy eval means they may persist until the next mx.eval, but
-        #  the computation graph doesn't reference them after this iteration)
+        # CRITICAL: Force MLX to evaluate NOW and free chunk tensors.
+        # Without this, MLX hoards the entire computation graph and
+        # allocates all intermediate tensors simultaneously at execution
+        # time, causing peak memory to explode.
+        mx.eval(o, l, m)
 
     # Final normalization: o = o / l
     output = o / mx.maximum(l[..., None], 1e-10)

@@ -63,24 +63,23 @@ def apply_turboquant_attention_patch() -> bool:
                 if getattr(real_cache, '_streaming_active', False):
                     # STREAMING MODE: keys/values are ONLY the new chunk
                     # History is in compressed storage — use streaming attention
-                    from ..streaming_attention import streaming_tq_attention, merge_attention
+                    from ..streaming_attention import (
+                        streaming_tq_attention, self_attention_with_lse, _merge_outputs,
+                    )
 
                     history_end = real_cache._new_chunk_start
 
-                    # 1. Self-attention on the new chunk (with causal mask)
-                    self_out = mx.fast.scaled_dot_product_attention(
-                        queries,
-                        keys.astype(queries.dtype),
-                        values.astype(queries.dtype),
-                        scale=scale,
-                        mask=mask,
+                    # 1. Self-attention on new chunk (returns output + LSE, no recompute)
+                    self_out, self_lse = self_attention_with_lse(
+                        queries, keys.astype(queries.dtype),
+                        values.astype(queries.dtype), scale, mask,
                     )
 
                     if history_end == 0:
-                        # No history yet — self-attention is all we need
                         return self_out
 
-                    # 2. Cross-attention on compressed history (no mask — all visible)
+                    # 2. Streaming history attention (online softmax, chunked dequant)
+                    #    Each chunk: dequant → scores → update → mx.eval → free
                     history_out, history_lse = streaming_tq_attention(
                         queries=queries,
                         codec=real_cache._codec,
@@ -94,9 +93,9 @@ def apply_turboquant_attention_patch() -> bool:
                         return_lse=True,
                     )
 
-                    # 3. Merge self-attention and history-attention
-                    return merge_attention(self_out, history_out, history_lse,
-                                          queries, keys, values, scale, mask)
+                    # 3. Merge via LSE weighting (@mx.compile fused)
+                    return _merge_outputs(self_out, self_lse,
+                                          history_out, history_lse)
                 else:
                     # Short history: fp16 from update_and_fetch (fast path)
                     return mx.fast.scaled_dot_product_attention(
