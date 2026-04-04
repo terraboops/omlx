@@ -371,8 +371,11 @@ class StarcManager:
             budget,
         )
 
-        # Filter out padding (-1)
-        valid = indices[indices >= 0]
+        # Filter out padding (-1) — use numpy for boolean indexing
+        import numpy as np
+        idx_np = np.array(indices)
+        valid_np = idx_np[idx_np >= 0]
+        valid = mx.array(valid_np)
 
         state.decode_steps_since_recluster += 1
         return valid
