@@ -884,9 +884,16 @@ class TurboQuantKVCache(_BaseCache):
         q_flat = (queries.squeeze(2) * scale).reshape(B * H_q, D).astype(mx.float16)
 
         # Rotate queries (same rotation as codec)
-        R = self._codec.rotation
-        q_grouped = q_flat.reshape(B * H_q, D // self._codec.dim, self._codec.dim)
-        q_rot = (q_grouped.astype(mx.float32) @ R).reshape(B * H_q, D).astype(mx.float16)
+        if self._codec.use_givens:
+            q_rot = _apply_givens(
+                q_flat.astype(mx.float32),
+                self._codec._givens_cos,
+                self._codec._givens_sin,
+            ).astype(mx.float16)
+        else:
+            R = self._codec.rotation
+            q_grouped = q_flat.reshape(B * H_q, D // self._codec.dim, self._codec.dim)
+            q_rot = (q_grouped.astype(mx.float32) @ R).reshape(B * H_q, D).astype(mx.float16)
 
         # Fused 2-pass SDPA
         out = _fused_tq_sdpa(
@@ -897,8 +904,15 @@ class TurboQuantKVCache(_BaseCache):
         )
 
         # Inverse rotate output (values were in rotated space)
-        out_grouped = out.reshape(B * H_q, D // self._codec.dim, self._codec.dim).astype(mx.float32)
-        out_restored = (out_grouped @ R.T).reshape(B * H_q, D).astype(queries.dtype)
+        if self._codec.use_givens:
+            out_restored = _apply_givens_inverse(
+                out.reshape(B * H_q, D).astype(mx.float32),
+                self._codec._givens_cos,
+                self._codec._givens_sin,
+            ).astype(queries.dtype)
+        else:
+            out_grouped = out.reshape(B * H_q, D // self._codec.dim, self._codec.dim).astype(mx.float32)
+            out_restored = (out_grouped @ R.T).reshape(B * H_q, D).astype(queries.dtype)
 
         return out_restored.reshape(B, H_q, 1, D)
 
