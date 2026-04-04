@@ -382,6 +382,17 @@ def bench_context(
             chunk = tokens[chunk_start:chunk_end]
             x = mx.array([chunk])
 
+            # Set adaptive dequant chunk hint ONCE per prefill step.
+            # All 47 layers will share this chunk size (avoids 47× overhead).
+            from omlx.memory_budget import compute_budget, compute_dequant_chunk_size
+            from omlx.streaming_attention import set_chunk_hint
+            budget = compute_budget(model_gb=17.2, active_kv_gb=0, decoding=False)
+            adaptive = compute_dequant_chunk_size(
+                query_len=len(chunk), num_query_heads=32, head_dim=128,
+                num_layers=48, budget=budget,
+            )
+            set_chunk_hint(adaptive)
+
             chunk_t0 = time.perf_counter()
             logits = model(x, cache=cache)
             mx.eval(logits)

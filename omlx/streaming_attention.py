@@ -25,6 +25,21 @@ import mlx.core as mx
 
 logger = logging.getLogger(__name__)
 
+# Module-level chunk size hint — set ONCE per prefill step by the outer loop.
+# This avoids computing memory budget inside the hot attention path.
+# See omlx/memory_budget.py for the computation logic.
+_current_chunk_hint: list = [None]
+
+
+def set_chunk_hint(chunk_size: int) -> None:
+    """Set the dequant chunk size hint for the next model() forward pass."""
+    _current_chunk_hint[0] = chunk_size
+
+
+def clear_chunk_hint() -> None:
+    """Clear the chunk hint (revert to default chunk_size parameter)."""
+    _current_chunk_hint[0] = None
+
 
 def self_attention_with_lse(
     queries: mx.array,  # (B, H_q, L, D)
@@ -203,19 +218,12 @@ def streaming_tq_attention(
         B_size = queries.shape[0]
         q_grouped = queries.reshape(B_size, H_kv, n_groups, L, D)
 
-    # Adaptive chunk size: scale up when queries L is small.
-    # Peak scores tensor = L × chunk_size × H_q × 4 bytes
-    # Target 2GB peak → chunk_size = 2GB / (L × H_q × 4)
-    target_bytes = 2 * 1024**3
-    max_chunk = target_bytes // (L * H_q * 4)
-    # Round to power of 2, cap at 32768
-    if max_chunk >= 32768: adaptive_chunk = 32768
-    elif max_chunk >= 16384: adaptive_chunk = 16384
-    elif max_chunk >= 8192: adaptive_chunk = 8192
-    elif max_chunk >= 4096: adaptive_chunk = 4096
-    elif max_chunk >= 2048: adaptive_chunk = 2048
-    else: adaptive_chunk = max(1024, chunk_size)
-    chunk_size = min(adaptive_chunk, max(chunk_size, adaptive_chunk))
+    # Adaptive chunk size is set ONCE per prefill step (see _current_chunk_hint).
+    # Computing mx.get_active_memory() inside this hot loop triggers Metal
+    # syncs — too expensive. The prefill loop sets _current_chunk_hint before
+    # calling model(), so all 47 layers share the same adaptive chunk size.
+    if _current_chunk_hint[0] is not None:
+        chunk_size = max(chunk_size, _current_chunk_hint[0])
 
     n_chunks = (total_tokens + chunk_size - 1) // chunk_size
     logger.debug(
