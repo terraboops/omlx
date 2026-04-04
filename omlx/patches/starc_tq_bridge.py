@@ -68,6 +68,10 @@ def initialize_starc_for_tq_caches(starc_manager, cache_list):
             logger.debug("STARC: layer %d has no keys, skipping", layer_idx)
             continue
 
+        # K-means works in fp32 (avoids bfloat16 numpy issues)
+        keys = keys.astype(mx.float32)
+        mx.eval(keys)
+
         T = keys.shape[1]
         if T < starc_manager.min_seq_len:
             logger.debug("STARC: layer %d seq_len=%d < min %d",
@@ -79,7 +83,7 @@ def initialize_starc_for_tq_caches(starc_manager, cache_list):
 
         # Run K-means on dequantized keys
         state.centroids, state.assignments = _kmeans_cosine(
-            keys, n_clusters, max_iters=15
+            keys, n_clusters, n_iters=15
         )
         # Build CSR index for fast subset gathering
         (state.cluster_sizes, state.sorted_indices, state.cluster_offsets) = \
