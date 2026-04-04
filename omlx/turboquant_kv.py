@@ -46,7 +46,7 @@ def _codebook(dim: int, bits: int) -> mx.array:
 
 @lru_cache(maxsize=16)
 def _rotation_matrix(dim: int, seed: int) -> mx.array:
-    """Random orthogonal rotation via QR decomposition."""
+    """Random orthogonal rotation via QR decomposition (legacy, used by fused kernels)."""
     key = mx.random.key(seed)
     Q, R = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
     signs = mx.sign(mx.diag(R))
@@ -54,6 +54,32 @@ def _rotation_matrix(dim: int, seed: int) -> mx.array:
     Q = (Q * signs[None, :]).astype(mx.float32)
     mx.eval(Q)
     return Q
+
+
+@lru_cache(maxsize=16)
+def _givens_angles(dim: int, seed: int = 0):
+    """PlanarQuant/RotorQuant: random Givens rotation angles for D/2 pairs."""
+    key = mx.random.key(seed)
+    n_pairs = dim // 2
+    angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
+    cos_a = mx.cos(angles).astype(mx.float32)
+    sin_a = mx.sin(angles).astype(mx.float32)
+    mx.eval(cos_a, sin_a)
+    return cos_a, sin_a
+
+
+def _apply_givens(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
+    """Apply D/2 Givens rotations: O(D) per vector."""
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    y_even = cos_a * x_even - sin_a * x_odd
+    y_odd = sin_a * x_even + cos_a * x_odd
+    return mx.stack([y_even, y_odd], axis=-1).reshape(*x.shape)
+
+
+def _apply_givens_inverse(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
+    """Apply inverse Givens rotation: negate sin angles."""
+    return _apply_givens(x, cos_a, -sin_a)
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +289,16 @@ def _unpack_contiguous(packed: mx.array, bits: int, dim: int) -> mx.array:
 class TurboQuantMSECodec:
     """MSE-optimal vector quantization codec."""
 
-    def __init__(self, dim: int, bits: int, seed: int = 0):
+    def __init__(self, dim: int, bits: int, seed: int = 0, use_givens: bool = True):
         self.dim = dim
         self.bits = bits
         self.seed = seed
         self.codebook = _codebook(dim, bits)
-        self.rotation = _rotation_matrix(dim, seed)
+        self.use_givens = use_givens and (dim % 2 == 0)
+        if self.use_givens:
+            self._givens_cos, self._givens_sin = _givens_angles(dim, seed)
+        else:
+            self.rotation = _rotation_matrix(dim, seed)
         self._pw = _packed_width(dim, bits)
         # Pre-compute decision boundaries for fast quantization
         cb = self.codebook
@@ -280,10 +310,13 @@ class TurboQuantMSECodec:
         safe_norms = mx.maximum(norms, 1e-10)
         normalized = vectors / safe_norms
 
-        # Rotate
-        shape = normalized.shape
-        grouped = normalized.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
-        rotated = (grouped.astype(mx.float32) @ self.rotation).reshape(shape)
+        # Rotate (Givens O(D) or dense O(D²))
+        if self.use_givens:
+            rotated = _apply_givens(normalized.astype(mx.float32), self._givens_cos, self._givens_sin)
+        else:
+            shape = normalized.shape
+            grouped = normalized.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
+            rotated = (grouped.astype(mx.float32) @ self.rotation).reshape(shape)
 
         # Boundary-based quantization (19x faster than argmin)
         indices = (rotated[..., None] > self._boundaries).sum(axis=-1).astype(mx.uint32)
@@ -297,9 +330,13 @@ class TurboQuantMSECodec:
         indices = _unpack_contiguous(packed, self.bits, self.dim)
         coords = self.codebook[indices]
 
-        shape = coords.shape
-        grouped = coords.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
-        restored = (grouped @ self.rotation.T).reshape(shape)
+        # Inverse rotate (Givens or dense)
+        if self.use_givens:
+            restored = _apply_givens_inverse(coords, self._givens_cos, self._givens_sin)
+        else:
+            shape = coords.shape
+            grouped = coords.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
+            restored = (grouped @ self.rotation.T).reshape(shape)
 
         return restored * norms[..., None]
 
