@@ -79,6 +79,10 @@ class BenchResult:
     elapsed_s: float = 0.0
     error_msg: str = ""
     coherence_ok: bool = False
+    # Profile aggregates
+    cpu_avg_pct: float = 0.0
+    cpu_peak_pct: float = 0.0
+    rss_peak_gb: float = 0.0
 
 
 @dataclass
@@ -361,6 +365,7 @@ def bench_context(
     """Benchmark a single context length with all safety checks."""
 
     result = BenchResult(context_length=ctx, status="error")
+    profile = None  # Will be populated
 
     # Reset Metal state
     mx.synchronize()
@@ -383,8 +388,11 @@ def bench_context(
 
     logger.info(f"--- {ctx:,} tokens ---")
 
-    # Start watchdog for this test
+    # Start watchdog + profiler for this test
     watchdog.start()
+    from .profiler import Profiler
+    profiler = Profiler(sample_interval=0.5)
+    profiler.start()
     t0 = time.perf_counter()
 
     try:
@@ -448,6 +456,11 @@ def bench_context(
 
         elapsed = time.perf_counter() - t0
         watchdog.stop()
+        profile = profiler.stop()
+        logger.info(f"  Profile: {profile.summary()}")
+        result.cpu_avg_pct = profile.cpu_avg_pct
+        result.cpu_peak_pct = profile.cpu_peak_pct
+        result.rss_peak_gb = profile.rss_peak_gb
 
         if result.status not in ("fail_memory", "fail_prefill_speed"):
             result.prefill_toks = processed / elapsed if elapsed > 0 else 0
@@ -464,14 +477,29 @@ def bench_context(
             )
 
             # --- Decode speed test ---
-            logger.info(f"  Decode test: generating {config.decode_test_tokens} tokens...")
+            decoder_name = "greedy"
+            if config.use_medusa:
+                decoder_name = f"medusa-{config.medusa_num_heads}h"
+            elif config.use_prompt_lookup:
+                decoder_name = "prompt-lookup"
+            logger.info(f"  Decode test ({decoder_name}): {config.decode_test_tokens} tokens...")
+
             decode_t0 = time.perf_counter()
+            tokens_generated = 0
+
+            if config.use_medusa and config.medusa_distill_steps > 0:
+                # TODO: Medusa distillation + TQ3 decode integration
+                # For now, warn and fall back to greedy
+                logger.warning("  Medusa not fully wired yet — using greedy decode")
+
+            # Standard greedy decode (works with all cache types including TQ3)
             for _ in range(config.decode_test_tokens):
                 token = mx.argmax(logits[:, -1, :], axis=-1)
                 mx.eval(token)
                 x = token.reshape(1, 1)
                 logits = model(x, cache=cache)
                 mx.eval(logits)
+                tokens_generated += 1
 
                 if not watchdog.check():
                     result.status = "fail_memory"
@@ -481,7 +509,7 @@ def bench_context(
             decode_elapsed = time.perf_counter() - decode_t0
 
             if result.status != "fail_memory":
-                result.decode_toks = config.decode_test_tokens / decode_elapsed if decode_elapsed > 0 else 0
+                result.decode_toks = tokens_generated / decode_elapsed if decode_elapsed > 0 else 0
 
                 if result.decode_toks < config.min_decode_toks:
                     result.status = "fail_decode_speed"
@@ -503,6 +531,7 @@ def bench_context(
 
     except Exception as e:
         watchdog.stop()
+        profiler.stop()
         result.status = "error"
         result.error_msg = f"{type(e).__name__}: {str(e)[:200]}"
         logger.error(f"  ERROR at {ctx:,}: {result.error_msg}")
@@ -866,10 +895,13 @@ def main():
                 "status": r.status,
                 "prefill_toks": round(r.prefill_toks, 1),
                 "decode_toks": round(r.decode_toks, 1),
-                "active_gb": round(r.active_gb, 1),
-                "peak_gb": round(r.peak_gb, 1),
-                "swap_gb": round(r.swap_gb, 1),
+                "active_gb": round(r.active_gb, 2),
+                "peak_gb": round(r.peak_gb, 2),
+                "swap_gb": round(r.swap_gb, 2),
                 "elapsed_s": round(r.elapsed_s, 1),
+                "cpu_avg_pct": round(r.cpu_avg_pct, 1),
+                "cpu_peak_pct": round(r.cpu_peak_pct, 1),
+                "rss_peak_gb": round(r.rss_peak_gb, 2),
                 "error_msg": r.error_msg,
             })
         Path(args.json).write_text(json.dumps(out, indent=2))
