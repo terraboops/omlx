@@ -668,10 +668,12 @@ class TurboQuantKVCache(_BaseCache):
     Prefill uses dequantize + standard mx.fast.scaled_dot_product_attention.
     """
 
-    def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 16384):
+    def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 16384,
+                 min_quant_tokens: int = 512):
         self.bits = bits
         self.seed = seed
         self._dequant_chunk_size = dequant_chunk_size  # Tokens per dequant chunk
+        self._min_quant_tokens = min_quant_tokens  # Stay fp16 below this threshold
         # Safety: mlx-lm's base.py SDPA checks hasattr(cache, "bits") and then
         # accesses cache.group_size for affine quantized caches.  Prevents
         # AttributeError if our attention patch doesn't intercept.
@@ -727,6 +729,24 @@ class TurboQuantKVCache(_BaseCache):
         self._ensure_codec(D)
 
         if T_new > 1:
+            # Below threshold: accumulate fp16, no quantization yet.
+            # TQ3 codebook needs enough tokens for meaningful compression.
+            # 512 tokens in fp16 is ~0.001GB per layer — negligible.
+            if self.offset + T_new < self._min_quant_tokens and not self._quantized:
+                if self._fp16_keys is None:
+                    self._fp16_keys = keys
+                    self._fp16_values = values
+                else:
+                    self._fp16_keys = mx.concatenate([self._fp16_keys, keys], axis=2)
+                    self._fp16_values = mx.concatenate([self._fp16_values, values], axis=2)
+                self.offset += T_new
+                self._streaming_active = False
+                return self._fp16_keys, self._fp16_values
+
+            # Cross the threshold — quantize accumulated fp16 buffer first
+            if not self._quantized and self._fp16_keys is not None:
+                self._quantize_fp16_buffer()
+
             # Streaming prefill: quantize this chunk and store compressed
             pw = _packed_width(D, self.bits)
 
@@ -783,8 +803,16 @@ class TurboQuantKVCache(_BaseCache):
                 self._streaming_active = True
                 return keys, values
         else:
-            # Decode: KV is already quantized from streaming prefill
+            # Decode (T_new == 1)
 
+            # Still in fp16 warmup phase — append and return fp16
+            if not self._quantized and self._fp16_keys is not None:
+                self._fp16_keys = mx.concatenate([self._fp16_keys, keys], axis=2)
+                self._fp16_values = mx.concatenate([self._fp16_values, values], axis=2)
+                self.offset += 1
+                return self._fp16_keys, self._fp16_values
+
+            # Quantize the new token and append to compressed storage
             k_norms, k_packed = self._codec.quantize(keys)
             v_norms, v_packed = self._codec.quantize(values)
 
