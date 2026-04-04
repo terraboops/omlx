@@ -55,8 +55,8 @@ logger = logging.getLogger("omlx.bench")
 LOCK_FILE = Path(tempfile.gettempdir()) / "omlx_bench.lock"
 DEFAULT_MAX_METAL_GB = 38.0   # 38 GB Metal active memory
 DEFAULT_MAX_SWAP_GB = 8.0     # 8 GB swap — beyond = SSD thrashing
-DEFAULT_MIN_PREFILL_TOKS = 100.0  # Min prefill tok/s (compute-bound)
-DEFAULT_MIN_DECODE_TOKS = 25.0    # Min decode tok/s (memory-bound at long ctx)
+DEFAULT_MIN_PREFILL_TOKS = 50.0   # Min prefill tok/s (one-time buffer cost)
+DEFAULT_MIN_DECODE_TOKS = 25.0    # Min decode tok/s (the speed that matters)
 PREFILL_CHUNK_SIZE = 2048     # Tokens per prefill chunk (matches dequant chunk)
 DECODE_TEST_TOKENS = 16       # Tokens to generate for decode speed check
 MONITOR_INTERVAL = 2.0        # Seconds between memory checks
@@ -399,10 +399,12 @@ def bench_context(
                 logger.error(f"  ABORT at {processed:,}/{ctx:,}: {watchdog.violation_reason}")
                 break
 
-            # Check prefill tok/s after first 32K tokens (allow warmup)
-            # Scale target inversely with context: 100 @ 65K, 75 @ 128K, 50 @ 256K+
-            scaled_min = config.min_prefill_toks * min(1.0, 65536 / max(ctx, 1))
-            scaled_min = max(scaled_min, 50.0)  # Floor at 50 tok/s
+            # Prefill is a ONE-TIME cost (user pastes code once, then iterates).
+            # Decode speed is what matters. Scale prefill floor with context:
+            # 50 @ 65K, 30 @ 128K, 15 @ 256K — prefill is buffer time we accept
+            # to unlock longer context. Abort only if pathologically slow.
+            scaled_min = config.min_prefill_toks * (65536 / max(ctx, 1))
+            scaled_min = max(scaled_min, 10.0)  # Absolute floor: 10 tok/s
             if processed >= 32768 and chunk_toks < scaled_min:
                 result.status = "fail_prefill_speed"
                 result.error_msg = f"Prefill {chunk_toks:.0f} tok/s < {scaled_min:.0f} scaled minimum (base {config.min_prefill_toks:.0f})"
