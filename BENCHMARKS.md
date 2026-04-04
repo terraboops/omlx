@@ -227,6 +227,44 @@ Fused Givens kernel: rotation in GPU registers, O(1) per coordinate.
 64x fewer FLOPs than dense rotation in the quantize step.
 ```
 
+### Run 8: Online Softmax + Streaming Dequant + Memory Profiling
+```
+Date: 2026-04-04
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit + streaming TQ3 KV
+  + online softmax (FlashAttention at Python level, cos sim 1.000000)
+  + split self-attn + history-attn with LSE merge
+  + mx.eval per dequant chunk (prevents MLX graph hoarding)
+  + fp16 layer 0 anchor (no quantization on first layer)
+  + min_quant_tokens=512 (stay fp16 below threshold)
+  + 4-phase benchmark suite with fail-fast gating
+
+Profiling results (dequant chunk size study):
+  chunk_size=16384: peak 35.2GB ← scores tensor Q(8K)×K(16K)×32 = 16GB
+  chunk_size= 4096: peak  9.2GB
+  chunk_size= 2048: peak  4.9GB ← new default
+  chunk_size= 1024: peak  2.7GB
+
+Root cause of 52.6GB OOM: attention scores tensor was 16GB per layer.
+At chunk_size=2048, scores = 8K × 2K × 32 × 4bytes = 2GB per chunk.
+With mx.eval inside the streaming loop, freed after each chunk.
+
+REMAINING ISSUE: 47 layers' streaming attention in single model()
+forward pass peaks at 44GB due to MLX graph accumulation across layers.
+Active memory is flat (~17.5GB) — only peak spikes during graph exec.
+Needs per-layer eval in model forward pass to bound peak.
+
+Coherence test:
+  fp16 (15 tokens): "4" ✓
+  TQ3 (15 tokens): "just the the the" ✗ (too few tokens for codebook)
+  TQ3 (512+ tokens): "4" ✓ (min_quant_tokens=512 fix)
+
+Benchmark suite (python -m omlx.bench.safe_bench):
+  Phase 1: Smoke (memory watchdog, speed floors, coherence gate)
+  Phase 2: Quality (NIAH at max context, TQ3 vs fp16 cosine sim)
+  Phase 3: Stress (128-token sustained decode, memory leak detection)
+  Phase 4: Intelligence (inline EvalPlus, SWE-bench setup guide)
+```
+
 ---
 
 ## Run It Yourself

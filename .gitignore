@@ -110,3 +110,4 @@ omlx/_build_info.py
 
 # Tailwind CSS standalone CLI binary (download on demand via build_css.py)
 omlx/admin/tailwindcss-*
+.claude/settings.local.json
