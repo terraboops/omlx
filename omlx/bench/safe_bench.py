@@ -268,7 +268,36 @@ def check_coherence(model, tokenizer, cache, n_layers: int) -> bool:
     Uses the already-loaded model and generates a few tokens to verify
     the model is producing sensible output after prefill.
     """
-    prompt = "What is 2 + 2? Answer with just the number:"
+    # Pad with ~512 tokens of realistic code so TQ3 codebook has real signal.
+    # 15 tokens is too few — quantization noise dominates at tiny context.
+    preamble = '''"""Utility module for basic arithmetic operations."""
+
+def add(a: int, b: int) -> int:
+    """Return the sum of two integers."""
+    return a + b
+
+def subtract(a: int, b: int) -> int:
+    """Return the difference of two integers."""
+    return a - b
+
+def multiply(a: int, b: int) -> int:
+    """Return the product of two integers."""
+    return a * b
+
+def divide(a: float, b: float) -> float:
+    """Return the quotient of two numbers."""
+    if b == 0:
+        raise ValueError("Cannot divide by zero")
+    return a / b
+
+# Examples:
+# add(2, 3) = 5
+# subtract(10, 4) = 6
+# multiply(3, 7) = 21
+# divide(15, 3) = 5.0
+
+'''
+    prompt = preamble + "What is 2 + 2? Answer with just the number:"
     tokens = tokenizer.encode(prompt)
     x = mx.array([tokens])
 
