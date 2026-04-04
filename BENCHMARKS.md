@@ -305,6 +305,83 @@ New features this run:
   - Enables context forking, session persistence, turn undo
 ```
 
+### Run 10: Adaptive Budget + STARC Bridge + Small Context Validation
+```
+Date: 2026-04-04
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit
+
+Fixes:
+  + Adaptive chunk hint computed ONCE per prefill step (not per layer)
+  + Safety factor tau=1.2 in chunk size calculation
+  + STARC + TQ3 bridge (starc_tq_bridge.py)
+  + KV cache rewind + save/load verified
+  + Coherence uses 512+ token preamble (TQ3 needs dense signal)
+
+16K prefill (small context validation):
+  Prefill: 486 tok/s ✓
+  Active: 17.5GB ✓
+  Peak: 18.6GB ✓ (only 1.4GB above model — nearly optimal)
+  Swap: 0GB ✓
+
+16K decode: 16.4 tok/s (fails 25 tok/s target)
+32K decode: skipped (cascading abort working correctly)
+
+Decode speed by context (TQ3 only, no STARC yet):
+  16K: 16.4 tok/s
+  32K: ~9 tok/s (estimated)
+  65K: 5.1 tok/s (measured)
+
+Fail-fast working as designed:
+  Watchdog: metal 38GB, swap 8GB limits
+  Prefill floor: scales with context (50 @ 65K, 10 floor)
+  Decode floor: 25 tok/s at all contexts
+  Cascading: failing context skips larger
+
+Next: wire STARC decode to hit 25 tok/s target.
+```
+
+### Adaptive Memory Budget (omlx/memory_budget.py)
+```
+Live headroom calculation — uses system memory, active memory, and KV
+cache size to dynamically pick dequant chunk sizes:
+
+  System state     | Budget  | Chunk @ L=2048
+  Fresh prefill    | 17GB    | 16K (fast, saturates bandwidth)
+  Decode at 65K    | 14.6GB  | 8K
+  Decode at 256K   | 10.3GB  | 8K
+  Large queries L=8K fresh | 17GB | 4K (scales with L)
+
+The budget shrinks automatically when active KV grows, preventing OOM
+when context builds up. Background prefill of a "next context" while
+user is decoding can use the remaining 14.6GB safely.
+
+Safety factor tau=1.2 for MLX version variance. Computed ONCE per
+prefill step (not per layer) — avoids 47× overhead in hot path.
+```
+
+### KV Cache Persistence (omlx/turboquant_kv.py)
+```
+Three new features unlock stateful sessions:
+
+rewind_to(offset):
+  - O(1) context rewind, no re-prefill
+  - Just moves offset pointer, compressed storage unchanged
+  - Use case: user undoes last turn
+
+save_to_disk(path):
+  - Freezes compressed KV as .npz (5GB for 256K context)
+  - ~1.5s write on NVMe
+  - Use case: snapshot codebase context at end of session
+
+load_from_disk(path):
+  - Thaws cache from disk, no prefill needed
+  - Instant resume
+  - Use case: reload yesterday's codebase in 1.5s
+
+Combined: persistent sessions with instant context switching.
+```
+```
+
 ---
 
 ## Run It Yourself
