@@ -12,6 +12,7 @@ from typing import Optional
 import mlx.core as mx
 
 logger = logging.getLogger(__name__)
+_sdpa_call_count = 0
 
 _PATCHED = False
 
@@ -62,7 +63,13 @@ def apply_turboquant_attention_patch() -> bool:
                 # Prefill path — check if streaming mode is active
                 if getattr(real_cache, '_streaming_active', False):
                     # STREAMING MODE: keys/values are ONLY the new chunk
-                    # History is in compressed storage — use streaming attention
+                    # History is in compressed storage — no ghost concat
+                    global _sdpa_call_count
+                    _sdpa_call_count += 1
+                    logger.debug(
+                        "SDPA streaming call=%d history=%d queries_L=%d",
+                        _sdpa_call_count, real_cache._new_chunk_start, queries.shape[-2],
+                    )
                     from ..streaming_attention import (
                         streaming_tq_attention, self_attention_with_lse, _merge_outputs,
                     )
@@ -94,8 +101,17 @@ def apply_turboquant_attention_patch() -> bool:
                     )
 
                     # 3. Merge via LSE weighting (@mx.compile fused)
-                    return _merge_outputs(self_out, self_lse,
-                                          history_out, history_lse)
+                    merged = _merge_outputs(self_out, self_lse,
+                                            history_out, history_lse)
+
+                    # CRITICAL: Force evaluation of this layer's attention output.
+                    # Without this, all 47 layers' streaming results + self-attention
+                    # + MLP intermediates accumulate in the MLX graph simultaneously,
+                    # causing 53GB peak at 32K context. Each layer's attention output
+                    # is ~8K×128×32heads×2bytes = 64MB — nothing. But the graph
+                    # holding all intermediates for all layers at once is the killer.
+                    mx.eval(merged)
+                    return merged
                 else:
                     # Short history: fp16 from update_and_fetch (fast path)
                     return mx.fast.scaled_dot_product_attention(

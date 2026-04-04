@@ -240,7 +240,7 @@ def phase2_tq3_fidelity(
     del fp16_cache
 
     # TQ3 compressed
-    tq3_cache = [TurboQuantKVCache(bits=3, dequant_chunk_size=16384) for _ in range(n_layers)]
+    tq3_cache = [TurboQuantKVCache(bits=3, dequant_chunk_size=2048) for _ in range(n_layers)]
     tq3_logits = get_logits(tq3_cache)
     del tq3_cache
 

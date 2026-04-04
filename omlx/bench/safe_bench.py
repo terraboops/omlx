@@ -88,7 +88,7 @@ class BenchConfig:
     contexts: list[int] = field(default_factory=lambda: [65536, 131072])
     cache_mode: str = "turbo3"
     bits: int = 3
-    dequant_chunk_size: int = 16384
+    dequant_chunk_size: int = 2048
     max_metal_gb: float = DEFAULT_MAX_METAL_GB
     max_swap_gb: float = DEFAULT_MAX_SWAP_GB
     min_prefill_toks: float = DEFAULT_MIN_PREFILL_TOKS
@@ -304,7 +304,7 @@ def divide(a: float, b: float) -> float:
     # Create fresh cache for coherence test
     from mlx_lm.models.cache import KVCache as _KVCache
     from omlx.turboquant_kv import TurboQuantKVCache as _TQCache
-    test_cache = [_KVCache() if i == 0 else _TQCache(bits=3, dequant_chunk_size=16384)
+    test_cache = [_KVCache() if i == 0 else _TQCache(bits=3, dequant_chunk_size=2048)
                   for i in range(n_layers)]
 
     logits = model(x, cache=test_cache)
@@ -385,6 +385,8 @@ def bench_context(
             chunk_t0 = time.perf_counter()
             logits = model(x, cache=cache)
             mx.eval(logits)
+            mx.synchronize()
+            mx.clear_cache()
             chunk_elapsed = time.perf_counter() - chunk_t0
 
             processed = chunk_end

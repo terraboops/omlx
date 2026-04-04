@@ -668,7 +668,7 @@ class TurboQuantKVCache(_BaseCache):
     Prefill uses dequantize + standard mx.fast.scaled_dot_product_attention.
     """
 
-    def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 16384,
+    def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 2048,
                  min_quant_tokens: int = 512):
         self.bits = bits
         self.seed = seed
@@ -729,6 +729,11 @@ class TurboQuantKVCache(_BaseCache):
         self._ensure_codec(D)
 
         if T_new > 1:
+            logger.debug(
+                "update_and_fetch: offset=%d T_new=%d quantized=%s",
+                self.offset, T_new, self._quantized,
+            )
+
             # Below threshold: accumulate fp16, no quantization yet.
             # TQ3 codebook needs enough tokens for meaningful compression.
             # 512 tokens in fp16 is ~0.001GB per layer — negligible.
@@ -785,6 +790,11 @@ class TurboQuantKVCache(_BaseCache):
 
             # For short history: dequantize everything (fast path)
             history_tokens = self._new_chunk_start
+            logger.debug(
+                "  history=%d dequant_chunk=%d → %s",
+                history_tokens, self._dequant_chunk_size,
+                "short_dequant" if history_tokens <= self._dequant_chunk_size else "STREAMING",
+            )
             if history_tokens <= self._dequant_chunk_size:
                 all_k = self._codec.dequantize(
                     self._k_norms[:, :, :self.offset],

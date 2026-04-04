@@ -17,10 +17,13 @@ The three layers of streaming:
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Optional
 
 import mlx.core as mx
+
+logger = logging.getLogger(__name__)
 
 
 def self_attention_with_lse(
@@ -200,10 +203,22 @@ def streaming_tq_attention(
         B_size = queries.shape[0]
         q_grouped = queries.reshape(B_size, H_kv, n_groups, L, D)
 
+    n_chunks = (total_tokens + chunk_size - 1) // chunk_size
+    logger.debug(
+        "streaming_tq_attention: %d history tokens → %d chunks of %d "
+        "(B=%d H_q=%d L=%d D=%d)",
+        total_tokens, n_chunks, chunk_size, B, H_q, L, D,
+    )
+
     # Process compressed history in chunks
     for chunk_start in range(0, total_tokens, chunk_size):
         chunk_end = min(chunk_start + chunk_size, total_tokens)
         actual_len = chunk_end - chunk_start
+
+        logger.debug(
+            "  dequant chunk %d-%d (%d tokens)",
+            chunk_start, chunk_end, actual_len,
+        )
 
         # Dequantize ONE chunk — small, temporary
         K_chunk = codec.dequantize(
