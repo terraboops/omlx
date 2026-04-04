@@ -250,8 +250,10 @@ def main():
                         help="Where to write per-run JSON files")
     parser.add_argument("--timeout", type=int, default=3600,
                         help="Timeout per run (seconds)")
-    parser.add_argument("--extra", nargs="*", default=[],
-                        help="Extra CLI args to pass to every run")
+    parser.add_argument("--min-decode", type=float, default=5.0,
+                        help="Min decode tok/s for each subrun")
+    parser.add_argument("--min-prefill", type=float, default=30.0,
+                        help="Min prefill tok/s for each subrun")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -261,7 +263,11 @@ def main():
     )
 
     output_dir = Path(args.output_dir)
-    metrics = run_matrix(args.preset, args.contexts, args.extra, output_dir)
+    extra_args = [
+        "--min-decode-toks", str(args.min_decode),
+        "--min-prefill-toks", str(args.min_prefill),
+    ]
+    metrics = run_matrix(args.preset, args.contexts, extra_args, output_dir)
 
     # Save aggregated results
     results_path = output_dir / f"matrix_{args.preset}.json"
