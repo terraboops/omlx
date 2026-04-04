@@ -616,30 +616,60 @@ class TurboQuantKVCache(_BaseCache):
         self._fp16_values = None
 
     def update_and_fetch(self, keys: mx.array, values: mx.array):
-        """Store new K,V. Prefill: fp16. Decode: quantize."""
+        """Store new K,V with streaming quantization during prefill.
+
+        Each prefill chunk is quantized immediately. For attention, the
+        compressed history is dequantized into a temporary buffer.
+        Memory: model + (compressed_history × 3-bit) + (2 × current_chunk × fp16).
+        """
         B, H, T_new, D = keys.shape
         self._ensure_codec(D)
 
         if T_new > 1:
-            # Prefill: accumulate fp16 (no quantize overhead, full quality)
+            # Streaming prefill: quantize this chunk and store compressed
+            pw = _packed_width(D, self.bits)
+
+            # Quantize the new chunk
+            k_norms, k_packed = self._codec.quantize(keys)
+            v_norms, v_packed = self._codec.quantize(values)
+
             new_end = self.offset + T_new
-            if self._fp16_keys is None:
+
+            # Initialize or extend compressed storage
+            if self._k_norms is None:
                 alloc = ((new_end + self._step - 1) // self._step) * self._step
-                self._fp16_keys = mx.zeros((B, H, alloc, D), dtype=keys.dtype)
-                self._fp16_values = mx.zeros((B, H, alloc, D), dtype=values.dtype)
-            elif new_end > self._fp16_keys.shape[2]:
+                self._k_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+                self._k_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+                self._v_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+                self._v_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+            elif new_end > self._k_norms.shape[2]:
                 alloc = ((new_end + self._step - 1) // self._step) * self._step
-                pad = alloc - self._fp16_keys.shape[2]
-                self._fp16_keys = mx.concatenate([self._fp16_keys, mx.zeros((B, H, pad, D), dtype=keys.dtype)], axis=2)
-                self._fp16_values = mx.concatenate([self._fp16_values, mx.zeros((B, H, pad, D), dtype=values.dtype)], axis=2)
-            self._fp16_keys[:, :, self.offset:new_end] = keys
-            self._fp16_values[:, :, self.offset:new_end] = values
+                pad = alloc - self._k_norms.shape[2]
+                self._k_norms = mx.concatenate([self._k_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
+                self._k_packed = mx.concatenate([self._k_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
+                self._v_norms = mx.concatenate([self._v_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
+                self._v_packed = mx.concatenate([self._v_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
+
+            # Store compressed
+            self._k_norms[:, :, self.offset:new_end] = k_norms
+            self._k_packed[:, :, self.offset:new_end] = k_packed
+            self._v_norms[:, :, self.offset:new_end] = v_norms
+            self._v_packed[:, :, self.offset:new_end] = v_packed
             self.offset = new_end
-            return self._fp16_keys[:, :, :self.offset], self._fp16_values[:, :, :self.offset]
+            self._quantized = True
+
+            # Dequantize ALL history for attention (temporary — freed after attention)
+            all_k = self._codec.dequantize(
+                self._k_norms[:, :, :self.offset],
+                self._k_packed[:, :, :self.offset],
+            )
+            all_v = self._codec.dequantize(
+                self._v_norms[:, :, :self.offset],
+                self._v_packed[:, :, :self.offset],
+            )
+            return all_k, all_v
         else:
-            # Decode: quantize prefill buffer on first decode token
-            if not self._quantized:
-                self._quantize_fp16_buffer()
+            # Decode: KV is already quantized from streaming prefill
 
             k_norms, k_packed = self._codec.quantize(keys)
             v_norms, v_packed = self._codec.quantize(values)
