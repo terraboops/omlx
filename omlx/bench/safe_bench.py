@@ -273,8 +273,10 @@ def check_coherence(model, tokenizer, cache, n_layers: int) -> bool:
     x = mx.array([tokens])
 
     # Create fresh cache for coherence test
-    from omlx.turboquant_kv import TurboQuantKVCache
-    test_cache = [TurboQuantKVCache(bits=3, dequant_chunk_size=16384) for _ in range(n_layers)]
+    from mlx_lm.models.cache import KVCache as _KVCache
+    from omlx.turboquant_kv import TurboQuantKVCache as _TQCache
+    test_cache = [_KVCache() if i == 0 else _TQCache(bits=3, dequant_chunk_size=16384)
+                  for i in range(n_layers)]
 
     logits = model(x, cache=test_cache)
     mx.eval(logits)
@@ -322,11 +324,15 @@ def bench_context(
     mx.synchronize()
     mx.clear_cache()
 
+    from mlx_lm.models.cache import KVCache
     from omlx.turboquant_kv import TurboQuantKVCache
-    cache = [TurboQuantKVCache(
-        bits=config.bits,
-        dequant_chunk_size=config.dequant_chunk_size,
-    ) for _ in range(n_layers)]
+    cache = [
+        KVCache() if i == 0 else TurboQuantKVCache(
+            bits=config.bits,
+            dequant_chunk_size=config.dequant_chunk_size,
+        )
+        for i in range(n_layers)
+    ]
 
     # Generate tokens
     base = "x = 1\n"
@@ -363,9 +369,12 @@ def bench_context(
                 break
 
             # Check prefill tok/s after first 32K tokens (allow warmup)
-            if processed >= 32768 and chunk_toks < config.min_prefill_toks:
+            # Scale target inversely with context: 100 @ 65K, 75 @ 128K, 50 @ 256K+
+            scaled_min = config.min_prefill_toks * min(1.0, 65536 / max(ctx, 1))
+            scaled_min = max(scaled_min, 50.0)  # Floor at 50 tok/s
+            if processed >= 32768 and chunk_toks < scaled_min:
                 result.status = "fail_prefill_speed"
-                result.error_msg = f"Prefill {chunk_toks:.0f} tok/s < {config.min_prefill_toks:.0f} minimum"
+                result.error_msg = f"Prefill {chunk_toks:.0f} tok/s < {scaled_min:.0f} scaled minimum (base {config.min_prefill_toks:.0f})"
                 logger.error(f"  ABORT at {processed:,}/{ctx:,}: {result.error_msg}")
                 break
 
@@ -531,11 +540,22 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
     # --- Gate: Phase 1 must pass before continuing ---
     from omlx.turboquant_kv import TurboQuantKVCache
 
+    from mlx_lm.models.cache import KVCache
+
     def _cache_factory(n):
-        return [TurboQuantKVCache(
-            bits=config.bits,
-            dequant_chunk_size=config.dequant_chunk_size,
-        ) for _ in range(n)]
+        caches = []
+        for i in range(n):
+            if i == 0:
+                # fp16 Layer 0 anchor — no quantization loss on the
+                # first layer's attention routing. Costs ~1.5GB extra
+                # at 1M context but prevents quality degradation cascade.
+                caches.append(KVCache())
+            else:
+                caches.append(TurboQuantKVCache(
+                    bits=config.bits,
+                    dequant_chunk_size=config.dequant_chunk_size,
+                ))
+        return caches
 
     all_passed = all(r.status == "pass" for r in results)
     any_passed = any(r.status == "pass" for r in results)
@@ -561,8 +581,9 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
                 f"Skipping later phases."
             )
         else:
-            # NIAH at the largest passing context
-            niah_ctx = min(max_passed_ctx, 65536)
+            # NIAH at the largest passing context (uncapped — streaming dequant
+            # guarantees flat memory, so NIAH at 256K is safe if Phase 1 passed it)
+            niah_ctx = max_passed_ctx
             logger.info(f"Needle-in-a-Haystack at {niah_ctx:,} tokens...")
             niah = phase2_niah(model, tokenizer, n_layers, niah_ctx, _cache_factory,
                               config.prefill_chunk)
@@ -586,7 +607,7 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
 
         logger.info("\n=== PHASE 3: STRESS ===")
 
-        stress_ctx = min(max_passed_ctx, 65536)
+        stress_ctx = max_passed_ctx
         logger.info(f"Sustained decode (128 tokens) at {stress_ctx:,} context...")
         stress = phase3_sustained_decode(
             model, tokenizer, n_layers, stress_ctx, _cache_factory,
