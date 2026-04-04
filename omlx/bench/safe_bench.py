@@ -100,6 +100,19 @@ class BenchConfig:
     run_phase3: bool = True   # Stress: sustained decode + memory leak
     run_phase4: bool = True   # Intelligence: quick EvalPlus + setup guide
 
+    # Hypercar feature flags (all default ON)
+    use_fp16_layer0: bool = True          # fp16 layer 0 anchor
+    use_vertical_eval: bool = True        # mx.eval every 8 layers
+    use_streaming_dequant: bool = True    # Online softmax for long history
+    use_adaptive_budget: bool = True      # Dynamic chunk sizing
+    min_quant_tokens: int = 512           # Stay fp16 below this threshold
+    # Decoder features (future)
+    use_medusa: bool = False              # Requires distilled draft heads
+    medusa_num_heads: int = 3
+    medusa_distill_steps: int = 0         # 0 = use random (bad), 200+ = distill
+    use_prompt_lookup: bool = False       # N-gram lookup decoding
+    use_starc: bool = False               # Sparse attention (DROPPED — slower)
+
 
 # ---------------------------------------------------------------------------
 # Lock file — only one benchmark at a time
@@ -382,16 +395,16 @@ def bench_context(
             chunk = tokens[chunk_start:chunk_end]
             x = mx.array([chunk])
 
-            # Set adaptive dequant chunk hint ONCE per prefill step.
-            # All 47 layers will share this chunk size (avoids 47× overhead).
-            from omlx.memory_budget import compute_budget, compute_dequant_chunk_size
-            from omlx.streaming_attention import set_chunk_hint
-            budget = compute_budget(model_gb=17.2, active_kv_gb=0, decoding=False)
-            adaptive = compute_dequant_chunk_size(
-                query_len=len(chunk), num_query_heads=32, head_dim=128,
-                num_layers=48, budget=budget,
-            )
-            set_chunk_hint(adaptive)
+            # Adaptive dequant chunk hint (if enabled) — set ONCE per step.
+            if config.use_adaptive_budget:
+                from omlx.memory_budget import compute_budget, compute_dequant_chunk_size
+                from omlx.streaming_attention import set_chunk_hint
+                budget = compute_budget(model_gb=17.2, active_kv_gb=0, decoding=False)
+                adaptive = compute_dequant_chunk_size(
+                    query_len=len(chunk), num_query_heads=32, head_dim=128,
+                    num_layers=48, budget=budget,
+                )
+                set_chunk_hint(adaptive)
 
             chunk_t0 = time.perf_counter()
             logits = model(x, cache=cache)
@@ -525,12 +538,17 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
     from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
 
-    from omlx.patches.vertical_eval import apply_vertical_eval_patch
-
     apply_turboquant_attention_patch()
     model, tokenizer = load(config.model_path)
     apply_prefill_last_logit_patch(model)
-    apply_vertical_eval_patch(model)
+
+    if config.use_vertical_eval:
+        from omlx.patches.vertical_eval import apply_vertical_eval_patch
+        apply_vertical_eval_patch(model)
+        logger.info("Feature: vertical_eval ENABLED (every 8 layers)")
+    else:
+        logger.warning("Feature: vertical_eval DISABLED (may cause 45GB peaks)")
+
     n_layers = model.args.num_hidden_layers
 
     model_gb = mx.get_active_memory() / 1e9
@@ -592,7 +610,7 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
     def _cache_factory(n):
         caches = []
         for i in range(n):
-            if i == 0:
+            if i == 0 and config.use_fp16_layer0:
                 # fp16 Layer 0 anchor — no quantization loss on the
                 # first layer's attention routing. Costs ~1.5GB extra
                 # at 1M context but prevents quality degradation cascade.
@@ -601,8 +619,20 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
                 caches.append(TurboQuantKVCache(
                     bits=config.bits,
                     dequant_chunk_size=config.dequant_chunk_size,
+                    min_quant_tokens=config.min_quant_tokens,
                 ))
         return caches
+
+    logger.info("Features:")
+    logger.info(f"  fp16_layer0:       {config.use_fp16_layer0}")
+    logger.info(f"  vertical_eval:     {config.use_vertical_eval}")
+    logger.info(f"  adaptive_budget:   {config.use_adaptive_budget}")
+    logger.info(f"  streaming_dequant: {config.use_streaming_dequant}")
+    logger.info(f"  min_quant_tokens:  {config.min_quant_tokens}")
+    logger.info(f"  medusa:            {config.use_medusa} (heads={config.medusa_num_heads}, distill={config.medusa_distill_steps})")
+    logger.info(f"  prompt_lookup:     {config.use_prompt_lookup}")
+    logger.info(f"  dequant_chunk:     {config.dequant_chunk_size}")
+    logger.info(f"  prefill_chunk:     {config.prefill_chunk}")
 
     all_passed = all(r.status == "pass" for r in results)
     any_passed = any(r.status == "pass" for r in results)
@@ -770,6 +800,23 @@ def main():
         "--phases", nargs="+", type=int, default=[1, 2, 3, 4],
         help="Which phases to run (default: 1 2 3 4)",
     )
+    # Hypercar feature flags
+    parser.add_argument("--no-fp16-layer0", action="store_true",
+                        help="Disable fp16 layer 0 anchor (all layers TQ3)")
+    parser.add_argument("--no-vertical-eval", action="store_true",
+                        help="Disable mx.eval per 8 layers (causes 45GB peaks)")
+    parser.add_argument("--no-adaptive-budget", action="store_true",
+                        help="Use fixed dequant_chunk_size (no adaptation)")
+    parser.add_argument("--min-quant-tokens", type=int, default=512,
+                        help="Stay fp16 below this threshold (default: 512)")
+    parser.add_argument("--use-medusa", action="store_true",
+                        help="Enable Medusa draft heads (requires --medusa-distill)")
+    parser.add_argument("--medusa-heads", type=int, default=3,
+                        help="Number of Medusa draft heads (default: 3)")
+    parser.add_argument("--medusa-distill", type=int, default=0,
+                        help="Medusa distillation steps (0=random/slow, 200+=trained)")
+    parser.add_argument("--use-prompt-lookup", action="store_true",
+                        help="Enable n-gram prompt lookup decoding")
     parser.add_argument(
         "--json", type=str, default=None,
         help="Write results to JSON file",
@@ -798,6 +845,14 @@ def main():
         run_phase2=2 in args.phases,
         run_phase3=3 in args.phases,
         run_phase4=4 in args.phases,
+        use_fp16_layer0=not args.no_fp16_layer0,
+        use_vertical_eval=not args.no_vertical_eval,
+        use_adaptive_budget=not args.no_adaptive_budget,
+        min_quant_tokens=args.min_quant_tokens,
+        use_medusa=args.use_medusa,
+        medusa_num_heads=args.medusa_heads,
+        medusa_distill_steps=args.medusa_distill,
+        use_prompt_lookup=args.use_prompt_lookup,
     )
 
     results = run_benchmark(config)

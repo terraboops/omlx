@@ -162,18 +162,28 @@ def starc_tq_decode_attention(
     scale: float,
     mask=None,
 ) -> mx.array:
-    """Decode attention using STARC subset selection + TQ dequantize.
+    """Decode attention using STARC mask + TQ dequantize.
 
-    Replaces the full-context decode_attention with:
-      1. STARC picks ~15% of tokens via cluster selection
-      2. Dequantize only those tokens from compressed storage
-      3. Run standard Flash Attention on the subset
+    GPU-resident approach:
+      1. STARC picks cluster mask (which clusters to attend to)
+      2. Expand cluster mask to token mask via assignments
+      3. Dequantize FULL compressed KV (same as baseline)
+      4. Mask scores: unselected tokens get -inf → zero attention weight
 
-    This is O(budget) instead of O(context) per decode step.
+    This keeps all tensor shapes static, no CPU sync needed.
+    Tradeoff: we dequantize all tokens (same as baseline) but the
+    attention computation is no slower than baseline. The win comes
+    from Flash Attention efficiency — we don't save dequant cost,
+    but we also don't pay for gather + variable-length overhead.
+
+    For TRUE speedup we'd need gather — requires Metal kernel changes.
     """
+    from omlx.patches.starc_attention import _select_clusters_mask
+
     state = starc_manager.layers[layer_idx]
-    if not state.initialized or cache.offset < starc_manager.min_seq_len:
-        # Fall back to full decode
+    if (not state.initialized or cache.offset < starc_manager.min_seq_len
+            or state.centroids is None or state.assignments is None):
+        # Fall back to full decode (fused kernel, compressed path)
         return cache.decode_attention(
             queries,
             keys_state=(cache._k_norms[:, :, :cache.offset],
@@ -183,41 +193,62 @@ def starc_tq_decode_attention(
             scale=scale, mask=mask,
         )
 
-    # STARC subset selection
-    subset = starc_manager.select_subset(layer_idx, queries, cache.offset)
-    if subset is None or subset.shape[0] == 0:
-        # STARC unavailable — fall back
-        return cache.decode_attention(
-            queries,
-            keys_state=(cache._k_norms[:, :, :cache.offset],
-                        cache._k_packed[:, :, :cache.offset]),
-            values_state=(cache._v_norms[:, :, :cache.offset],
-                          cache._v_packed[:, :, :cache.offset]),
-            scale=scale, mask=mask,
-        )
-
-    # Gather compressed KV at subset indices
-    # subset: (budget,) int32 — sorted, deduplicated
-    k_norms_sub = cache._k_norms[:, :, subset]  # (B, H_kv, budget)
-    k_packed_sub = cache._k_packed[:, :, subset]  # (B, H_kv, budget, pw)
-    v_norms_sub = cache._v_norms[:, :, subset]
-    v_packed_sub = cache._v_packed[:, :, subset]
-
-    # Dequantize only the subset — much smaller than full context
-    k_sub = cache._codec.dequantize(k_norms_sub, k_packed_sub)  # (B, H_kv, budget, D)
-    v_sub = cache._codec.dequantize(v_norms_sub, v_packed_sub)
-
-    # GQA expansion for standard SDPA
     B, H_q, L, D = queries.shape
-    H_kv = k_sub.shape[1]
-    if H_q > H_kv:
-        n_groups = H_q // H_kv
-        k_sub = mx.repeat(k_sub, n_groups, axis=1)
-        v_sub = mx.repeat(v_sub, n_groups, axis=1)
+    H_kv = state.n_kv_heads
+    T = cache.offset
+    K = state.centroids.shape[1]
+    n_groups = H_q // H_kv
 
-    # Standard Flash Attention on the subset (fast!)
+    # Average query over GQA group → (H_kv, 1, D)
+    q = queries[0].reshape(H_kv, n_groups, 1, D).mean(axis=1)  # (H_kv, 1, D)
+
+    # GPU-resident: score clusters, sort, take top K_select
+    # Fixed number of clusters — keeps all shapes static.
+    scores_clust = (q @ state.centroids.swapaxes(-1, -2)).squeeze(1)  # (H_kv, K)
+    sorted_cluster_ids = mx.argsort(-scores_clust, axis=-1)  # (H_kv, K)
+
+    # Select top N clusters to approximate budget_pct coverage
+    # If budget_pct=0.15 and K=64, average cluster has T/K tokens → select 10 clusters
+    n_select = max(1, int(K * starc_manager.budget_pct))
+
+    # Build per-token mask: for each token, is its cluster in top-N?
+    # For each head: gather the top n_select cluster IDs, then check if each token's
+    # cluster is in that set. Use broadcasting equality.
+    top_clusters = sorted_cluster_ids[:, :n_select]  # (H_kv, n_select)
+
+    # assignments: (H_kv, T), top_clusters: (H_kv, n_select)
+    # token_mask[h, t] = any(assignments[h, t] == top_clusters[h, :])
+    assignments_exp = mx.expand_dims(state.assignments, -1)  # (H_kv, T, 1)
+    top_exp = mx.expand_dims(top_clusters, 1)  # (H_kv, 1, n_select)
+    matches = (assignments_exp == top_exp)  # (H_kv, T, n_select)
+    token_mask = mx.any(matches, axis=-1)  # (H_kv, T), bool
+
+    # Dequantize full KV (cost = full dequant per decode — this is the baseline cost)
+    k_full = cache._codec.dequantize(
+        cache._k_norms[:, :, :T], cache._k_packed[:, :, :T],
+    )  # (B, H_kv, T, D)
+    v_full = cache._codec.dequantize(
+        cache._v_norms[:, :, :T], cache._v_packed[:, :, :T],
+    )
+
+    # Expand mask for SDPA: (H_kv, T) → (1, H_kv, 1, T) → GQA-repeat → (B, H_q, 1, T)
+    mask_exp = mx.expand_dims(mx.expand_dims(token_mask, 0), 2)  # (1, H_kv, 1, T)
+    # Convert bool mask to additive mask (-inf for masked positions)
+    attn_mask = mx.where(
+        mask_exp,
+        mx.array(0.0, dtype=queries.dtype),
+        mx.array(-1e9, dtype=queries.dtype),
+    )
+
+    # GQA expand KV to H_q heads for mx.fast.scaled_dot_product_attention
+    if n_groups > 1:
+        k_full = mx.repeat(k_full, n_groups, axis=1)
+        v_full = mx.repeat(v_full, n_groups, axis=1)
+        attn_mask = mx.repeat(attn_mask, n_groups, axis=1)
+
+    # Use fused Flash Attention with mask (still O(T) but fused, fast)
     output = mx.fast.scaled_dot_product_attention(
-        queries, k_sub.astype(queries.dtype), v_sub.astype(queries.dtype),
-        scale=scale, mask=None,  # No mask — STARC only selects past tokens
+        queries, k_full.astype(queries.dtype), v_full.astype(queries.dtype),
+        scale=scale, mask=attn_mask,
     )
     return output

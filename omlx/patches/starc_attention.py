@@ -173,72 +173,70 @@ def _build_csr_index(
     return sorted_indices, cluster_offsets, cluster_sizes
 
 
-def _select_clusters(
+def _select_clusters_mask(
     query: mx.array,
     centroids: mx.array,
     cluster_sizes: mx.array,
-    sorted_indices: mx.array,
-    cluster_offsets: mx.array,
     budget: int,
 ) -> mx.array:
-    """Select top clusters until budget is reached.
+    """GPU-resident cluster selection → returns per-cluster bool mask.
+
+    Instead of gathering scattered token indices (which requires CPU
+    sync for variable-length output), returns a boolean mask over
+    clusters. The caller uses this mask to build the subset via
+    matrix operations that keep static shapes.
 
     Args:
-        query: (H_kv, 1, D) query vector (averaged over GQA group)
-        centroids: (H_kv, K, D) cluster centroids
+        query: (H_kv, 1, D) averaged query
+        centroids: (H_kv, K, D) cluster centroids (L2-normalized)
         cluster_sizes: (H_kv, K) tokens per cluster
-        sorted_indices: (H_kv, T) sorted token indices
-        cluster_offsets: (H_kv, K+1) CSR offsets
-        budget: maximum tokens to select
+        budget: target number of tokens to select per head
 
     Returns:
-        selected_indices: (budget,) token indices (union across heads,
-            padded with -1 if fewer than budget tokens selected)
+        cluster_mask: (H_kv, K) bool, True for selected clusters
     """
     H, K, D = centroids.shape
 
-    # Score clusters: query @ centroids^T → (H, 1, K) → (H, K)
+    # Score clusters (GPU): query @ centroids^T
     scores = (query @ centroids.swapaxes(-1, -2)).squeeze(1)  # (H, K)
 
-    # Sort clusters by score descending (per head)
+    # Sort clusters by score descending (GPU)
     sorted_cluster_ids = mx.argsort(-scores, axis=-1)  # (H, K)
 
-    # Greedy selection: accumulate clusters until budget reached
-    # Process on CPU/numpy for the greedy loop (K is small, ~64-256)
-    sorted_cluster_ids_np = np.array(sorted_cluster_ids)
-    cluster_sizes_np = np.array(cluster_sizes)
-    sorted_indices_np = np.array(sorted_indices)
-    cluster_offsets_np = np.array(cluster_offsets)
+    # Gather sizes in sorted order (GPU)
+    sorted_sizes = mx.take_along_axis(
+        cluster_sizes, sorted_cluster_ids, axis=-1
+    )  # (H, K)
 
-    all_selected = set()
-    for h in range(H):
-        tokens_selected = 0
-        for rank in range(K):
-            c = sorted_cluster_ids_np[h, rank]
-            c_size = cluster_sizes_np[h, c]
-            if tokens_selected + c_size > budget and tokens_selected > 0:
-                # Partial: take what fits
-                remaining = budget - tokens_selected
-                start = cluster_offsets_np[h, c]
-                for j in range(remaining):
-                    all_selected.add(int(sorted_indices_np[h, start + j]))
-                break
-            # Full cluster
-            start = cluster_offsets_np[h, c]
-            end = cluster_offsets_np[h, c + 1]
-            for j in range(start, end):
-                all_selected.add(int(sorted_indices_np[h, j]))
-            tokens_selected += c_size
-            if tokens_selected >= budget:
-                break
+    # Cumulative sum of token counts (GPU)
+    cum_sizes = mx.cumsum(sorted_sizes, axis=-1)  # (H, K)
 
-    # Return sorted indices — no padding needed.
-    # Variable-length output is fine: mx.take works with any size.
-    selected = sorted(all_selected)
-    if len(selected) > budget:
-        selected = selected[:budget]
+    # Shift right by 1 to get "tokens BEFORE this cluster"
+    # So we always include at least the top cluster
+    shifted = mx.concatenate(
+        [mx.zeros((H, 1), dtype=cum_sizes.dtype), cum_sizes[:, :-1]], axis=-1
+    )  # (H, K)
 
-    return mx.array(selected, dtype=mx.int32)
+    # Select clusters where prefix sum < budget
+    rank_mask = shifted < budget  # (H, K), True for clusters to keep
+
+    # Scatter mask back to original cluster order
+    # cluster_mask[h, c] = True if c appears in top-ranked selection
+    # We need to map from sorted order back to cluster ID
+    # Build one-hot matrix: for each rank, which cluster is it?
+    # Then sum by rank to get per-cluster selection bit
+    # (H, K) → use take_along_axis reverse
+    cluster_mask = mx.zeros((H, K), dtype=mx.bool_)
+    # For each head, mark sorted_cluster_ids[h, r] as selected if rank_mask[h, r]
+    # Use scatter via one-hot + any
+    one_hot = (
+        mx.expand_dims(sorted_cluster_ids, -1) == mx.arange(K)
+    ).astype(mx.int32)  # (H, K_rank, K_cluster)
+    # Weight by rank_mask — (H, K_rank) → expand
+    weighted = one_hot * mx.expand_dims(rank_mask.astype(mx.int32), -1)
+    cluster_mask = weighted.sum(axis=1) > 0  # (H, K)
+
+    return cluster_mask
 
 
 # ---------------------------------------------------------------------------
