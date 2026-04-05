@@ -130,18 +130,20 @@ def medusa_tq_generate(
             stats.total_tokens += 1
             stats.accepted_draft_tokens += 1
 
-        # 6. If a draft was rejected, take the model's prediction at that position
-        if accepted < K and len(generated) < max_tokens:
-            # Position `accepted` is where the rejection happened
-            # model_preds[accepted] is the correct token model wanted to predict
-            mp = int(model_preds[accepted].item())
-            generated.append(mp)
-            stats.total_tokens += 1
-
-        # 7. Set up next iteration: use the last accepted position's outputs
-        # Position to read from:
-        #   - If all K accepted: read position K (the K-th draft)
-        #   - If accepted=a<K: read position a (where model's prediction replaces draft)
+        # 6. Set up next iteration.
+        # logits[accepted] is the model's prediction AFTER seeing
+        # main_token + draft[0..accepted-1]. Its argmax is the token
+        # that REPLACES draft_tokens[accepted] (if rejected) OR continues
+        # after all drafts (if accepted==K).
+        #
+        # Either way, the NEXT iteration samples main_token from these
+        # logits. So we do NOT append model_preds[accepted] here — the
+        # next loop iteration handles it via the main_token sampling.
+        #
+        # Position accepted is the correct read position:
+        #   - If all K accepted: logits[K] predicts AFTER all drafts
+        #   - If accepted<K: logits[accepted] is the model's corrected
+        #     prediction at the rejection point
         read_pos = accepted
         hidden = hidden[:, read_pos:read_pos+1, :]
         logits = logits[:, read_pos:read_pos+1, :]
