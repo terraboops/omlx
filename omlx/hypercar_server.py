@@ -43,6 +43,71 @@ import sys
 import mlx.core as mx
 
 
+def apply_progress_logging(log_every: int = 8) -> None:
+    """Monkey-patch mlx_lm.generate.stream_generate to log per-token progress.
+
+    Every `log_every` generated tokens, emits:
+      - Token count, decode tok/s, running wall time
+      - Prefill tok/s (once, at start)
+      - Total memory (Metal)
+    """
+    import time
+    import mlx_lm.generate as gen_mod
+
+    original = gen_mod.stream_generate
+    _logger = logging.getLogger("hypercar.generate")
+
+    def logged_stream_generate(model, tokenizer, prompt, **kwargs):
+        # Log prompt size upfront
+        prompt_len = len(prompt) if hasattr(prompt, '__len__') else 0
+        t_start = time.perf_counter()
+        t_first_token = None
+        n_tokens = 0
+
+        _logger.info(f"🔵 Generation starting: {prompt_len} prompt tokens")
+
+        for result in original(model, tokenizer, prompt, **kwargs):
+            if t_first_token is None:
+                t_first_token = time.perf_counter()
+                ttft = t_first_token - t_start
+                prefill_toks = prompt_len / ttft if ttft > 0 else 0
+                _logger.info(
+                    f"🟢 First token @ {ttft:.2f}s (prefill: {prefill_toks:.0f} tok/s)"
+                )
+
+            n_tokens += 1
+            if n_tokens % log_every == 0:
+                elapsed_decode = time.perf_counter() - t_first_token
+                decode_toks = n_tokens / elapsed_decode if elapsed_decode > 0 else 0
+                total_elapsed = time.perf_counter() - t_start
+                _logger.info(
+                    f"⚡ gen={n_tokens:>4d} | "
+                    f"decode={decode_toks:>5.1f} tok/s | "
+                    f"total={total_elapsed:>5.1f}s | "
+                    f"mem={mx.get_active_memory()/1e9:.1f}GB"
+                )
+
+            yield result
+
+        # Final stats
+        total_time = time.perf_counter() - t_start
+        if t_first_token and n_tokens > 0:
+            decode_time = time.perf_counter() - t_first_token
+            final_toks = n_tokens / decode_time if decode_time > 0 else 0
+            _logger.info(
+                f"🏁 DONE: {n_tokens} tokens in {total_time:.1f}s "
+                f"({final_toks:.1f} tok/s decode)"
+            )
+
+    gen_mod.stream_generate = logged_stream_generate
+    # Also patch the imported reference in server
+    try:
+        import mlx_lm.server as server_mod
+        server_mod.stream_generate = logged_stream_generate
+    except ImportError:
+        pass
+
+
 def apply_hypercar_patches(fp16_layers: int = 1, bits: int = 3,
                            dequant_chunk_size: int = 2048,
                            min_quant_tokens: int = 512) -> None:
@@ -191,6 +256,8 @@ def main():
         dequant_chunk_size=args.dequant_chunk,
         min_quant_tokens=args.min_quant_tokens,
     )
+    apply_progress_logging(log_every=8)
+    logger.info("Progress logging enabled (every 8 generated tokens)")
 
     # Build sys.argv for mlx_lm.server's argparse
     server_argv = [
