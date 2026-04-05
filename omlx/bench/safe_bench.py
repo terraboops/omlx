@@ -106,6 +106,7 @@ class BenchConfig:
 
     # Hypercar feature flags (all default ON)
     use_fp16_layer0: bool = True          # fp16 layer 0 anchor
+    fp16_layers: int = 16                 # Number of fp16 layers (was 1, needs 16 for quality)
     use_vertical_eval: bool = True        # mx.eval every 8 layers
     use_streaming_dequant: bool = True    # Online softmax for long history
     use_adaptive_budget: bool = True      # Dynamic chunk sizing
@@ -637,12 +638,14 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
     from mlx_lm.models.cache import KVCache
 
     def _cache_factory(n):
+        # First `fp16_layers` layers stay fp16 for quality.
+        # At fp16_layers=1 (old default), TQ3 produces garbage at 2K+ context.
+        # At fp16_layers=16, quality matches fp16 baseline at 2.5K context.
+        # The fp16_layer0 flag is legacy (sets fp16_layers=1 when flag off via=0).
+        fp16_count = config.fp16_layers if config.use_fp16_layer0 else 0
         caches = []
         for i in range(n):
-            if i == 0 and config.use_fp16_layer0:
-                # fp16 Layer 0 anchor — no quantization loss on the
-                # first layer's attention routing. Costs ~1.5GB extra
-                # at 1M context but prevents quality degradation cascade.
+            if i < fp16_count:
                 caches.append(KVCache())
             else:
                 caches.append(TurboQuantKVCache(
@@ -653,7 +656,7 @@ def run_benchmark(config: BenchConfig) -> list[BenchResult]:
         return caches
 
     logger.info("Features:")
-    logger.info(f"  fp16_layer0:       {config.use_fp16_layer0}")
+    logger.info(f"  fp16_layers:       {config.fp16_layers if config.use_fp16_layer0 else 0}")
     logger.info(f"  vertical_eval:     {config.use_vertical_eval}")
     logger.info(f"  adaptive_budget:   {config.use_adaptive_budget}")
     logger.info(f"  streaming_dequant: {config.use_streaming_dequant}")
@@ -832,6 +835,8 @@ def main():
     # Hypercar feature flags
     parser.add_argument("--no-fp16-layer0", action="store_true",
                         help="Disable fp16 layer 0 anchor (all layers TQ3)")
+    parser.add_argument("--fp16-layers", type=int, default=16,
+                        help="Number of leading fp16 layers (default: 16, was 1)")
     parser.add_argument("--no-vertical-eval", action="store_true",
                         help="Disable mx.eval per 8 layers (causes 45GB peaks)")
     parser.add_argument("--no-adaptive-budget", action="store_true",
@@ -875,6 +880,7 @@ def main():
         run_phase3=3 in args.phases,
         run_phase4=4 in args.phases,
         use_fp16_layer0=not args.no_fp16_layer0,
+        fp16_layers=args.fp16_layers,
         use_vertical_eval=not args.no_vertical_eval,
         use_adaptive_budget=not args.no_adaptive_budget,
         min_quant_tokens=args.min_quant_tokens,
