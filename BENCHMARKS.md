@@ -381,6 +381,78 @@ load_from_disk(path):
 Combined: persistent sessions with instant context switching.
 ```
 
+### Run 12: Long-Context Quality Crisis + fp16_layers=16 Fix
+```
+Date: 2026-04-04 (evening)
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit
+
+CRITICAL FINDING: TQ3 with only 1 fp16 layer produces garbage at
+2.5K context. Earlier "100% intelligence" tests used short prompts
+(~50 tokens) that didn't exercise this failure mode.
+
+factorial completion at 2.5K tokens:
+  fp16 baseline:           "if n == 0: return 1 else: n * factorial(n-1)" ✓
+  TQ3 +  1 fp16 layer:     "def factorial(n: int): int): return n * n * x" ✗
+  TQ3 +  4 fp16 layers:    "# Assume n >= 0 (degenerate repetition)" ✗
+  TQ3 +  8 fp16 layers:    "# The function above..." (confused) ⚠
+  TQ3 + 16 fp16 layers:    "return math.factorial(n)" ✓ CORRECT
+  TQ4 +  1 fp16 layer:     "return" ✗ (4-bit didn't help)
+
+Root cause: our Givens rotation + random codebook doesn't match
+real KV distributions. Need more fp16 layers to preserve attention
+routing at realistic contexts.
+
+Memory impact (16 fp16 layers, 32 TQ3):
+    65K: 2.58GB KV  → 19.8GB total ✓
+   128K: 5.17GB KV  → 22.4GB total ✓
+   256K: 10.3GB KV  → 27.5GB total ✓ (within 48GB budget)
+     1M: 41.3GB KV  → 58.5GB total ✗ (over budget — 1M dream dies)
+
+Benchmark at 8K with fp16_layers=16:
+  Prefill: 635 tok/s ✓
+  Decode: 12.1 tok/s
+  Peak: 18.4GB
+
+Benchmark at 16K with fp16_layers=16:
+  Prefill: 470 tok/s ✓
+  Decode: 9.3 tok/s (too slow — memory bandwidth limit)
+  Peak: 18.6GB
+
+Default changed: fp16_layers now 16 (was 1).
+New flag: --fp16-layers N to tune the hybrid ratio.
+```
+
+### Run 13: Medusa Distillation (works mechanically, needs code data)
+```
+Date: 2026-04-04 (evening)
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit
+
+Distillation run (200 steps on default prose calibration):
+  Time: 165s
+  Loss: 13.93 → 0.0000 (overfit warning)
+  Calibration text: ~8KB Wikipedia prose (519 tokens)
+
+Fixed a double-append bug in medusa_tq_decode.py:
+  When accepted<K, model_preds[accepted] was being added AND next
+  iteration was sampling argmax(logits[accepted]) = same token.
+  Result: "if if the the fibonacci fibonacci" repetitions.
+  Fixed: only next iteration's main_token sampling handles correction.
+
+Post-fix results (3 heads, fibonacci prompt):
+  Baseline greedy: 76.3 tok/s (good output)
+  Medusa: 30.1 tok/s, 16% accept rate
+  Output: degenerate ("algorithm algorithm algorithm...")
+  Speedup: 0.39x (SLOWER due to rejections)
+
+Conclusion: infrastructure works, but distillation on prose ≠ code.
+Needs proper training setup with:
+  - Code-focused calibration (The Stack, local repos)
+  - Validation set + early stopping
+  - Larger training data (>10K tokens)
+
+Deferred as production work.
+```
+
 ### Run 11: Intelligence Validation + Feature Matrix
 ```
 Date: 2026-04-04 (PM)
