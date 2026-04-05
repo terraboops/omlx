@@ -592,6 +592,172 @@ def _tq_sdpa_2pass_2_kernel():
     )
 
 
+@lru_cache(maxsize=None)
+def _tq_sdpa_prefill_kernel():
+    """Fused TQ SDPA for L>1 queries (prefill streaming attention).
+
+    Key change from decode kernel: grid.y now encodes (batch × L × GQA).
+    All L queries for each head/batch are processed in a single dispatch.
+    """
+    source = r"""
+        auto simd_lid = thread_index_in_simdgroup;
+        auto kv_head = threadgroup_position_in_grid.x;
+        auto combined_idx = threadgroup_position_in_grid.y;
+        auto block_idx = threadgroup_position_in_grid.z;
+        auto gqa_factor = threads_per_threadgroup.y;
+        auto q_head = gqa_factor * kv_head + thread_position_in_threadgroup.y;
+        auto num_kv_heads = threadgroups_per_grid.x;
+
+        // Decode combined_idx = (l * B + batch_idx)
+        // Templates: NumQueries = L, BatchSize = B
+        auto l_idx = combined_idx / BatchSize;
+        auto batch_idx = combined_idx % BatchSize;
+
+        // Flat query-batch-head index for output
+        auto q_bhl = batch_idx * NumQueries * num_kv_heads * gqa_factor
+                   + l_idx * num_kv_heads * gqa_factor
+                   + q_head;
+        auto total_tokens = k_norms_shape[2];
+
+        // Load query from (B, L, H_q, D) — interleaved layout
+        // queries shape: B * L * H_q * D flat, indexed by q_bhl
+        auto q_ptr = queries + q_bhl * Dim;
+        float q[QK_PER_THREAD];
+        for (int i = 0; i < QK_PER_THREAD; i++)
+            q[i] = static_cast<float>(q_ptr[simd_lid * QK_PER_THREAD + i]) * scale[0];
+
+        float o[QK_PER_THREAD] = {0};
+        float max_score = -INFINITY;
+        float sum_exp = 0.0f;
+
+        // K/V use only (batch_idx, kv_head) — shared across all L queries
+        auto kv_bh = batch_idx * num_kv_heads + kv_head;
+        auto k_base = k_packed + kv_bh * total_tokens * KPackedWidth;
+        auto v_base = v_packed + kv_bh * total_tokens * VPackedWidth;
+        auto kn_base = k_norms + kv_bh * total_tokens;
+        auto vn_base = v_norms + kv_bh * total_tokens;
+
+        for (int t = block_idx; t < total_tokens; t += Blocks) {
+            auto k_ptr = k_base + t * KPackedWidth;
+            float score = 0.0f;
+            for (int j = 0; j < QK_PER_THREAD; j++) {
+                int d = simd_lid * QK_PER_THREAD + j;
+                int bit_off = d * KBits;
+                int word = bit_off / 32;
+                int off = bit_off % 32;
+                uint val = k_ptr[word] >> off;
+                int spill = off + KBits - 32;
+                if (spill > 0) val |= k_ptr[word + 1] << (KBits - spill);
+                val &= ((1u << KBits) - 1u);
+                score += q[j] * k_codebook[val];
+            }
+            score = simd_sum(score) * static_cast<float>(kn_base[t]);
+
+            float new_max = max(max_score, score);
+            float factor = exp(max_score - new_max);
+            float exp_score = exp(score - new_max);
+            max_score = new_max;
+            sum_exp = sum_exp * factor + exp_score;
+
+            auto v_ptr = v_base + t * VPackedWidth;
+            float v_norm = static_cast<float>(vn_base[t]);
+            for (int j = 0; j < QK_PER_THREAD; j++) {
+                int d = simd_lid * QK_PER_THREAD + j;
+                int bit_off = d * VBits;
+                int word = bit_off / 32;
+                int off = bit_off % 32;
+                uint val = v_ptr[word] >> off;
+                int spill = off + VBits - 32;
+                if (spill > 0) val |= v_ptr[word + 1] << (VBits - spill);
+                val &= ((1u << VBits) - 1u);
+                o[j] = o[j] * factor + exp_score * v_codebook[val] * v_norm;
+            }
+        }
+
+        // Output layout matches partials shape: (total_heads * Blocks, Dim)
+        // where total_heads = B * L * H_q
+        auto out_idx = q_bhl * Blocks * Dim + block_idx * Dim;
+        if (simd_lid == 0) {
+            sums[q_bhl * Blocks + block_idx] = sum_exp;
+            maxs[q_bhl * Blocks + block_idx] = max_score;
+        }
+        for (int j = 0; j < QK_PER_THREAD; j++)
+            partial_out[out_idx + simd_lid * QK_PER_THREAD + j] = static_cast<half>(o[j]);
+    """
+    return mx.fast.metal_kernel(
+        name="tq_fused_sdpa_prefill_pass1",
+        input_names=["queries", "k_packed", "k_norms", "k_codebook",
+                     "v_packed", "v_norms", "v_codebook", "scale"],
+        output_names=["partial_out", "sums", "maxs"],
+        source=source,
+        ensure_row_contiguous=True,
+    )
+
+
+def _fused_tq_sdpa_prefill(
+    queries: mx.array,       # (B, L, H_q, D) — interleaved layout
+    k_packed: mx.array,      # (B, H_kv, T, packed_width)
+    k_norms: mx.array,       # (B, H_kv, T)
+    k_codebook: mx.array,    # (n_levels,)
+    v_packed: mx.array,      # (B, H_kv, T, packed_width)
+    v_norms: mx.array,       # (B, H_kv, T)
+    v_codebook: mx.array,    # (n_levels,)
+    scale: float,
+    B: int, L: int, H_q: int, H_kv: int, D: int, bits: int,
+) -> mx.array:
+    """Fused TQ SDPA for L queries × T history. Single kernel dispatch per layer."""
+    GQA = H_q // H_kv
+    pw = _packed_width(D, bits)
+    qpt = D // 32
+    BN = BD = 32
+    T = k_norms.shape[2]
+    total_heads = B * L * H_q  # Expanded heads count
+
+    # Adaptive blocks
+    num_blocks = min(1024, ((max(32, T // 32) + 31) // 32) * 32)
+    scale_arr = mx.array([scale], dtype=mx.float32)
+
+    # Pass 1: parallel block attention across all L queries
+    partials, sums, maxs = _tq_sdpa_prefill_kernel()(
+        inputs=[queries, k_packed, k_norms, k_codebook,
+                v_packed, v_norms, v_codebook, scale_arr],
+        output_shapes=[
+            (total_heads * num_blocks, D),
+            (total_heads, num_blocks),
+            (total_heads, num_blocks),
+        ],
+        output_dtypes=[mx.float16, mx.float32, mx.float32],
+        grid=(H_kv * 32, B * L * GQA, num_blocks),
+        threadgroup=(32, GQA, 1),
+        template=[
+            ("Dim", D), ("Blocks", num_blocks), ("QK_PER_THREAD", qpt),
+            ("KBits", bits), ("VBits", bits),
+            ("KPackedWidth", pw), ("VPackedWidth", pw),
+            ("NumQueries", L), ("BatchSize", B),
+        ],
+        init_value=0.0,
+    )
+
+    maxs = mx.where(sums == 0, mx.full(maxs.shape, float("-inf"), dtype=maxs.dtype), maxs)
+
+    # Pass 2: reduce blocks — reuse existing pass2 kernel
+    out = _tq_sdpa_2pass_2_kernel()(
+        inputs=[partials, sums, maxs],
+        output_shapes=[(total_heads, D)],
+        output_dtypes=[mx.float16],
+        grid=(total_heads * 32, BN, 1),
+        threadgroup=(32, BN, 1),
+        template=[
+            ("Dim", D), ("Blocks", num_blocks), ("QK_PER_THREAD", qpt),
+            ("BN", BN), ("BD", BD),
+        ],
+        init_value=0.0,
+    )
+    # Reshape (total_heads, D) → (B, L, H_q, D) → (B, H_q, L, D)
+    out = out[0].reshape(B, L, H_q, D).transpose(0, 2, 1, 3)
+    return out
+
+
 def _fused_tq_sdpa(
     queries: mx.array,       # (B*H_q, D)
     k_packed: mx.array,      # (B, H_kv, T, packed_width)
