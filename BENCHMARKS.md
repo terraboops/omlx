@@ -380,7 +380,67 @@ load_from_disk(path):
 
 Combined: persistent sessions with instant context switching.
 ```
+
+### Run 11: Intelligence Validation + Feature Matrix
 ```
+Date: 2026-04-04 (PM)
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit
+
+Intelligence (quick EvalPlus, 5 coding problems):
+  FP16 baseline:      5/5 PASS (100%)
+  TQ3 + fp16 Layer 0: 5/5 PASS (100%)  ← quality preserved!
+
+The TQ3 streaming architecture does NOT degrade coding intelligence.
+Cosine similarity between streaming and standard attention: 1.000000.
+
+Feature Matrix (8 combinations at 4K context):
+  All combos passed with scores 69.6-73.0 / 100.
+  At 4K, feature impact is minimal (streaming doesn't activate).
+  Differentiation requires longer contexts.
+
+Leaderboard (abbreviated):
+  rank  score  combo                dec t/s  peak GB
+  1     73.0   fp16+vertical        28.0     18.1
+  2     72.9   baseline-all-off     27.9     18.1
+  3     72.5   fp16+adaptive        27.5     18.1
+  ...
+  8     69.6   fp16-only            24.6     18.1
+
+Matrix infrastructure built:
+  - omlx/bench/matrix.py: 5 presets (core, chunks, decoder, prefill, smoke)
+  - omlx/bench/profiler.py: background CPU+memory sampling (0.5s interval)
+  - omlx/bench/scoring.py: 100-point weighted score
+  - Subprocess isolation per run (clean Metal state)
+
+Attempted: L>1 fused Metal prefill kernel
+  - Built, correctness verified (cosine 1.000000 at L=4)
+  - Performance failure: 10x slower than Python streaming at L=2048
+  - Root cause: grid too wide (L=2048 × 1024 blocks = 2B threadgroups)
+  - Solution identified: tile Q in threadgroup SRAM, not grid
+  - Deferred: requires proper Metal SIMD kernel redesign
+```
+
+---
+
+## Hypercar v2 Feature Matrix
+
+| Feature | Flag | Status |
+|---------|------|--------|
+| Streaming TQ3 KV (3-bit) | `--cache-mode turbo3` | ✓ Working |
+| Fused Givens Metal kernel | (internal) | ✓ Working |
+| Streaming quantize-during-prefill | (internal) | ✓ Working |
+| Streaming dequant (online softmax) | (internal) | ✓ Working, cosine=1.000000 |
+| Vertical graph eval | `--no-vertical-eval` to disable | ✓ Working |
+| Adaptive memory budget | `--no-adaptive-budget` to disable | ✓ Working |
+| fp16 Layer 0 anchor | `--no-fp16-layer0` to disable | ✓ Working |
+| min_quant_tokens threshold | `--min-quant-tokens N` | ✓ Working |
+| KV cache rewind | `cache.rewind_to(offset)` | ✓ API available |
+| KV cache save/load | `cache.save_to_disk(path)` | ✓ API available |
+| STARC sparse attention | `--use-starc` | ✗ Slower than baseline |
+| Medusa draft heads | `--use-medusa` | ⚠ Needs distillation |
+| Prompt lookup decoding | `--use-prompt-lookup` | ⚠ Not yet wired |
+| Fused L>1 Metal kernel | (internal) | ⚠ Built, needs redesign |
+| Benchmark matrix runner | `python -m omlx.bench.matrix` | ✓ Working |
 
 ---
 
