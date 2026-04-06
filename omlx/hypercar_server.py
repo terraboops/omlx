@@ -197,8 +197,8 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--fp16-layers", type=int, default=1,
                         help="Number of fp16 layers (rest use TQ3). Default 1.")
-    parser.add_argument("--bits", type=int, default=4,
-                        help="KV quantization bits (4 or 8, using MLX native)")
+    parser.add_argument("--bits", type=int, default=3,
+                        help="KV quantization bits (3, 4, or 8 using MLX native QuantizedKVCache)")
     parser.add_argument("--kv-group-size", type=int, default=64,
                         help="KV quantization group size for MLX native (default 64)")
     parser.add_argument("--dequant-chunk", type=int, default=2048,
