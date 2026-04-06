@@ -256,27 +256,55 @@ def main():
                 return result
             server_mod.LRUPromptCache._search = safe_search
 
-            # Patch _search to fix the None concatenation bug
+            # Fix mlx_lm bug: _search line 264 does `tokens[:index] + best`
+            # but `best` can be None if the trie branch has no cache entry.
             orig_search_method = server_mod.LRUPromptCache._search
             def patched_search(self, model, tokens):
                 result = orig_search_method(self, model, tokens)
-                # If both longer and shorter are None, return early
-                # The bug: when 'longer' path has entries but 'best' is None
-                # causing `tokens[:index] + best` to fail with TypeError
+                # If longer was set to a bad value (contains None concat),
+                # clear it so fetch_nearest_cache falls through to shorter/new
+                if result.longer is not None and not isinstance(result.longer, list):
+                    result = result._replace(longer=None)
                 return result
-            server_mod.LRUPromptCache._search = patched_search
+            # Actually, easier: just patch the source of the bug directly
+            import types
+            orig_search_code = server_mod.LRUPromptCache._search
 
-            # Wrap fetch to catch TypeError and return empty cache
-            orig_fetch = server_mod.LRUPromptCache.fetch_nearest_cache
-            def safe_fetch(self, model, tokens):
-                try:
-                    return orig_fetch(self, model, tokens)
-                except (TypeError, AttributeError):
-                    # Cache lookup failed — return None to trigger fresh cache creation
-                    # The caller (server._serve_single) handles None by calling make_prompt_cache
-                    return None, tokens
-            server_mod.LRUPromptCache.fetch_nearest_cache = safe_fetch
-            logger.info("Patched LRUPromptCache for TypeError safety")
+            def fixed_search(self, model, tokens):
+                if model not in self._cache:
+                    return self.SearchResult(model, None, None, None, 0)
+                current = self._cache[model]
+                last_cache_index = -1
+                index = 0
+                while index < len(tokens) and tokens[index] in current:
+                    current = current[tokens[index]]
+                    if "cache" in current:
+                        last_cache_index = index
+                    index += 1
+                if last_cache_index == len(tokens) - 1:
+                    return self.SearchResult(model, tokens, None, None, 0)
+                shorter = None
+                if last_cache_index > 0:
+                    shorter = tokens[: last_cache_index + 1]
+                longer = None
+                common_prefix = index
+                if index > 0:
+                    best = None
+                    stack = [(current, [])]
+                    while stack:
+                        cur, extra = stack.pop()
+                        if "cache" in cur:
+                            if best is None or len(extra) < len(best):
+                                best = extra
+                        else:
+                            for tok in cur:
+                                stack.append((cur[tok], extra + [tok]))
+                    if best is not None:  # THE FIX: guard against None
+                        longer = tokens[:index] + best
+                return self.SearchResult(model, None, shorter, longer, common_prefix)
+
+            server_mod.LRUPromptCache._search = fixed_search
+            logger.info("Patched LRUPromptCache._search (None guard fix)")
     except Exception as e:
         logger.warning(f"Could not patch LRUPromptCache: {e}")
 
