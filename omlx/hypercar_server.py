@@ -161,7 +161,15 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 4,
         model, tokenizer = original_load(*args, **kwargs)
         try:
             apply_prefill_last_logit_patch(model)
-            apply_vertical_eval_patch(model)
+            # NOTE: vertical_eval patch (mx.eval every 8 layers) is DISABLED
+            # when using MLX native QuantizedKVCache. It was needed for our
+            # custom TQ3 streaming to prevent graph hoarding, but native
+            # quantized KV doesn't have that issue. Removing it gives ~2x
+            # prefill speedup by avoiding forced GPU syncs.
+            if bits < 16:
+                logging.info("Using MLX native QuantizedKVCache — vertical_eval disabled")
+            else:
+                apply_vertical_eval_patch(model)
         except Exception as e:
             logging.warning(f"Some hypercar patches failed: {e}")
         return model, tokenizer
@@ -197,8 +205,8 @@ def main():
                         help="Dequant chunk size for streaming")
     parser.add_argument("--min-quant-tokens", type=int, default=512,
                         help="Stay fp16 below this threshold per layer")
-    parser.add_argument("--prefill-step-size", type=int, default=2048,
-                        help="Tokens per prefill chunk")
+    parser.add_argument("--prefill-step-size", type=int, default=8192,
+                        help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temp", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -241,6 +249,25 @@ def main():
     )
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
+
+    # Fix Qwen3-Coder tool parser: ast.literal_eval crashes on malformed
+    # JSON that the model sometimes generates for complex tool parameters
+    try:
+        import mlx_lm.tool_parsers.qwen3_coder as qwen3_parser
+        orig_convert = qwen3_parser._convert_param_value
+
+        def safe_convert(param_value, param_name, param_config):
+            try:
+                return orig_convert(param_value, param_name, param_config)
+            except (SyntaxError, ValueError, TypeError):
+                # Model emitted malformed JSON/Python for this param.
+                # Return raw string — better than crashing.
+                return param_value
+
+        qwen3_parser._convert_param_value = safe_convert
+        logger.info("Patched Qwen3-Coder tool parser (SyntaxError safety)")
+    except ImportError:
+        pass
 
     # Fix mlx_lm prompt cache bug: _search returns None for 'best'
     # when cache has entries from a previous model. Patch to handle None.
@@ -301,10 +328,62 @@ def main():
                                 stack.append((cur[tok], extra + [tok]))
                     if best is not None:  # THE FIX: guard against None
                         longer = tokens[:index] + best
+                _cache_logger = logging.getLogger("hypercar.cache")
+                _cache_logger.debug(
+                    f"_search: index={index} last_cache_idx={last_cache_index} "
+                    f"shorter={'yes' if shorter else 'no'} "
+                    f"longer={'yes' if longer else 'no'} "
+                    f"common_prefix={common_prefix}"
+                )
                 return self.SearchResult(model, None, shorter, longer, common_prefix)
 
             server_mod.LRUPromptCache._search = fixed_search
-            logger.info("Patched LRUPromptCache._search (None guard fix)")
+
+            # Force prompt checkpoint at system prompt boundary for all models.
+            # Without this, cache only exists at the leaf (full token sequence),
+            # so multi-turn conversations can't reuse the shared system prompt.
+            if hasattr(server_mod, 'APIHandler'):
+                orig_compute_cp = server_mod.APIHandler._compute_prompt_checkpoint
+                def forced_checkpoint(self, tokenizer, request, prompt):
+                    do_cp, pos = orig_compute_cp(self, tokenizer, request, prompt)
+                    if not do_cp and request.request_type == "chat":
+                        # Find where the user message starts (after system prompt)
+                        # Use half the prompt as a rough system-prompt boundary
+                        if len(request.messages) >= 2:
+                            # Encode just the system message to find its length
+                            sys_msg = request.messages[0] if request.messages[0].get("role") == "system" else None
+                            if sys_msg:
+                                sys_len = len(tokenizer.encode(
+                                    tokenizer.apply_chat_template(
+                                        [sys_msg], tokenize=False, add_generation_prompt=False
+                                    )
+                                ))
+                                if sys_len > 5 and sys_len < len(prompt):
+                                    return True, sys_len
+                    return do_cp, pos
+                server_mod.APIHandler._compute_prompt_checkpoint = forced_checkpoint
+                logger.info("Forced system prompt checkpoint for cache reuse")
+
+            # Add cache hit/miss logging
+            orig_fetch = server_mod.LRUPromptCache.fetch_nearest_cache
+            _cache_logger = logging.getLogger("hypercar.cache")
+
+            def logged_fetch(self, model, tokens):
+                result = orig_fetch(self, model, tokens)
+                cache, rest = result
+                total = len(tokens) if hasattr(tokens, '__len__') else 0
+                cached = total - (len(rest) if hasattr(rest, '__len__') else total)
+                if cached > 0:
+                    _cache_logger.info(
+                        f"📦 Cache HIT: {cached}/{total} tokens cached "
+                        f"({cached*100//max(total,1)}%%), prefilling {len(rest)} new"
+                    )
+                else:
+                    _cache_logger.info(f"📦 Cache MISS: prefilling all {total} tokens")
+                return result
+
+            server_mod.LRUPromptCache.fetch_nearest_cache = logged_fetch
+            logger.info("Patched LRUPromptCache._search (None guard + cache logging)")
     except Exception as e:
         logger.warning(f"Could not patch LRUPromptCache: {e}")
 
