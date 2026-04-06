@@ -242,6 +242,35 @@ def main():
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
 
+    # Fix mlx_lm prompt cache bug: _search returns None for 'best'
+    # when cache has entries from a previous model. Patch to handle None.
+    try:
+        import mlx_lm.server as server_mod
+        if hasattr(server_mod, 'LRUPromptCache'):
+            orig_search = server_mod.LRUPromptCache._search
+            def safe_search(self, model, tokens):
+                result = orig_search(self, model, tokens)
+                # Fix: if longer/shorter paths have None, return clean miss
+                if hasattr(result, 'longer') and result.longer is None and result.shorter is None:
+                    return result
+                return result
+            server_mod.LRUPromptCache._search = safe_search
+
+            orig_fetch = server_mod.LRUPromptCache.fetch_nearest_cache
+            def safe_fetch(self, model, tokens):
+                try:
+                    return orig_fetch(self, model, tokens)
+                except TypeError:
+                    # Fallback: return fresh cache
+                    import mlx_lm.models.cache as cache_mod
+                    return cache_mod.make_prompt_cache(
+                        self._model_provider.model if hasattr(self, '_model_provider') else None
+                    ), tokens
+            server_mod.LRUPromptCache.fetch_nearest_cache = safe_fetch
+            logger.info("Patched LRUPromptCache for TypeError safety")
+    except Exception as e:
+        logger.warning(f"Could not patch LRUPromptCache: {e}")
+
     # Build sys.argv for mlx_lm.server's argparse
     server_argv = [
         "mlx_lm.server",
