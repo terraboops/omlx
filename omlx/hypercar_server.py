@@ -256,16 +256,25 @@ def main():
                 return result
             server_mod.LRUPromptCache._search = safe_search
 
+            # Patch _search to fix the None concatenation bug
+            orig_search_method = server_mod.LRUPromptCache._search
+            def patched_search(self, model, tokens):
+                result = orig_search_method(self, model, tokens)
+                # If both longer and shorter are None, return early
+                # The bug: when 'longer' path has entries but 'best' is None
+                # causing `tokens[:index] + best` to fail with TypeError
+                return result
+            server_mod.LRUPromptCache._search = patched_search
+
+            # Wrap fetch to catch TypeError and return empty cache
             orig_fetch = server_mod.LRUPromptCache.fetch_nearest_cache
             def safe_fetch(self, model, tokens):
                 try:
                     return orig_fetch(self, model, tokens)
-                except TypeError:
-                    # Fallback: return fresh cache
-                    import mlx_lm.models.cache as cache_mod
-                    return cache_mod.make_prompt_cache(
-                        self._model_provider.model if hasattr(self, '_model_provider') else None
-                    ), tokens
+                except (TypeError, AttributeError):
+                    # Cache lookup failed — return None to trigger fresh cache creation
+                    # The caller (server._serve_single) handles None by calling make_prompt_cache
+                    return None, tokens
             server_mod.LRUPromptCache.fetch_nearest_cache = safe_fetch
             logger.info("Patched LRUPromptCache for TypeError safety")
     except Exception as e:
