@@ -52,7 +52,8 @@ def apply_progress_logging(log_every: int = 8) -> None:
       - Total memory (Metal)
     """
     import time
-    import mlx_lm.generate as gen_mod
+    import importlib
+    gen_mod = importlib.import_module("mlx_lm.generate")
 
     original = gen_mod.stream_generate
     _logger = logging.getLogger("hypercar.generate")
@@ -108,65 +109,46 @@ def apply_progress_logging(log_every: int = 8) -> None:
         pass
 
 
-def apply_hypercar_patches(fp16_layers: int = 1, bits: int = 3,
+def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 4,
+                           group_size: int = 64,
                            dequant_chunk_size: int = 2048,
                            min_quant_tokens: int = 512) -> None:
     """Apply all hypercar optimizations to mlx_lm runtime.
 
+    Uses MLX's native QuantizedKVCache (affine per-group quantization)
+    instead of our custom TQ3 codebook (which produces garbage at long ctx).
+
     Must be called BEFORE mlx_lm.server is imported/invoked.
     """
-    from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
     from omlx.patches.vertical_eval import apply_vertical_eval_patch
-    from omlx.turboquant_kv import TurboQuantKVCache
 
-    # 1. Patch SDPA to handle TQ caches
-    apply_turboquant_attention_patch()
-
-    # 2. Monkey-patch make_prompt_cache to use TQ3 caches
+    # 1. Monkey-patch make_prompt_cache to use QuantizedKVCache
     import mlx_lm.models.cache as cache_mod
-    from mlx_lm.models.cache import KVCache
-
-    original_make = cache_mod.make_prompt_cache
+    from mlx_lm.models.cache import KVCache, QuantizedKVCache
 
     def hypercar_make_prompt_cache(model, max_kv_size=None):
         if hasattr(model, "make_cache"):
-            # Model has its own — wrap it: fp16 for first N layers, TQ3 for rest
             caches = model.make_cache()
-            # Replace non-fp16-anchor layers with TQ3
-            result = []
-            for i, c in enumerate(caches):
-                if i < fp16_layers:
-                    result.append(c)  # Keep standard cache
-                else:
-                    # Only replace if it's a standard KVCache (not Mamba state etc)
-                    if isinstance(c, KVCache):
-                        result.append(TurboQuantKVCache(
-                            bits=bits,
-                            dequant_chunk_size=dequant_chunk_size,
-                            min_quant_tokens=min_quant_tokens,
-                        ))
-                    else:
-                        result.append(c)  # Preserve SSM/Mamba caches
-            return result
+        else:
+            num_layers = len(model.layers)
+            caches = [KVCache() for _ in range(num_layers)]
 
-        # No model.make_cache — build hybrid manually
-        num_layers = len(model.layers)
+        if bits >= 16:
+            return caches  # All fp16, no quantization
+
         result = []
-        for i in range(num_layers):
+        for i, c in enumerate(caches):
             if i < fp16_layers:
-                result.append(KVCache())
+                result.append(c)  # Keep fp16
+            elif isinstance(c, KVCache):
+                result.append(QuantizedKVCache(group_size=group_size, bits=bits))
             else:
-                result.append(TurboQuantKVCache(
-                    bits=bits,
-                    dequant_chunk_size=dequant_chunk_size,
-                    min_quant_tokens=min_quant_tokens,
-                ))
+                result.append(c)  # Preserve non-KV caches
         return result
 
     cache_mod.make_prompt_cache = hypercar_make_prompt_cache
 
-    # Also patch where mlx_lm.server imports it from
     import mlx_lm.utils as utils_mod
     if hasattr(utils_mod, "make_prompt_cache"):
         utils_mod.make_prompt_cache = hypercar_make_prompt_cache
@@ -207,8 +189,10 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--fp16-layers", type=int, default=1,
                         help="Number of fp16 layers (rest use TQ3). Default 1.")
-    parser.add_argument("--bits", type=int, default=3,
-                        help="TQ KV quantization bits (3 or 4)")
+    parser.add_argument("--bits", type=int, default=4,
+                        help="KV quantization bits (4 or 8, using MLX native)")
+    parser.add_argument("--kv-group-size", type=int, default=64,
+                        help="KV quantization group size for MLX native (default 64)")
     parser.add_argument("--dequant-chunk", type=int, default=2048,
                         help="Dequant chunk size for streaming")
     parser.add_argument("--min-quant-tokens", type=int, default=512,
@@ -253,8 +237,7 @@ def main():
     apply_hypercar_patches(
         fp16_layers=args.fp16_layers,
         bits=args.bits,
-        dequant_chunk_size=args.dequant_chunk,
-        min_quant_tokens=args.min_quant_tokens,
+        group_size=args.kv_group_size,
     )
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
