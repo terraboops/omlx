@@ -242,13 +242,14 @@ def streaming_tq_attention(
             chunk_start, chunk_end, actual_len,
         )
 
-        # Dequantize ONE chunk — small, temporary
-        K_chunk = codec.dequantize(
+        # Dequantize ONE chunk — use fused kernel if WHT is available
+        _dequant = codec.dequantize_fused if hasattr(codec, 'dequantize_fused') else codec.dequantize
+        K_chunk = _dequant(
             k_norms[:, :, chunk_start:chunk_end],
             k_packed[:, :, chunk_start:chunk_end],
         )  # (B, H_kv, actual_len, D)
 
-        V_chunk = codec.dequantize(
+        V_chunk = _dequant(
             v_norms[:, :, chunk_start:chunk_end],
             v_packed[:, :, chunk_start:chunk_end],
         )  # (B, H_kv, actual_len, D)

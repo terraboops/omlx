@@ -431,6 +431,104 @@ def _unpack_lowbit_kernel():
     )
 
 
+@lru_cache(maxsize=None)
+def _fused_dequant_wht_kernel():
+    """Fused dequant: unpack 3-bit → codebook → inverse WHT → scale by norm.
+
+    One Metal dispatch replaces 4 separate operations:
+      1. Bit unpacking from uint32 words
+      2. Codebook lookup (8 entries in thread-local registers)
+      3. Inverse WHT via dense matrix multiply (R^T @ coords)
+      4. Multiply by per-vector norm
+
+    Each thread handles QK_PER_THREAD dimensions of one vector.
+    SIMD group (32 threads) covers the full D=128 dimensions.
+    Output is fp16, ready for AMX matmul.
+    """
+    source = r"""
+        auto simd_lid = thread_index_in_simdgroup;
+        auto row = threadgroup_position_in_grid.x;
+
+        if (row >= packed_shape[0]) return;
+
+        auto packed_ptr = packed + row * PackedWidth;
+        float norm = static_cast<float>(norms[row]);
+
+        // Step 1+2: Unpack and codebook lookup for QK_PER_THREAD coordinates
+        float coords[QK_PER_THREAD];
+        for (int j = 0; j < QK_PER_THREAD; j++) {
+            int d = simd_lid * QK_PER_THREAD + j;
+            int bit_off = d * Bits;
+            int word = bit_off / 32;
+            int off = bit_off % 32;
+            uint val = packed_ptr[word] >> off;
+            int spill = off + Bits - 32;
+            if (spill > 0) val |= packed_ptr[word + 1] << (Bits - spill);
+            val &= ((1u << Bits) - 1u);
+            coords[j] = codebook[val];
+        }
+
+        // Step 3: Inverse WHT via dense matrix R^T
+        // out[d] = sum_j(coords[j] * R^T[j, d]) = sum_j(coords[j] * R[d, j])
+        // Each thread computes QK_PER_THREAD output dimensions
+        float restored[QK_PER_THREAD];
+        for (int j = 0; j < QK_PER_THREAD; j++) {
+            int out_d = simd_lid * QK_PER_THREAD + j;
+            float val = 0.0f;
+            // Accumulate across all input dimensions via SIMD shuffle
+            // Each thread has QK_PER_THREAD coords; broadcast to all threads
+            for (int src_lane = 0; src_lane < 32; src_lane++) {
+                for (int k = 0; k < QK_PER_THREAD; k++) {
+                    int src_d = src_lane * QK_PER_THREAD + k;
+                    float src_coord = simd_shuffle(coords[k], src_lane);
+                    val += src_coord * rotation_t[src_d * Dim + out_d];
+                }
+            }
+            restored[j] = val * norm;
+        }
+
+        // Step 4: Write fp16 output
+        for (int j = 0; j < QK_PER_THREAD; j++)
+            out[row * Dim + simd_lid * QK_PER_THREAD + j] = static_cast<half>(restored[j]);
+    """
+    return mx.fast.metal_kernel(
+        name="tq_fused_dequant_wht",
+        input_names=["packed", "norms", "codebook", "rotation_t"],
+        output_names=["out"],
+        source=source,
+        ensure_row_contiguous=True,
+    )
+
+
+def _fused_dequant_wht(packed: mx.array, norms: mx.array,
+                        codebook: mx.array, rotation_t: mx.array,
+                        bits: int, dim: int) -> mx.array:
+    """Fused dequant: packed 3-bit → fp16 vectors in one Metal dispatch.
+
+    Replaces: _unpack_contiguous + codebook[indices] + WHT inverse + norm scale
+    """
+    batch_shape = packed.shape[:-1]
+    flat_packed = packed.reshape(-1, packed.shape[-1])
+    flat_norms = norms.reshape(-1)
+    rows = flat_packed.shape[0]
+    pw = flat_packed.shape[-1]
+    qpt = dim // 32
+
+    kernel = _fused_dequant_wht_kernel()
+    out = kernel(
+        inputs=[flat_packed.astype(mx.uint32), flat_norms.astype(mx.float32),
+                codebook.astype(mx.float32), rotation_t.astype(mx.float32)],
+        output_shapes=[(rows, dim)],
+        output_dtypes=[mx.float16],
+        grid=(rows * 32, 1, 1),
+        threadgroup=(32, 1, 1),
+        template=[("Bits", bits), ("Dim", dim), ("PackedWidth", pw),
+                  ("QK_PER_THREAD", qpt)],
+        init_value=0.0,
+    )
+    return out[0].reshape(*batch_shape, dim)
+
+
 def _unpack_contiguous(packed: mx.array, bits: int, dim: int) -> mx.array:
     """Unpack contiguous bit-packed indices via Metal kernel."""
     batch_shape = packed.shape[:-1]
@@ -558,6 +656,19 @@ class TurboQuantMSECodec:
             restored = (grouped @ self.rotation.T).reshape(shape)
 
         return (restored * norms[..., None]).astype(coords.dtype)
+
+    def dequantize_fused(self, norms: mx.array, packed: mx.array) -> mx.array:
+        """Fused dequant: one Metal dispatch for unpack+codebook+WHT+norm.
+
+        Only works with WHT rotation. Falls back to standard dequantize for others.
+        Output is fp16, ready for AMX matmul.
+        """
+        if not self.use_wht:
+            return self.dequantize(norms, packed)
+        return _fused_dequant_wht(
+            packed, norms, self.codebook, self.rotation.T,
+            self.bits, self.dim,
+        )
 
 
 # ---------------------------------------------------------------------------
