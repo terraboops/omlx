@@ -200,21 +200,42 @@ def _peak_metal_gb() -> float:
     return mx.get_peak_memory() / 1e9
 
 
+# Module-level KV mode (set from CLI in main())
+_KV_MODE = "native"
+
+
 def _load_model():
-    """Load model + tokenizer, apply prefill_last_logit patch."""
+    """Load model + tokenizer, apply patches for current kv-mode."""
     from mlx_lm import load
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
 
+    if _KV_MODE == "tq3":
+        from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
+        apply_turboquant_attention_patch()
+
     model, tokenizer = load(MODEL_ID)
     apply_prefill_last_logit_patch(model)
+
+    if _KV_MODE == "tq3":
+        from omlx.patches.vertical_eval import apply_vertical_eval_patch
+        apply_vertical_eval_patch(model)
+
     return model, tokenizer
 
 
 def _make_cache(n_layers: int):
-    """Create QuantizedKVCache(bits=3, group_size=64) for all layers."""
-    from mlx_lm.models.cache import QuantizedKVCache
-    return [QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS)
-            for _ in range(n_layers)]
+    """Create KV cache based on current _KV_MODE."""
+    from mlx_lm.models.cache import KVCache, QuantizedKVCache
+
+    if _KV_MODE == "fp16":
+        return [KVCache() for _ in range(n_layers)]
+    elif _KV_MODE == "tq3":
+        from omlx.turboquant_kv import TurboQuantKVCache
+        return [KVCache() if i == 0 else TurboQuantKVCache(bits=KV_BITS)
+                for i in range(n_layers)]
+    else:  # native
+        return [QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS)
+                for _ in range(n_layers)]
 
 
 def _generate(model, tokenizer, prompt: str, max_tokens: int = 64,
@@ -998,6 +1019,8 @@ def main():
                         help="Phase 0+1 only (~30s)")
     parser.add_argument("--full", action="store_true",
                         help="All phases including HumanEval (~15min)")
+    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16"], default="native",
+                        help="KV cache: native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
     parser.add_argument("--max-metal-pct", type=float, default=80.0,
                         help="Metal peak limit as %% of system memory (default: 80)")
     parser.add_argument("--max-swap-pct", type=float, default=17.0,
@@ -1018,6 +1041,11 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Set KV mode
+    global _KV_MODE
+    _KV_MODE = args.kv_mode
+    logger.info(f"KV mode: {_KV_MODE}")
 
     # Detect system memory and compute limits
     total_gb = _detect_system_memory_gb()
