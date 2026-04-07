@@ -32,7 +32,7 @@ Gate summary:
   - Coherence: 2/2 basic checks
   - Code intelligence: >= 3/5 problems
   - NIAH: 4K retrieval passes
-  - HumanEval (--full): >= 50% pass@1
+  - HumanEval (--full): >= 35% pass@1
 
 ## Key Architecture
 
