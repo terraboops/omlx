@@ -578,6 +578,171 @@ def main():
                     _send_json(handler_self, {"session_id": new_id, "tokens": tokens,
                                               "layers": loaded})
 
+                elif handler_self.path.startswith("/v1/sessions/") and handler_self.path.endswith("/generate"):
+                    # POST /v1/sessions/{id}/generate — stream tokens from session cache
+                    parts = handler_self.path.split("/")
+                    sid = parts[3]  # /v1/sessions/{sid}/generate
+                    body = _read_json_body(handler_self)
+
+                    with _sessions_lock:
+                        if sid not in _sessions:
+                            _send_json(handler_self, {"error": f"session {sid} not found"}, 404)
+                            return
+                        session = _sessions[sid]
+                    cache = session["cache"]
+
+                    model_obj = handler_self.response_generator.model_provider.model
+                    tokenizer_obj = handler_self.response_generator.model_provider.tokenizer
+
+                    # Build prompt from messages (OpenAI format)
+                    messages = body.get("messages", [])
+                    max_tokens = body.get("max_tokens", 1024)
+                    max_think = body.get("max_think_tokens", 4096)
+                    stream = body.get("stream", True)
+
+                    if messages:
+                        try:
+                            prompt = tokenizer_obj.apply_chat_template(
+                                messages, tokenize=False, add_generation_prompt=True)
+                        except Exception:
+                            prompt = messages[-1].get("content", "")
+                        new_tokens = tokenizer_obj.encode(prompt)
+                    else:
+                        new_tokens = []
+
+                    import time as _time
+
+                    # Prefill new tokens into session cache
+                    if new_tokens:
+                        for cs in range(0, len(new_tokens), 4096):
+                            ce = min(cs + 4096, len(new_tokens))
+                            logits = model_obj(mx.array([new_tokens[cs:ce]]), cache=cache)
+                            mx.eval(logits)
+                        session["tokens"] += len(new_tokens)
+                    else:
+                        # Continue from existing cache — dummy forward
+                        logits = model_obj(mx.array([[tokenizer_obj.eos_token_id or 0]]), cache=cache)
+                        mx.eval(logits)
+
+                    # Detect think token IDs
+                    think_start_id = getattr(tokenizer_obj, 'think_start_id', None)
+                    think_end_id = getattr(tokenizer_obj, 'think_end_id', None)
+                    eos_id = getattr(tokenizer_obj, 'eos_token_id', None)
+
+                    if stream:
+                        # SSE streaming response
+                        handler_self.send_response(200)
+                        handler_self.send_header("Content-Type", "text/event-stream")
+                        handler_self.send_header("Cache-Control", "no-cache")
+                        handler_self.send_header("Connection", "keep-alive")
+                        handler_self.end_headers()
+
+                        gen_id = f"chatcmpl-{uuid.uuid4()}"
+                        model_name = handler_self.response_generator.model_provider.model_key
+                        in_think = False
+                        think_count = 0
+                        t0 = _time.perf_counter()
+
+                        for i in range(max_tokens):
+                            token = mx.argmax(logits[:, -1, :], axis=-1)
+                            mx.eval(token)
+                            tid = token.item()
+
+                            # EOS check
+                            if tid == eos_id:
+                                break
+
+                            # Think token tracking + cap
+                            if tid == think_start_id:
+                                in_think = True
+                                think_count = 0
+                            elif tid == think_end_id:
+                                in_think = False
+                                think_count = 0
+
+                            if in_think:
+                                think_count += 1
+                                if think_count >= max_think:
+                                    # Force end thinking
+                                    _agentic_logger.info(f"🧠 Think cap hit ({max_think} tokens), forcing </think>")
+                                    if think_end_id is not None:
+                                        # Inject end_think token
+                                        logits = model_obj(mx.array([[think_end_id]]), cache=cache)
+                                        mx.eval(logits)
+                                        session["tokens"] += 1
+                                    in_think = False
+                                    think_count = 0
+                                    continue
+
+                            text = tokenizer_obj.decode([tid])
+                            session["tokens"] += 1
+
+                            # SSE chunk (OpenAI format)
+                            chunk = {
+                                "id": gen_id,
+                                "object": "chat.completion.chunk",
+                                "model": model_name,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": text} if not in_think else {"reasoning": text},
+                                    "finish_reason": None,
+                                }],
+                            }
+                            handler_self.wfile.write(f"data: {_json.dumps(chunk)}\n\n".encode())
+                            handler_self.wfile.flush()
+
+                            logits = model_obj(token.reshape(1, 1), cache=cache)
+                            mx.eval(logits)
+
+                        # Final chunk
+                        elapsed = _time.perf_counter() - t0
+                        final_chunk = {
+                            "id": gen_id,
+                            "object": "chat.completion.chunk",
+                            "model": model_name,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                        handler_self.wfile.write(f"data: {_json.dumps(final_chunk)}\n\n".encode())
+                        handler_self.wfile.write(b"data: [DONE]\n\n")
+                        handler_self.wfile.flush()
+
+                        _agentic_logger.info(
+                            f"🗣️ Generate: {sid} +{i+1} tokens in {elapsed:.1f}s "
+                            f"({(i+1)/elapsed:.1f} tok/s)"
+                        )
+                    else:
+                        # Non-streaming: generate all then return
+                        generated = []
+                        in_think = False
+                        think_count = 0
+                        for i in range(max_tokens):
+                            token = mx.argmax(logits[:, -1, :], axis=-1)
+                            mx.eval(token)
+                            tid = token.item()
+                            if tid == eos_id:
+                                break
+                            if tid == think_start_id:
+                                in_think = True; think_count = 0
+                            elif tid == think_end_id:
+                                in_think = False; think_count = 0
+                            if in_think:
+                                think_count += 1
+                                if think_count >= max_think and think_end_id:
+                                    logits = model_obj(mx.array([[think_end_id]]), cache=cache)
+                                    mx.eval(logits); session["tokens"] += 1
+                                    in_think = False; think_count = 0; continue
+                            generated.append(tid)
+                            session["tokens"] += 1
+                            logits = model_obj(token.reshape(1, 1), cache=cache)
+                            mx.eval(logits)
+
+                        text = tokenizer_obj.decode(generated)
+                        _send_json(handler_self, {
+                            "session_id": sid,
+                            "tokens_generated": len(generated),
+                            "content": text,
+                        })
+
                 else:
                     orig_do_post(handler_self)
 

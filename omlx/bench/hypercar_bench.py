@@ -596,7 +596,7 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
     n_layers = len(model.layers)
     results = {}
 
-    for ctx_len in [4096]:
+    for ctx_len in [4096, 16384]:
         if watchdog.breached.is_set():
             return PhaseResult(
                 name="Phase 3: Needle in Haystack", passed=False,
