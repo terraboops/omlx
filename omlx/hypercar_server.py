@@ -409,6 +409,215 @@ def main():
     except Exception as e:
         logger.warning(f"Could not patch LRUPromptCache: {e}")
 
+    # -----------------------------------------------------------------------
+    # Agentic endpoints: fork, rewind, save, load, stats
+    # Only active in tq3 mode (native/fp16 caches don't support these ops)
+    # -----------------------------------------------------------------------
+    kv_mode = args.kv_mode  # local for agentic block
+    if kv_mode == "tq3":
+        import copy
+        import json as _json
+        import threading
+        import uuid
+        from pathlib import Path as _Path
+
+        _sessions = {}  # session_id → {"cache": list[TQ3 caches], "tokens": int}
+        _sessions_lock = threading.Lock()
+        _session_dir = _Path("/tmp/hypercar_sessions")
+        _session_dir.mkdir(exist_ok=True)
+        _agentic_logger = logging.getLogger("hypercar.agentic")
+
+        try:
+            import mlx_lm.server as _srv
+
+            orig_do_post = _srv.APIHandler.do_POST
+            orig_do_get = _srv.APIHandler.do_GET
+
+            def _read_json_body(handler):
+                length = int(handler.headers.get("Content-Length", 0))
+                body = handler.rfile.read(length)
+                return _json.loads(body) if body else {}
+
+            def _send_json(handler, data, status=200):
+                body = _json.dumps(data).encode()
+                handler.send_response(status)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+
+            def agentic_do_post(handler_self):
+                if handler_self.path == "/v1/sessions/fork":
+                    body = _read_json_body(handler_self)
+                    src_id = body.get("session_id")
+                    with _sessions_lock:
+                        if src_id not in _sessions:
+                            _send_json(handler_self, {"error": f"session {src_id} not found"}, 404)
+                            return
+                        src = _sessions[src_id]
+                        new_id = str(uuid.uuid4())[:12]
+                        # Shallow copy — MLX reference counting handles memory
+                        _sessions[new_id] = {
+                            "cache": [copy.copy(c) for c in src["cache"]],
+                            "tokens": src["tokens"],
+                            "parent": src_id,
+                        }
+                    _agentic_logger.info(f"🔀 Fork: {src_id} → {new_id} ({src['tokens']} tokens)")
+                    _send_json(handler_self, {"session_id": new_id, "parent": src_id,
+                                              "tokens": src["tokens"]})
+
+                elif handler_self.path == "/v1/sessions/rewind":
+                    body = _read_json_body(handler_self)
+                    sid = body.get("session_id")
+                    target = body.get("target_offset", 0)
+                    with _sessions_lock:
+                        if sid not in _sessions:
+                            _send_json(handler_self, {"error": f"session {sid} not found"}, 404)
+                            return
+                        session = _sessions[sid]
+                        dropped = 0
+                        for c in session["cache"]:
+                            if hasattr(c, 'rewind_to'):
+                                old = c.offset
+                                c.rewind_to(target)
+                                dropped = old - c.offset
+                        session["tokens"] = target
+                    _agentic_logger.info(f"⏪ Rewind: {sid} → offset {target} (dropped {dropped})")
+                    _send_json(handler_self, {"session_id": sid, "offset": target, "dropped": dropped})
+
+                elif handler_self.path == "/v1/sessions/save":
+                    body = _read_json_body(handler_self)
+                    sid = body.get("session_id")
+                    name = body.get("name", sid)
+                    with _sessions_lock:
+                        if sid not in _sessions:
+                            _send_json(handler_self, {"error": f"session {sid} not found"}, 404)
+                            return
+                        session = _sessions[sid]
+                    save_dir = _session_dir / name
+                    save_dir.mkdir(exist_ok=True)
+                    saved = 0
+                    total_bytes = 0
+                    for i, c in enumerate(session["cache"]):
+                        if hasattr(c, 'save_to_disk') and hasattr(c, '_k_norms') and c._k_norms is not None:
+                            info = c.save_to_disk(str(save_dir / f"layer_{i}"))
+                            saved += 1
+                            total_bytes += (save_dir / f"layer_{i}.npz").stat().st_size
+                    _agentic_logger.info(f"💾 Save: {sid} → {save_dir} ({saved} layers, {total_bytes/1e6:.1f}MB)")
+                    _send_json(handler_self, {"session_id": sid, "path": str(save_dir),
+                                              "layers": saved, "size_mb": round(total_bytes / 1e6, 1)})
+
+                elif handler_self.path == "/v1/sessions/create":
+                    body = _read_json_body(handler_self)
+                    prompt = body.get("prompt", "")
+                    if not prompt:
+                        _send_json(handler_self, {"error": "prompt required"}, 400)
+                        return
+                    # Create cache, prefill, store as session
+                    from omlx.turboquant_kv import TurboQuantKVCache
+                    from mlx_lm.models.cache import KVCache
+                    from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
+                    import time as _time
+
+                    model_obj = handler_self.response_generator.model_provider.model
+                    tokenizer_obj = handler_self.response_generator.model_provider.tokenizer
+                    n_layers = len(model_obj.layers)
+
+                    cache = [KVCache() if i == 0 else TurboQuantKVCache(bits=3, min_quant_tokens=0)
+                             for i in range(n_layers)]
+                    tokens = tokenizer_obj.encode(prompt)
+
+                    t0 = _time.perf_counter()
+                    for cs in range(0, len(tokens), 4096):
+                        ce = min(cs + 4096, len(tokens))
+                        logits = model_obj(mx.array([tokens[cs:ce]]), cache=cache)
+                        mx.eval(logits)
+                    prefill_time = _time.perf_counter() - t0
+
+                    new_id = str(uuid.uuid4())[:12]
+                    with _sessions_lock:
+                        _sessions[new_id] = {
+                            "cache": cache,
+                            "tokens": len(tokens),
+                        }
+                    _agentic_logger.info(
+                        f"🆕 Create: {new_id} ({len(tokens)} tokens, "
+                        f"{len(tokens)/prefill_time:.0f} tok/s)"
+                    )
+                    _send_json(handler_self, {
+                        "session_id": new_id,
+                        "tokens": len(tokens),
+                        "prefill_toks_per_sec": round(len(tokens) / prefill_time, 1),
+                    })
+
+                elif handler_self.path == "/v1/sessions/load":
+                    body = _read_json_body(handler_self)
+                    name = body.get("name")
+                    load_dir = _session_dir / name
+                    if not load_dir.exists():
+                        _send_json(handler_self, {"error": f"session dir {load_dir} not found"}, 404)
+                        return
+                    from omlx.turboquant_kv import TurboQuantKVCache
+                    from mlx_lm.models.cache import KVCache
+                    # Detect layer count from files
+                    layer_files = sorted(load_dir.glob("layer_*.npz"))
+                    n_layers = max(int(f.stem.split("_")[1]) for f in layer_files) + 1 if layer_files else 48
+                    cache = [KVCache() if i == 0 else TurboQuantKVCache(bits=3)
+                             for i in range(n_layers)]
+                    loaded = 0
+                    for f in layer_files:
+                        idx = int(f.stem.split("_")[1])
+                        if hasattr(cache[idx], 'load_from_disk'):
+                            cache[idx].load_from_disk(str(f).replace(".npz", ""))
+                            loaded += 1
+                    tokens = cache[1].offset if loaded > 0 and hasattr(cache[1], 'offset') else 0
+                    new_id = str(uuid.uuid4())[:12]
+                    with _sessions_lock:
+                        _sessions[new_id] = {"cache": cache, "tokens": tokens}
+                    _agentic_logger.info(f"📂 Load: {name} → {new_id} ({loaded} layers, {tokens} tokens)")
+                    _send_json(handler_self, {"session_id": new_id, "tokens": tokens,
+                                              "layers": loaded})
+
+                else:
+                    orig_do_post(handler_self)
+
+            def agentic_do_get(handler_self):
+                if handler_self.path == "/v1/sessions":
+                    with _sessions_lock:
+                        sessions = {sid: {"tokens": s["tokens"],
+                                          "parent": s.get("parent")}
+                                    for sid, s in _sessions.items()}
+                    _send_json(handler_self, {"sessions": sessions})
+
+                elif handler_self.path == "/v1/stats":
+                    _send_json(handler_self, {
+                        "metal_active_gb": round(mx.get_active_memory() / 1e9, 2),
+                        "metal_peak_gb": round(mx.get_peak_memory() / 1e9, 2),
+                        "sessions": len(_sessions),
+                        "kv_mode": kv_mode,
+                        "model": args.model,
+                    })
+
+                elif handler_self.path.startswith("/v1/sessions/"):
+                    sid = handler_self.path.split("/")[-1]
+                    with _sessions_lock:
+                        if sid in _sessions:
+                            s = _sessions[sid]
+                            _send_json(handler_self, {
+                                "session_id": sid, "tokens": s["tokens"],
+                                "parent": s.get("parent"),
+                            })
+                        else:
+                            _send_json(handler_self, {"error": "not found"}, 404)
+                else:
+                    orig_do_get(handler_self)
+
+            _srv.APIHandler.do_POST = agentic_do_post
+            _srv.APIHandler.do_GET = agentic_do_get
+            logger.info("Agentic endpoints enabled: /v1/sessions/{fork,rewind,save,load}, /v1/stats")
+        except Exception as e:
+            logger.warning(f"Could not patch agentic endpoints: {e}")
+
     # Build sys.argv for mlx_lm.server's argparse
     server_argv = [
         "mlx_lm.server",
