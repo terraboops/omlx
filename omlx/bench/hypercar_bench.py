@@ -42,7 +42,7 @@ logger = logging.getLogger("omlx.bench.hypercar")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
 KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
@@ -1078,9 +1078,11 @@ def main():
         logger.info("Loading model: %s", MODEL_ID)
         load_t0 = time.perf_counter()
         model, tokenizer = _load_model()
-        mx.eval(model.parameters())
+        # Don't force-eval all parameters — let MLX load lazily.
+        # Force-eval causes 2x peak memory during load (mmap + Metal copy).
+        # Parameters will be materialized on first forward pass instead.
         load_time = time.perf_counter() - load_t0
-        logger.info(f"Model loaded in {load_time:.1f}s")
+        logger.info(f"Model loaded in {load_time:.1f}s (lazy — first forward will materialize)")
 
         if watchdog.breached.is_set():
             logger.error("MEMORY BREACH during model load — aborting")

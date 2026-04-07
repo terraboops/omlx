@@ -23,7 +23,7 @@ Do not use --no-verify to skip hooks.
 Memory limits are percentage-based (auto-detected from system RAM):
   - Metal peak: 80% of system memory
   - Swap delta: 17% of system memory
-  - Metal at load: 42% of system memory
+  - Metal at load: 70% of system memory (8-bit model = ~32GB on 48GB)
   - Breaches cause IMMEDIATE abort (fail-fast watchdog)
 
 Gate summary:
@@ -36,7 +36,7 @@ Gate summary:
 
 ## Key Architecture
 
-- Model: Qwen3-Coder-30B-A3B-Instruct-4bit (17.2GB, 48 layers, MoE 3B active)
+- Model: Qwen3-Coder-30B-A3B-Instruct-8bit (17.2GB, 48 layers, MoE 3B active)
 - Server: omlx/hypercar_server.py (OpenAI-compat, prompt caching, tool parse safety)
 
 ### KV Cache Modes (`--kv-mode`)
@@ -79,7 +79,7 @@ python -m omlx.hypercar_server --kv-mode tq3 --fp16-layers 1 --port 8080
 # OpenCode connection
 export OPENAI_API_BASE=http://localhost:8080/v1
 export OPENAI_API_KEY=hypercar
-opencode --model "hypercar/mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+opencode --model "hypercar/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
 ```
 
 ## Code Style

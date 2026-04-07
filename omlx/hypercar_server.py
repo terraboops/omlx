@@ -17,7 +17,7 @@ Usage:
 
     # Custom config
     python -m omlx.hypercar_server \\
-        --model mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit \\
+        --model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit \\
         --port 8080 --host 0.0.0.0 \\
         --fp16-layers 1 \\
         --prefill-step-size 2048
@@ -203,7 +203,7 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument("--model",
-                        default="mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+                        default="mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
                         help="Model to serve (HF ID or local path)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
