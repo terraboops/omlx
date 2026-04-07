@@ -524,6 +524,34 @@ Server: hypercar_server.py --kv-mode {native,tq3,fp16}
 Benchmark: hypercar_bench.py --kv-mode {native,tq3,fp16}
 ```
 
+### Run 16: 8-bit Model Attempt — OOM on 48GB
+```
+Date: 2026-04-06
+Model: Qwen3-Coder-30B-A3B-Instruct-8bit (~32GB weights)
+
+Hypothesis: TQ3 compresses KV, not weights. Use 8-bit weights for
+better quality and let 3-bit KV handle the context window.
+
+Result: OOM during real usage. Benchmark passed at 4K context
+(35.2GB Metal, 6.7GB swap) but OpenCode serving caused system
+crash — 32GB model + OS + KV + MLX overhead > 48GB.
+
+Benchmark (passed technically):
+  Phase 0: PASS (smoke)
+  Phase 1: PASS (coherence)
+  Phase 2: PASS 5/5 code intelligence
+  Phase 3: PASS NIAH at 4K
+  Phase 5: PASS Memory (35.2GB peak, 6.7GB swap)
+
+But real usage: macOS OOM kill. Force reboot required.
+
+Conclusion: 8-bit Qwen3-Coder needs 64GB+ RAM.
+On 48GB, 4-bit weights (17.2GB) is the right choice.
+TQ3 KV compression still provides 1M context at 39.7GB total.
+
+Reverted to 4-bit model as default.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

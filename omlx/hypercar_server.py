@@ -203,7 +203,7 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument("--model",
-                        default="mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+                        default="mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
                         help="Model to serve (HF ID or local path)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)

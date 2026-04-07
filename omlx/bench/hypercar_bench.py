@@ -42,7 +42,7 @@ logger = logging.getLogger("omlx.bench.hypercar")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
