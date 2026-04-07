@@ -584,19 +584,91 @@ Walsh-Hadamard Transform + Beta((d-1)/2, (d-1)/2) codebook
 per TurboQuant (arXiv:2504.19874).
 ```
 
+### Run 18: Fused Dequant Kernel + AMX Discovery
+```
+Date: 2026-04-07
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit
+
+Attempted fused FlashAttention kernel for TQ3 prefill.
+Discovered the "AMX Wall" — Apple's undocumented matrix coprocessor.
+
+Fused FlashAttention kernel (custom MSL, SIMD dot products):
+  L=512 × T=8K:  249.5ms  (23x slower than native Flash)
+
+Why: Custom Metal compute shaders run on generic GPU SIMD cores.
+mx.matmul/mx.fast.scaled_dot_product_attention use Apple's AMX
+hardware — a dedicated matrix coprocessor that's 10-100x faster.
+
+Pivoted to fused DEQUANT kernel instead (the right optimization):
+  Standard dequant (4 dispatches): 4.25ms
+  Fused dequant (1 dispatch):      2.24ms → 1.9x speedup
+
+End-to-end streaming attention improvement:
+  Before: 28.2ms (2.6x vs native Flash)
+  After:  26.0ms (2.38x vs native Flash)
+
+Final architecture:
+  Decode:  Fused Metal SDPA (compute-bound, AMX not needed for L=1)
+  Prefill: Streaming dequant → AMX matmul (hardware-optimal)
+  Dequant: Fused kernel (unpack+codebook+WHT+norm in one dispatch)
+```
+
+### Run 19: Agentic API Endpoints — Full Lifecycle
+```
+Date: 2026-04-07
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit, TQ3 WHT mode
+
+Six REST endpoints for stateful KV operations:
+
+  POST /v1/sessions/create  — prefill + store TQ3 cache
+  POST /v1/sessions/fork    — shallow copy (MLX ref counting)
+  POST /v1/sessions/rewind  — O(1) context undo
+  POST /v1/sessions/save    — persist to NVMe
+  POST /v1/sessions/load    — restore from disk
+  GET  /v1/sessions         — list sessions
+  GET  /v1/stats            — Metal memory, kv_mode
+
+Full lifecycle tested:
+  Create: 45 tokens, 114 tok/s prefill
+  Fork:   instant (shallow copy)
+  Rewind: dropped 35 tokens → offset 10, O(1)
+  Save:   47 layers, 0.9MB to /tmp/hypercar_sessions/calc
+  Load:   restored 47 layers, 45 tokens from disk
+  List:   4 sessions with parent tracking
+
+These endpoints are the foundation for autonomous coding agents:
+  - Fork: explore two refactoring approaches in parallel
+  - Rewind: undo a bad generation without re-prefill
+  - Save/Load: persist 256K codebase context, resume in 1.5s
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
 
-| Feature | Flag | Status |
-|---------|------|--------|
-| Streaming TQ3 KV (3-bit) | `--cache-mode turbo3` | ✓ Working |
-| Fused Givens Metal kernel | (internal) | ✓ Working |
-| Streaming quantize-during-prefill | (internal) | ✓ Working |
-| Streaming dequant (online softmax) | (internal) | ✓ Working, cosine=1.000000 |
-| Vertical graph eval | `--no-vertical-eval` to disable | ✓ Working |
-| Adaptive memory budget | `--no-adaptive-budget` to disable | ✓ Working |
-| fp16 Layer 0 anchor | `--no-fp16-layer0` to disable | ✓ Working |
+| Feature | Flag/Endpoint | Status |
+|---------|---------------|--------|
+| TQ3 WHT KV (3-bit, paper-correct) | `--kv-mode tq3` | ✓ 5/5 code intel, NIAH pass |
+| Native 3-bit KV (MLX affine) | `--kv-mode native` | ✓ Battle-tested |
+| Walsh-Hadamard Transform rotation | (internal) | ✓ Replaces broken Givens |
+| Fused dequant kernel | (internal) | ✓ 1.9x faster dequant |
+| Fused decode SDPA | (internal) | ✓ 71+ tok/s |
+| Streaming prefill → AMX | (internal) | ✓ 2.38x vs native Flash |
+| Online softmax | (internal) | ✓ cosine=1.000000 |
+| Vertical graph eval | (internal, TQ3 only) | ✓ Prevents graph hoarding |
+| Adaptive memory budget | (internal) | ✓ Dynamic chunk sizing |
+| fp16 Layer 0 anchor | `--fp16-layers N` | ✓ Quality insurance |
+| Session create | `POST /v1/sessions/create` | ✓ Prefill + store |
+| Session fork | `POST /v1/sessions/fork` | ✓ O(1) shallow copy |
+| Session rewind | `POST /v1/sessions/rewind` | ✓ O(1) context undo |
+| Session save | `POST /v1/sessions/save` | ✓ NVMe persistence |
+| Session load | `POST /v1/sessions/load` | ✓ Resume without re-prefill |
+| Server stats | `GET /v1/stats` | ✓ Memory, sessions, mode |
+| Prompt cache | (internal) | ✓ System prompt checkpoint |
+| Tool parse safety | (internal) | ✓ Catches SyntaxError |
+| Progress logging | (internal) | ✓ Per-8-token decode stats |
+| Gated benchmark | `hypercar_bench.py` | ✓ 7 phases, fail-fast |
+| HumanEval Lite | `--full` flag | ✓ 20 problems, ≥35% gate |
 | min_quant_tokens threshold | `--min-quant-tokens N` | ✓ Working |
 | KV cache rewind | `cache.rewind_to(offset)` | ✓ API available |
 | KV cache save/load | `cache.save_to_disk(path)` | ✓ API available |
