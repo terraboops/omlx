@@ -109,21 +109,28 @@ def apply_progress_logging(log_every: int = 8) -> None:
         pass
 
 
-def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 4,
-                           group_size: int = 64,
+def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
+                           group_size: int = 64, kv_mode: str = "native",
                            dequant_chunk_size: int = 2048,
                            min_quant_tokens: int = 512) -> None:
     """Apply all hypercar optimizations to mlx_lm runtime.
 
-    Uses MLX's native QuantizedKVCache (affine per-group quantization)
-    instead of our custom TQ3 codebook (which produces garbage at long ctx).
+    kv_mode controls the KV cache strategy:
+      "native" — MLX QuantizedKVCache (affine per-group, fast, proven)
+      "tq3"    — TurboQuant WHT codec (codebook, supports save/load/rewind/fork)
+      "fp16"   — No quantization (baseline, limited context)
 
     Must be called BEFORE mlx_lm.server is imported/invoked.
     """
     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
     from omlx.patches.vertical_eval import apply_vertical_eval_patch
 
-    # 1. Monkey-patch make_prompt_cache to use QuantizedKVCache
+    # 1. Apply SDPA patch for TQ3 mode (routes attention through TQ codec)
+    if kv_mode == "tq3":
+        from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
+        apply_turboquant_attention_patch()
+
+    # 2. Monkey-patch make_prompt_cache based on kv_mode
     import mlx_lm.models.cache as cache_mod
     from mlx_lm.models.cache import KVCache, QuantizedKVCache
 
@@ -134,17 +141,25 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 4,
             num_layers = len(model.layers)
             caches = [KVCache() for _ in range(num_layers)]
 
-        if bits >= 16:
-            return caches  # All fp16, no quantization
+        if kv_mode == "fp16":
+            return caches
 
         result = []
         for i, c in enumerate(caches):
             if i < fp16_layers:
-                result.append(c)  # Keep fp16
+                result.append(c)
             elif isinstance(c, KVCache):
-                result.append(QuantizedKVCache(group_size=group_size, bits=bits))
+                if kv_mode == "tq3":
+                    from omlx.turboquant_kv import TurboQuantKVCache
+                    result.append(TurboQuantKVCache(
+                        bits=bits,
+                        dequant_chunk_size=dequant_chunk_size,
+                        min_quant_tokens=min_quant_tokens,
+                    ))
+                else:  # native
+                    result.append(QuantizedKVCache(group_size=group_size, bits=bits))
             else:
-                result.append(c)  # Preserve non-KV caches
+                result.append(c)
         return result
 
     cache_mod.make_prompt_cache = hypercar_make_prompt_cache
@@ -161,15 +176,12 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 4,
         model, tokenizer = original_load(*args, **kwargs)
         try:
             apply_prefill_last_logit_patch(model)
-            # NOTE: vertical_eval patch (mx.eval every 8 layers) is DISABLED
-            # when using MLX native QuantizedKVCache. It was needed for our
-            # custom TQ3 streaming to prevent graph hoarding, but native
-            # quantized KV doesn't have that issue. Removing it gives ~2x
-            # prefill speedup by avoiding forced GPU syncs.
-            if bits < 16:
-                logging.info("Using MLX native QuantizedKVCache — vertical_eval disabled")
-            else:
+            if kv_mode == "tq3":
+                # TQ3 streaming needs vertical_eval to prevent graph hoarding
                 apply_vertical_eval_patch(model)
+                logging.info("TQ3 mode: vertical_eval ENABLED")
+            elif kv_mode == "native":
+                logging.info("Native mode: vertical_eval disabled (not needed)")
         except Exception as e:
             logging.warning(f"Some hypercar patches failed: {e}")
         return model, tokenizer
@@ -197,14 +209,16 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--fp16-layers", type=int, default=1,
                         help="Number of fp16 layers (rest use TQ3). Default 1.")
+    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16"], default="native",
+                        help="KV cache strategy: native (MLX affine), tq3 (WHT codebook w/ save/load/rewind), fp16 (no quant)")
     parser.add_argument("--bits", type=int, default=3,
-                        help="KV quantization bits (3, 4, or 8 using MLX native QuantizedKVCache)")
+                        help="KV quantization bits (default 3)")
     parser.add_argument("--kv-group-size", type=int, default=64,
-                        help="KV quantization group size for MLX native (default 64)")
+                        help="Group size for native mode (default 64)")
     parser.add_argument("--dequant-chunk", type=int, default=2048,
-                        help="Dequant chunk size for streaming")
+                        help="Dequant chunk size for TQ3 streaming")
     parser.add_argument("--min-quant-tokens", type=int, default=512,
-                        help="Stay fp16 below this threshold per layer")
+                        help="TQ3: stay fp16 below this threshold per layer")
     parser.add_argument("--prefill-step-size", type=int, default=8192,
                         help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
     parser.add_argument("--max-tokens", type=int, default=4096)
@@ -230,11 +244,16 @@ def main():
     logger.info("HYPERCAR MLX SERVER")
     logger.info("=" * 70)
     logger.info(f"Model:            {args.model}")
+    logger.info(f"KV mode:          {args.kv_mode}")
+    logger.info(f"Bits:             {args.bits}")
     logger.info(f"fp16 layers:      {args.fp16_layers}")
-    logger.info(f"TQ bits:          {args.bits}")
-    logger.info(f"Dequant chunk:    {args.dequant_chunk}")
+    if args.kv_mode == "native":
+        logger.info(f"Group size:       {args.kv_group_size}")
+    elif args.kv_mode == "tq3":
+        logger.info(f"Dequant chunk:    {args.dequant_chunk}")
+        logger.info(f"Min quant tokens: {args.min_quant_tokens}")
+        logger.info(f"Features:         save/load, rewind, fork (WHT rotation)")
     logger.info(f"Prefill step:     {args.prefill_step_size}")
-    logger.info(f"Min quant tokens: {args.min_quant_tokens}")
     logger.info(f"Host:Port:        {args.host}:{args.port}")
     logger.info(f"Prompt cache:     {args.prompt_cache_size} entries, "
                 f"{args.prompt_cache_bytes // 1_000_000_000}GB")
@@ -246,6 +265,9 @@ def main():
         fp16_layers=args.fp16_layers,
         bits=args.bits,
         group_size=args.kv_group_size,
+        kv_mode=args.kv_mode,
+        dequant_chunk_size=args.dequant_chunk,
+        min_quant_tokens=args.min_quant_tokens,
     )
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
