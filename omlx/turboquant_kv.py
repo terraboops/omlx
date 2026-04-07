@@ -23,18 +23,30 @@ from mlx_lm.models.cache import _BaseCache
 
 
 # ---------------------------------------------------------------------------
-# Codebook generation (Beta distribution Lloyd-Max quantizer)
+# Codebook generation (TurboQuant paper: arXiv:2504.19874)
+#
+# The correct distribution for coordinates of a randomly rotated unit vector
+# in R^d has density: (1-x^2)^((d-3)/2) on [-1, 1].
+# This corresponds to Beta((d-1)/2, (d-1)/2) after rescaling from [0,1]→[-1,1].
+# The codebook is DATA-INDEPENDENT — depends only on dim and bits.
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=32)
 def _codebook(dim: int, bits: int) -> mx.array:
-    """Optimal scalar codebook for Beta(dim/2, dim/2) via Lloyd's algorithm."""
+    """Optimal scalar codebook for TurboQuant's coordinate distribution.
+
+    Per the paper (arXiv:2504.19874), after WHT rotation each coordinate of
+    a unit vector follows density f(x) = C * (1-x^2)^((d-3)/2) on [-1,1].
+    This is Beta((d-1)/2, (d-1)/2) mapped from [0,1] to [-1,1].
+    """
     n_levels = 1 << bits
-    alpha = dim / 2.0
+    # Correct parameter: (d-1)/2, NOT d/2
+    alpha = (dim - 1) / 2.0
     rng = np.random.default_rng(seed=0)
-    samples = 2.0 * rng.beta(alpha, alpha, size=100_000) - 1.0
+    samples = 2.0 * rng.beta(alpha, alpha, size=200_000) - 1.0
+    # Lloyd-Max optimal quantizer
     centroids = np.linspace(samples.min(), samples.max(), n_levels)
-    for _ in range(100):
+    for _ in range(200):  # More iterations for better convergence
         dists = np.abs(samples[:, None] - centroids[None, :])
         assignments = np.argmin(dists, axis=1)
         for j in range(n_levels):
@@ -44,9 +56,66 @@ def _codebook(dim: int, bits: int) -> mx.array:
     return mx.array(sorted(centroids), dtype=mx.float32)
 
 
+# ---------------------------------------------------------------------------
+# Walsh-Hadamard Transform (replaces broken Givens rotation)
+#
+# WHT spreads energy across ALL dimensions via butterfly operations.
+# Combined with random sign flips, it's equivalent to a random orthogonal
+# rotation but O(d log d) instead of O(d^2). This is what makes the Beta
+# distribution codebook valid — Givens only mixed pairs and didn't decorrelate.
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=16)
+def _random_signs(dim: int, seed: int = 0) -> mx.array:
+    """Random ±1 sign vector for randomized WHT."""
+    key = mx.random.key(seed)
+    uniform = mx.random.uniform(shape=(dim,), key=key)
+    signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+    mx.eval(signs)
+    return signs
+
+
+def _wht(x: mx.array) -> mx.array:
+    """Walsh-Hadamard Transform via in-place butterfly.
+
+    Input: (..., D) where D must be a power of 2.
+    Output: (..., D) transformed, normalized by 1/sqrt(D).
+    """
+    shape = x.shape
+    D = shape[-1]
+    # Reshape to 2D for processing
+    flat = x.reshape(-1, D).astype(mx.float32)
+
+    # Butterfly passes
+    h = 1
+    while h < D:
+        # Split into blocks of 2h, combine pairs separated by h
+        flat_r = flat.reshape(-1, D // (2 * h), 2, h)
+        a = flat_r[:, :, 0, :]  # first half
+        b = flat_r[:, :, 1, :]  # second half
+        flat_r = mx.stack([a + b, a - b], axis=2)
+        flat = flat_r.reshape(-1, D)
+        h *= 2
+
+    # Normalize
+    flat = flat / math.sqrt(D)
+    return flat.reshape(shape)
+
+
+def _apply_wht_rotation(x: mx.array, signs: mx.array) -> mx.array:
+    """Randomized WHT: sign flip → WHT. This decorrelates all dimensions."""
+    return _wht(x * signs)
+
+
+def _apply_wht_rotation_inverse(x: mx.array, signs: mx.array) -> mx.array:
+    """Inverse randomized WHT: WHT → sign flip (WHT is its own inverse)."""
+    return _wht(x) * signs
+
+
+# Legacy Givens functions (kept for backward compatibility with fused kernels)
 @lru_cache(maxsize=16)
 def _rotation_matrix(dim: int, seed: int) -> mx.array:
-    """Random orthogonal rotation via QR decomposition (legacy, used by fused kernels)."""
+    """Random orthogonal rotation via QR decomposition (legacy)."""
     key = mx.random.key(seed)
     Q, R = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
     signs = mx.sign(mx.diag(R))
@@ -58,7 +127,7 @@ def _rotation_matrix(dim: int, seed: int) -> mx.array:
 
 @lru_cache(maxsize=16)
 def _givens_angles(dim: int, seed: int = 0):
-    """PlanarQuant/RotorQuant: random Givens rotation angles for D/2 pairs."""
+    """PlanarQuant/RotorQuant: random Givens rotation angles (LEGACY — use WHT instead)."""
     key = mx.random.key(seed)
     n_pairs = dim // 2
     angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
@@ -69,7 +138,7 @@ def _givens_angles(dim: int, seed: int = 0):
 
 
 def _apply_givens(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
-    """Apply D/2 Givens rotations: O(D) per vector."""
+    """Apply D/2 Givens rotations: O(D) per vector (LEGACY)."""
     x_even = x[..., 0::2]
     x_odd = x[..., 1::2]
     y_even = cos_a * x_even - sin_a * x_odd
@@ -78,7 +147,7 @@ def _apply_givens(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
 
 
 def _apply_givens_inverse(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
-    """Apply inverse Givens rotation: negate sin angles."""
+    """Apply inverse Givens rotation (LEGACY)."""
     return _apply_givens(x, cos_a, -sin_a)
 
 
@@ -387,56 +456,108 @@ def _unpack_contiguous(packed: mx.array, bits: int, dim: int) -> mx.array:
 # ---------------------------------------------------------------------------
 
 class TurboQuantMSECodec:
-    """MSE-optimal vector quantization codec."""
+    """TurboQuant MSE-optimal vector quantization codec (arXiv:2504.19874).
 
-    def __init__(self, dim: int, bits: int, seed: int = 0, use_givens: bool = True):
+    Correct pipeline per the paper:
+      1. x → norm * unit_vec  (decompose)
+      2. unit_vec → WHT(signs * unit_vec)  (randomized Walsh-Hadamard)
+      3. Each coordinate → codebook index  (scalar quantization)
+      4. Codebook is data-independent (Beta((d-1)/2, (d-1)/2) Lloyd-Max)
+
+    The key insight: WHT decorrelates ALL dimensions (unlike Givens which
+    only mixes pairs), making the Beta distribution codebook valid.
+    """
+
+    def __init__(self, dim: int, bits: int, seed: int = 0,
+                 use_givens: bool = False, use_wht: bool = True):
         self.dim = dim
         self.bits = bits
         self.seed = seed
         self.codebook = _codebook(dim, bits)
-        self.use_givens = use_givens and (dim % 2 == 0)
-        if self.use_givens:
+        self.use_wht = use_wht
+        self.use_givens = use_givens and not use_wht and (dim % 2 == 0)
+
+        if self.use_wht:
+            self._signs = _random_signs(dim, seed)
+            # Pre-compute WHT as dense matrix for fused decode kernel compatibility.
+            # Forward rotation: y = H @ diag(signs) @ x
+            # In the fused kernel, query rotation is: q_rot = q @ R (row-vector convention)
+            # q @ R = (R^T @ q^T)^T, so we need R^T = H @ diag(signs), i.e. R = diag(signs) @ H
+            # Equivalently: R[i, j] = signs[i] * H[i, j]
+            I = mx.eye(dim, dtype=mx.float32)
+            H = _wht(I)  # Each row of H is WHT of a basis vector = columns of Hadamard
+            self.rotation = (self._signs[:, None] * H)  # diag(signs) @ H
+            mx.eval(self.rotation)
+        elif self.use_givens:
             self._givens_cos, self._givens_sin = _givens_angles(dim, seed)
         else:
             self.rotation = _rotation_matrix(dim, seed)
+
         self._pw = _packed_width(dim, bits)
-        # Pre-compute decision boundaries for fast quantization
         cb = self.codebook
-        self._boundaries = (cb[:-1] + cb[1:]) / 2  # midpoints between sorted centroids
+        self._boundaries = (cb[:-1] + cb[1:]) / 2
 
     def quantize(self, vectors: mx.array):
-        """Quantize vectors: (B, H, T, D) → (norms, packed_indices).
+        """Quantize vectors: (..., D) → (norms, packed_indices).
 
-        Uses fused Metal kernel (norm + rotate + boundary + pack in one dispatch)
-        with either Givens O(D) or dense O(D²) rotation.
+        WHT path uses MLX ops (no fused kernel yet — can be added later).
+        Givens/dense paths use fused Metal kernels.
         """
-        if self.use_givens:
-            # Fused Givens: rotation happens in GPU registers, zero extra memory
+        if self.use_wht:
+            return self._quantize_wht(vectors)
+        elif self.use_givens:
             return _fused_quantize_givens(
                 vectors, self._givens_cos, self._givens_sin,
                 self._boundaries, self.bits, self.dim,
             )
         else:
-            # Fused dense: full D×D rotation in kernel
             return _fused_quantize(
                 vectors, self.rotation, self._boundaries,
                 self.bits, self.dim,
             )
+
+    def _quantize_wht(self, vectors: mx.array):
+        """Quantize using Walsh-Hadamard Transform (correct per paper)."""
+        shape = vectors.shape
+        flat = vectors.reshape(-1, self.dim).astype(mx.float32)
+
+        # Step 1: decompose into norm + unit vector
+        norms = mx.linalg.norm(flat, axis=-1)
+        safe_norms = mx.maximum(norms, 1e-10)
+        unit = flat / safe_norms[..., None]
+
+        # Step 2: randomized WHT
+        rotated = _apply_wht_rotation(unit, self._signs)
+
+        # Step 3: scalar quantize each coordinate
+        # Use searchsorted on boundaries for fast quantization
+        indices = mx.zeros(rotated.shape, dtype=mx.uint32)
+        for b in range(len(self._boundaries)):
+            indices = indices + (rotated > self._boundaries[b]).astype(mx.uint32)
+
+        # Step 4: pack indices
+        packed = _pack_contiguous(indices, self.bits, self.dim)
+
+        return norms.reshape(shape[:-1]), packed.reshape(*shape[:-1], self._pw)
 
     def dequantize(self, norms: mx.array, packed: mx.array) -> mx.array:
         """Dequantize: (norms, packed) → vectors."""
         indices = _unpack_contiguous(packed, self.bits, self.dim)
         coords = self.codebook[indices]
 
-        # Inverse rotate (Givens or dense)
-        if self.use_givens:
+        # Inverse rotate
+        if self.use_wht:
+            restored = _apply_wht_rotation_inverse(
+                coords.astype(mx.float32), self._signs
+            )
+        elif self.use_givens:
             restored = _apply_givens_inverse(coords, self._givens_cos, self._givens_sin)
         else:
             shape = coords.shape
             grouped = coords.reshape(*shape[:-1], shape[-1] // self.dim, self.dim)
             restored = (grouped @ self.rotation.T).reshape(shape)
 
-        return restored * norms[..., None]
+        return (restored * norms[..., None]).astype(coords.dtype)
 
 
 # ---------------------------------------------------------------------------
