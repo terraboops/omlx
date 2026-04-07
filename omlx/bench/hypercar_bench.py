@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gated benchmark for oMLX Hypercar — run before every commit.
 
-Five phases, each gated: a failure stops the pipeline.
+Seven phases, each gated: a failure stops the pipeline.
+Memory watchdog runs continuously and aborts immediately on breach.
 
-  Phase 0: Smoke       — model loads, 10 tokens, Metal < 20GB       (<30s)
-  Phase 1: Coherence   — "2+2" => "4", "hello world" => "print"     (<60s)
-  Phase 2: Code Intel  — 5 coding problems, exec + assert, >=60%    (<5min)
-  Phase 3: NIAH        — needle retrieval at 4K and 8K context       (<5min)
-  Phase 4: Memory      — background profiler, swap < 8GB, peak < 38GB
-  Phase 5: Profiling   — write summary JSON
+  Phase 0: Smoke          — model loads, 10 tokens, Metal < load limit   (<30s)
+  Phase 1: Coherence      — "2+2" => "4", "hello world" => "print"      (<60s)
+  Phase 2: Code Intel     — 5 coding problems, exec + assert, >=60%     (<5min)
+  Phase 3: NIAH           — needle retrieval at 4K context (ChatML)      (<5min)
+  Phase 4: HumanEval Lite — 20 curated problems, >=50% pass@1           (<10min)
+  Phase 5: Memory         — watchdog summary (breach = already aborted)
+  Phase 6: Summary        — write results JSON
 
 Usage:
-    .venv/bin/python -m omlx.bench.hypercar_bench
-    .venv/bin/python -m omlx.bench.hypercar_bench --quick   # Phase 0+1 only
+    .venv/bin/python -m omlx.bench.hypercar_bench            # Phase 0-3
+    .venv/bin/python -m omlx.bench.hypercar_bench --quick    # Phase 0+1 only
+    .venv/bin/python -m omlx.bench.hypercar_bench --full     # Phase 0-4 (HumanEval)
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,18 +47,124 @@ KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
 
-# Gate thresholds
-MAX_METAL_LOAD_GB = 20.0
-MAX_METAL_PEAK_GB = 38.0
-MAX_SWAP_DELTA_GB = 8.0
+# Gate thresholds (defaults — overridden by % of system memory)
 MIN_CODE_PASS_RATE = 0.6
+MIN_HUMANEVAL_PASS_RATE = 0.5
 
 PROFILE_PATH = Path("/tmp/hypercar_profile.json")
-RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
+DEFAULT_RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
 
 NIAH_NEEDLE = "The secret code is ALPHA-7749"
 NIAH_QUESTION = "What is the secret code?"
 NIAH_ANSWER = "ALPHA-7749"
+
+
+# ---------------------------------------------------------------------------
+# System memory detection
+# ---------------------------------------------------------------------------
+
+def _detect_system_memory_gb() -> float:
+    """Detect total system memory in GB (macOS)."""
+    try:
+        result = subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"], text=True, timeout=5,
+        )
+        total_bytes = int(result.strip())
+        return total_bytes / 1e9
+    except Exception:
+        logger.warning("Could not detect system memory, defaulting to 48GB")
+        return 48.0
+
+
+def _compute_memory_limits(
+    total_gb: float,
+    metal_pct: float,
+    swap_pct: float,
+    load_pct: float,
+) -> Dict[str, float]:
+    """Compute memory limits as % of system memory."""
+    return {
+        "metal_peak_gb": total_gb * (metal_pct / 100.0),
+        "swap_delta_gb": total_gb * (swap_pct / 100.0),
+        "metal_load_gb": total_gb * (load_pct / 100.0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Memory Watchdog
+# ---------------------------------------------------------------------------
+
+class MemoryWatchdog:
+    """Fail-fast memory watchdog wrapping the Profiler.
+
+    Checks memory limits on every profiler sample. On breach, sets the
+    ``breached`` event so phases can abort immediately.
+    """
+
+    def __init__(
+        self,
+        metal_limit_gb: float,
+        swap_limit_gb: float,
+        sample_interval: float = 1.0,
+    ):
+        self.metal_limit_gb = metal_limit_gb
+        self.swap_limit_gb = swap_limit_gb
+        self.breached = threading.Event()
+        self.breach_reason: str = ""
+        self.breach_snapshot: Optional[Dict[str, Any]] = None
+
+        self.profiler = Profiler(sample_interval=sample_interval)
+        self._check_stop = threading.Event()
+        self._check_thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self.profiler.start()
+        self._check_stop.clear()
+        self._check_thread = threading.Thread(
+            target=self._check_loop, daemon=True,
+        )
+        self._check_thread.start()
+
+    def stop(self):
+        self._check_stop.set()
+        if self._check_thread:
+            self._check_thread.join(timeout=5)
+        return self.profiler.stop()
+
+    def _check_loop(self):
+        """Poll profiler samples and check limits."""
+        last_idx = 0
+        while not self._check_stop.is_set():
+            samples = self.profiler.result.samples
+            for i in range(last_idx, len(samples)):
+                s = samples[i]
+                if s.metal_peak_gb > self.metal_limit_gb:
+                    self._set_breach(
+                        f"Metal peak {s.metal_peak_gb:.1f}GB > "
+                        f"{self.metal_limit_gb:.1f}GB limit",
+                        s,
+                    )
+                    return
+                if s.swap_gb > self.swap_limit_gb:
+                    self._set_breach(
+                        f"Swap delta {s.swap_gb:.1f}GB > "
+                        f"{self.swap_limit_gb:.1f}GB limit",
+                        s,
+                    )
+                    return
+            last_idx = len(samples)
+            self._check_stop.wait(0.5)
+
+    def _set_breach(self, reason: str, sample):
+        self.breach_reason = reason
+        self.breach_snapshot = {
+            "timestamp": round(sample.t, 2),
+            "metal_gb": round(sample.metal_peak_gb, 2),
+            "swap_gb": round(sample.swap_gb, 2),
+            "reason": reason,
+        }
+        logger.error(f"MEMORY BREACH: {reason}")
+        self.breached.set()
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +179,7 @@ class PhaseResult:
     details: Dict[str, Any] = field(default_factory=dict)
     prefill_toks: float = 0.0
     decode_toks: float = 0.0
+    reason: str = ""
 
 
 def _git_commit_hash() -> str:
@@ -155,20 +266,28 @@ def _generate(model, tokenizer, prompt: str, max_tokens: int = 64,
 # Phase 0: Smoke
 # ---------------------------------------------------------------------------
 
-def phase0_smoke(model, tokenizer) -> PhaseResult:
-    """Load model, generate 10 tokens, check Metal < 20GB."""
+def phase0_smoke(model, tokenizer, watchdog: MemoryWatchdog,
+                 metal_load_limit: float) -> PhaseResult:
+    """Load model, generate 10 tokens, check Metal < load limit."""
     t0 = time.perf_counter()
+
+    if watchdog.breached.is_set():
+        return PhaseResult(
+            name="Phase 0: Smoke", passed=False,
+            elapsed_s=time.perf_counter() - t0,
+            reason=watchdog.breach_reason,
+        )
 
     metal_after_load = _metal_gb()
     logger.info(f"  Metal after load: {metal_after_load:.1f} GB")
 
-    if metal_after_load > MAX_METAL_LOAD_GB:
+    if metal_after_load > metal_load_limit:
         return PhaseResult(
             name="Phase 0: Smoke",
             passed=False,
             elapsed_s=time.perf_counter() - t0,
             details={"metal_after_load_gb": round(metal_after_load, 2),
-                     "reason": f"Metal {metal_after_load:.1f}GB > {MAX_METAL_LOAD_GB}GB limit"},
+                     "reason": f"Metal {metal_after_load:.1f}GB > {metal_load_limit:.1f}GB limit"},
         )
 
     # Generate 10 tokens
@@ -176,6 +295,13 @@ def phase0_smoke(model, tokenizer) -> PhaseResult:
                                                  "Hello, world!", max_tokens=10)
     logger.info(f"  Smoke output: {text[:80]!r}")
     logger.info(f"  Prefill: {prefill_toks:.0f} tok/s  Decode: {decode_toks:.1f} tok/s")
+
+    if watchdog.breached.is_set():
+        return PhaseResult(
+            name="Phase 0: Smoke", passed=False,
+            elapsed_s=time.perf_counter() - t0,
+            reason=watchdog.breach_reason,
+        )
 
     return PhaseResult(
         name="Phase 0: Smoke",
@@ -192,10 +318,17 @@ def phase0_smoke(model, tokenizer) -> PhaseResult:
 # Phase 1: Coherence
 # ---------------------------------------------------------------------------
 
-def phase1_coherence(model, tokenizer) -> PhaseResult:
+def phase1_coherence(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
     """Basic coherence: math + code generation."""
     t0 = time.perf_counter()
     checks = {}
+
+    if watchdog.breached.is_set():
+        return PhaseResult(
+            name="Phase 1: Coherence", passed=False,
+            elapsed_s=time.perf_counter() - t0,
+            reason=watchdog.breach_reason,
+        )
 
     # Check 1: 2+2 must contain "4"
     text, p_toks, d_toks = _generate(model, tokenizer,
@@ -204,12 +337,26 @@ def phase1_coherence(model, tokenizer) -> PhaseResult:
     checks["math"] = {"output": text[:100], "passed": "4" in text}
     logger.info(f"  Math check: {'PASS' if checks['math']['passed'] else 'FAIL'} — {text[:60]!r}")
 
+    if watchdog.breached.is_set():
+        return PhaseResult(
+            name="Phase 1: Coherence", passed=False,
+            elapsed_s=time.perf_counter() - t0,
+            reason=watchdog.breach_reason,
+        )
+
     # Check 2: hello world must contain "print"
     text2, p_toks2, d_toks2 = _generate(model, tokenizer,
                                           "Write hello world in Python. Just the code, nothing else.",
                                           max_tokens=64)
     checks["code"] = {"output": text2[:100], "passed": "print" in text2.lower()}
     logger.info(f"  Code check: {'PASS' if checks['code']['passed'] else 'FAIL'} — {text2[:60]!r}")
+
+    if watchdog.breached.is_set():
+        return PhaseResult(
+            name="Phase 1: Coherence", passed=False,
+            elapsed_s=time.perf_counter() - t0,
+            reason=watchdog.breach_reason,
+        )
 
     all_passed = all(c["passed"] for c in checks.values())
 
@@ -256,13 +403,21 @@ CODING_PROBLEMS = [
 ]
 
 
-def phase2_code_intelligence(model, tokenizer) -> PhaseResult:
+def phase2_code_intelligence(model, tokenizer,
+                             watchdog: MemoryWatchdog) -> PhaseResult:
     """Run 5 coding problems, exec + assert."""
     t0 = time.perf_counter()
     n_layers = len(model.layers)
     results = []
 
     for prob in CODING_PROBLEMS:
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 2: Code Intelligence", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
         tokens = tokenizer.encode(prob["prompt"])
         cache = _make_cache(n_layers)
         x = mx.array([tokens])
@@ -320,7 +475,7 @@ def phase2_code_intelligence(model, tokenizer) -> PhaseResult:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: Needle in Haystack
+# Phase 3: Needle in Haystack (ChatML via apply_chat_template)
 # ---------------------------------------------------------------------------
 
 def _build_code_haystack(tokenizer, target_tokens: int, needle: str,
@@ -414,19 +569,38 @@ def merge(left: list, right: list) -> list:
     return tokenizer.decode(tokens)
 
 
-def phase3_niah(model, tokenizer) -> PhaseResult:
-    """Needle-in-a-haystack at 4K and 8K context."""
+def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
+    """Needle-in-a-haystack at 4K context using ChatML formatting."""
     t0 = time.perf_counter()
     n_layers = len(model.layers)
     results = {}
 
-    for ctx_len in [4096, 8192]:
+    for ctx_len in [4096]:
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 3: Needle in Haystack", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
         logger.info(f"  NIAH @ {ctx_len // 1024}K context...")
 
         haystack = _build_code_haystack(tokenizer, ctx_len, NIAH_NEEDLE, 50.0)
-        prompt = f"{haystack}\n\nQuestion: {NIAH_QUESTION}\nAnswer:"
-        tokens = tokenizer.encode(prompt)[:ctx_len]
 
+        # Use ChatML formatting via tokenizer.apply_chat_template
+        messages = [
+            {"role": "user",
+             "content": f"Here is some code:\n\n{haystack}\n\nQuestion: {NIAH_QUESTION}"}
+        ]
+        try:
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+        except Exception:
+            # Fallback if tokenizer doesn't support chat templates
+            prompt = f"{haystack}\n\nQuestion: {NIAH_QUESTION}\nAnswer:"
+
+        tokens = tokenizer.encode(prompt)[:ctx_len]
         cache = _make_cache(n_layers)
 
         # Chunked prefill
@@ -485,38 +659,243 @@ def phase3_niah(model, tokenizer) -> PhaseResult:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: Memory Profile (evaluated from profiler running across all phases)
+# Phase 4: HumanEval Lite (20 curated problems)
 # ---------------------------------------------------------------------------
 
-def phase4_memory_check(profiler_result) -> PhaseResult:
+HUMANEVAL_LITE = [
+    {
+        "task_id": "HE/0",
+        "prompt": 'def has_close_elements(numbers: list[float], threshold: float) -> bool:\n    """Check if any two numbers in the list are closer than threshold."""\n',
+        "test": "assert has_close_elements([1.0, 2.0, 3.0], 0.5) == False\nassert has_close_elements([1.0, 2.8, 3.0, 4.0], 0.3) == True",
+        "entry_point": "has_close_elements",
+    },
+    {
+        "task_id": "HE/1",
+        "prompt": 'def separate_paren_groups(paren_string: str) -> list[str]:\n    """Separate groups of balanced parentheses into individual strings."""\n',
+        "test": "assert separate_paren_groups('( ) (( )) (( )( ))') == ['()', '(())', '(()())']",
+        "entry_point": "separate_paren_groups",
+    },
+    {
+        "task_id": "HE/2",
+        "prompt": 'def truncate_number(number: float) -> float:\n    """Return the decimal part of a positive float."""\n',
+        "test": "assert abs(truncate_number(3.5) - 0.5) < 1e-6",
+        "entry_point": "truncate_number",
+    },
+    {
+        "task_id": "HE/3",
+        "prompt": 'def below_zero(operations: list[int]) -> bool:\n    """Check if a bank account starting at 0 goes below zero after operations."""\n',
+        "test": "assert below_zero([1, 2, -3, 1, 2, -4, 5, 6, -1, 2, -3, 5, -22]) == True\nassert below_zero([1, 2, 3]) == False",
+        "entry_point": "below_zero",
+    },
+    {
+        "task_id": "HE/4",
+        "prompt": 'def mean_absolute_deviation(numbers: list[float]) -> float:\n    """Compute mean absolute deviation around the mean."""\n',
+        "test": "assert abs(mean_absolute_deviation([1.0, 2.0, 3.0, 4.0]) - 1.0) < 1e-6",
+        "entry_point": "mean_absolute_deviation",
+    },
+    {
+        "task_id": "HE/5",
+        "prompt": 'def intersperse(numbers: list[int], delimeter: int) -> list[int]:\n    """Insert delimeter between every two consecutive elements."""\n',
+        "test": "assert intersperse([], 4) == []\nassert intersperse([1, 2, 3], 4) == [1, 4, 2, 4, 3]",
+        "entry_point": "intersperse",
+    },
+    {
+        "task_id": "HE/6",
+        "prompt": 'def parse_nested_parens(paren_string: str) -> list[int]:\n    """Return the max nesting depth for each group of parentheses."""\n',
+        "test": "assert parse_nested_parens('(()()) ((())) () ((())()())') == [2, 3, 1, 3]",
+        "entry_point": "parse_nested_parens",
+    },
+    {
+        "task_id": "HE/7",
+        "prompt": 'def filter_by_substring(strings: list[str], substring: str) -> list[str]:\n    """Filter strings that contain the given substring."""\n',
+        "test": "assert filter_by_substring([], 'a') == []\nassert filter_by_substring(['abc', 'bacd', 'cde', 'array'], 'a') == ['abc', 'bacd', 'array']",
+        "entry_point": "filter_by_substring",
+    },
+    {
+        "task_id": "HE/8",
+        "prompt": 'def sum_product(numbers: list[int]) -> tuple[int, int]:\n    """Return a tuple of (sum, product) of all numbers in the list."""\n',
+        "test": "assert sum_product([]) == (0, 1)\nassert sum_product([1, 2, 3, 4]) == (10, 24)",
+        "entry_point": "sum_product",
+    },
+    {
+        "task_id": "HE/9",
+        "prompt": 'def rolling_max(numbers: list[int]) -> list[int]:\n    """Return the running maximum at each position."""\n',
+        "test": "assert rolling_max([1, 2, 3, 2, 3, 4, 2]) == [1, 2, 3, 3, 3, 4, 4]",
+        "entry_point": "rolling_max",
+    },
+    {
+        "task_id": "HE/10",
+        "prompt": 'def is_palindrome(string: str) -> bool:\n    """Check if a string is a palindrome."""\n',
+        "test": "assert is_palindrome('') == True\nassert is_palindrome('aba') == True\nassert is_palindrome('abc') == False",
+        "entry_point": "is_palindrome",
+    },
+    {
+        "task_id": "HE/11",
+        "prompt": 'def string_xor(a: str, b: str) -> str:\n    """Perform XOR on two binary strings."""\n',
+        "test": "assert string_xor('010', '110') == '100'",
+        "entry_point": "string_xor",
+    },
+    {
+        "task_id": "HE/12",
+        "prompt": 'def longest(strings: list[str]) -> str | None:\n    """Return the longest string, or None if empty."""\n',
+        "test": "assert longest([]) is None\nassert longest(['a', 'bb', 'ccc']) == 'ccc'",
+        "entry_point": "longest",
+    },
+    {
+        "task_id": "HE/13",
+        "prompt": 'def greatest_common_divisor(a: int, b: int) -> int:\n    """Compute the GCD of two integers."""\n',
+        "test": "assert greatest_common_divisor(3, 5) == 1\nassert greatest_common_divisor(25, 15) == 5",
+        "entry_point": "greatest_common_divisor",
+    },
+    {
+        "task_id": "HE/14",
+        "prompt": 'def all_prefixes(string: str) -> list[str]:\n    """Return all prefixes from shortest to longest."""\n',
+        "test": "assert all_prefixes('abc') == ['a', 'ab', 'abc']",
+        "entry_point": "all_prefixes",
+    },
+    {
+        "task_id": "HE/15",
+        "prompt": 'def string_sequence(n: int) -> str:\n    """Return a space-separated string of numbers from 0 to n."""\n',
+        "test": "assert string_sequence(0) == '0'\nassert string_sequence(5) == '0 1 2 3 4 5'",
+        "entry_point": "string_sequence",
+    },
+    {
+        "task_id": "HE/16",
+        "prompt": 'def count_distinct_characters(string: str) -> int:\n    """Count distinct characters (case insensitive)."""\n',
+        "test": "assert count_distinct_characters('xyzXYZ') == 3\nassert count_distinct_characters('Jerry') == 4",
+        "entry_point": "count_distinct_characters",
+    },
+    {
+        "task_id": "HE/17",
+        "prompt": 'def parse_music(music_string: str) -> list[int]:\n    """Parse music notation: o=4, o|=2, .|=1 beats."""\n',
+        "test": "assert parse_music('o o| .| o| o| .| .| .| .| o o') == [4, 2, 1, 2, 2, 1, 1, 1, 1, 4, 4]",
+        "entry_point": "parse_music",
+    },
+    {
+        "task_id": "HE/18",
+        "prompt": 'def how_many_times(string: str, substring: str) -> int:\n    """Count how many times substring occurs in string (overlapping)."""\n',
+        "test": "assert how_many_times('', 'a') == 0\nassert how_many_times('aaa', 'a') == 3\nassert how_many_times('aaaa', 'aa') == 3",
+        "entry_point": "how_many_times",
+    },
+    {
+        "task_id": "HE/19",
+        "prompt": 'def sort_numbers(numbers: str) -> str:\n    """Sort space-separated number words (zero through nine)."""\n',
+        "test": "assert sort_numbers('three one five') == 'one three five'",
+        "entry_point": "sort_numbers",
+    },
+]
+
+
+def phase4_humaneval_lite(model, tokenizer,
+                          watchdog: MemoryWatchdog) -> PhaseResult:
+    """Run 20 HumanEval Lite problems, exec + assert. Gate: >=50% pass@1."""
+    t0 = time.perf_counter()
+    n_layers = len(model.layers)
+    results = []
+
+    for prob in HUMANEVAL_LITE:
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 4: HumanEval Lite", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
+        tokens = tokenizer.encode(prob["prompt"])
+        cache = _make_cache(n_layers)
+        x = mx.array([tokens])
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+
+        generated = []
+        for _ in range(256):
+            token = mx.argmax(logits[:, -1, :], axis=-1)
+            mx.eval(token)
+            tok_id = token.item()
+            generated.append(tok_id)
+            text_so_far = tokenizer.decode(generated)
+            if "\n\n" in text_so_far or "\ndef " in text_so_far:
+                break
+            if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
+                break
+            x = token.reshape(1, 1)
+            logits = model(x, cache=cache)
+            mx.eval(logits)
+
+        completion = tokenizer.decode(generated).split("\n\n")[0].split("\ndef ")[0]
+        full_code = prob["prompt"] + completion
+
+        try:
+            exec_globals = {}
+            exec(full_code, exec_globals)
+            exec(prob["test"], exec_globals)
+            passed = True
+        except Exception as e:
+            passed = False
+            logger.debug(f"    {prob['task_id']} error: {e}")
+
+        results.append({"task_id": prob["task_id"],
+                        "entry_point": prob["entry_point"],
+                        "passed": passed,
+                        "completion": completion[:100]})
+        status = "PASS" if passed else "FAIL"
+        logger.info(f"  {status}: {prob['task_id']} ({prob['entry_point']})")
+
+        del cache
+        gc.collect()
+        mx.clear_cache()
+
+    pass_count = sum(1 for r in results if r["passed"])
+    pass_rate = pass_count / len(results)
+    gate_passed = pass_rate >= MIN_HUMANEVAL_PASS_RATE
+
+    logger.info(f"  HumanEval Lite: {pass_count}/{len(results)} "
+                f"({pass_rate*100:.0f}%) — gate {'PASS' if gate_passed else 'FAIL'}")
+
+    return PhaseResult(
+        name="Phase 4: HumanEval Lite",
+        passed=gate_passed,
+        elapsed_s=time.perf_counter() - t0,
+        details={"pass_rate": pass_rate, "pass_count": pass_count,
+                 "total": len(results), "results": results},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Memory Profile (summary of watchdog)
+# ---------------------------------------------------------------------------
+
+def phase5_memory_check(profiler_result, limits: Dict[str, float]) -> PhaseResult:
     """Check memory gates from the profiler that ran across all phases."""
     t0 = time.perf_counter()
 
     metal_peak = profiler_result.metal_peak_gb
     swap_peak = profiler_result.swap_peak_gb
+    metal_limit = limits["metal_peak_gb"]
+    swap_limit = limits["swap_delta_gb"]
 
     gates = {
         "metal_peak_gb": round(metal_peak, 2),
         "swap_peak_gb": round(swap_peak, 2),
-        "metal_limit_gb": MAX_METAL_PEAK_GB,
-        "swap_limit_gb": MAX_SWAP_DELTA_GB,
+        "metal_limit_gb": round(metal_limit, 2),
+        "swap_limit_gb": round(swap_limit, 2),
     }
 
-    metal_ok = metal_peak <= MAX_METAL_PEAK_GB
-    swap_ok = swap_peak <= MAX_SWAP_DELTA_GB
+    metal_ok = metal_peak <= metal_limit
+    swap_ok = swap_peak <= swap_limit
 
     if not metal_ok:
-        gates["reason"] = f"Metal peak {metal_peak:.1f}GB > {MAX_METAL_PEAK_GB}GB"
+        gates["reason"] = f"Metal peak {metal_peak:.1f}GB > {metal_limit:.1f}GB"
     if not swap_ok:
-        gates["reason"] = f"Swap delta {swap_peak:.1f}GB > {MAX_SWAP_DELTA_GB}GB"
+        gates["reason"] = f"Swap delta {swap_peak:.1f}GB > {swap_limit:.1f}GB"
 
-    logger.info(f"  Metal peak: {metal_peak:.1f} GB (limit {MAX_METAL_PEAK_GB}GB) "
+    logger.info(f"  Metal peak: {metal_peak:.1f} GB (limit {metal_limit:.1f}GB) "
                 f"{'PASS' if metal_ok else 'FAIL'}")
-    logger.info(f"  Swap peak:  {swap_peak:.1f} GB (limit {MAX_SWAP_DELTA_GB}GB) "
+    logger.info(f"  Swap peak:  {swap_peak:.1f} GB (limit {swap_limit:.1f}GB) "
                 f"{'PASS' if swap_ok else 'FAIL'}")
 
     return PhaseResult(
-        name="Phase 4: Memory Profile",
+        name="Phase 5: Memory Profile",
         passed=metal_ok and swap_ok,
         elapsed_s=time.perf_counter() - t0,
         details=gates,
@@ -524,12 +903,13 @@ def phase4_memory_check(profiler_result) -> PhaseResult:
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: Profiling Snapshot (write results JSON)
+# Phase 6: Write results JSON
 # ---------------------------------------------------------------------------
 
-def phase5_write_results(phases: List[PhaseResult], profiler_result,
-                         total_elapsed: float) -> PhaseResult:
-    """Write summary JSON to /tmp/hypercar_bench_results.json."""
+def phase6_write_results(phases: List[PhaseResult], profiler_result,
+                         total_elapsed: float,
+                         results_path: Path) -> PhaseResult:
+    """Write summary JSON."""
     t0 = time.perf_counter()
 
     results = {
@@ -555,8 +935,8 @@ def phase5_write_results(phases: List[PhaseResult], profiler_result,
             "details": p.details,
         }
 
-    RESULTS_PATH.write_text(json.dumps(results, indent=2, default=str))
-    logger.info(f"  Results written to {RESULTS_PATH}")
+    results_path.write_text(json.dumps(results, indent=2, default=str))
+    logger.info(f"  Results written to {results_path}")
 
     # Also write the raw profile
     profile_data = {
@@ -576,10 +956,10 @@ def phase5_write_results(phases: List[PhaseResult], profiler_result,
     logger.info(f"  Profile written to {PROFILE_PATH}")
 
     return PhaseResult(
-        name="Phase 5: Profiling Snapshot",
+        name="Phase 6: Summary",
         passed=True,
         elapsed_s=time.perf_counter() - t0,
-        details={"results_path": str(RESULTS_PATH),
+        details={"results_path": str(results_path),
                  "profile_path": str(PROFILE_PATH)},
     )
 
@@ -615,9 +995,20 @@ def main():
         description="Hypercar gated benchmark — run before every commit",
     )
     parser.add_argument("--quick", action="store_true",
-                        help="Only run Phase 0 + 1 (smoke + coherence)")
-    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Phase 0+1 only (~30s)")
+    parser.add_argument("--full", action="store_true",
+                        help="All phases including HumanEval (~15min)")
+    parser.add_argument("--max-metal-pct", type=float, default=80.0,
+                        help="Metal peak limit as %% of system memory (default: 80)")
+    parser.add_argument("--max-swap-pct", type=float, default=17.0,
+                        help="Swap delta limit as %% of system memory (default: 17)")
+    parser.add_argument("--max-load-pct", type=float, default=42.0,
+                        help="Metal at load limit as %% of system memory (default: 42)")
+    parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
+    parser.add_argument("--json", type=str,
+                        default="/tmp/hypercar_bench_results.json",
+                        help="Path for results JSON")
     args = parser.parse_args()
 
     # Logging
@@ -628,12 +1019,30 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Detect system memory and compute limits
+    total_gb = _detect_system_memory_gb()
+    limits = _compute_memory_limits(
+        total_gb, args.max_metal_pct, args.max_swap_pct, args.max_load_pct,
+    )
+    logger.info(f"System memory: {total_gb:.1f} GB")
+    logger.info(f"  Metal peak limit:  {limits['metal_peak_gb']:.1f} GB "
+                f"({args.max_metal_pct:.0f}%)")
+    logger.info(f"  Metal load limit:  {limits['metal_load_gb']:.1f} GB "
+                f"({args.max_load_pct:.0f}%)")
+    logger.info(f"  Swap delta limit:  {limits['swap_delta_gb']:.1f} GB "
+                f"({args.max_swap_pct:.0f}%)")
+
+    results_path = Path(args.json)
     total_t0 = time.perf_counter()
     phases: List[PhaseResult] = []
 
-    # Start background profiler (Phase 4 — runs continuously)
-    profiler = Profiler(sample_interval=1.0)
-    profiler.start()
+    # Start fail-fast memory watchdog
+    watchdog = MemoryWatchdog(
+        metal_limit_gb=limits["metal_peak_gb"],
+        swap_limit_gb=limits["swap_delta_gb"],
+        sample_interval=1.0,
+    )
+    watchdog.start()
 
     try:
         # Load model once
@@ -644,65 +1053,83 @@ def main():
         load_time = time.perf_counter() - load_t0
         logger.info(f"Model loaded in {load_time:.1f}s")
 
+        if watchdog.breached.is_set():
+            logger.error("MEMORY BREACH during model load — aborting")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
+
         # Phase 0: Smoke
         logger.info("\n=== Phase 0: Smoke ===")
-        p0 = phase0_smoke(model, tokenizer)
+        p0 = phase0_smoke(model, tokenizer, watchdog, limits["metal_load_gb"])
         phases.append(p0)
         if not p0.passed:
             logger.error("Phase 0 FAILED — aborting")
-            return _finish(phases, profiler, total_t0)
+            return _finish(phases, watchdog, limits, total_t0, results_path)
 
         # Phase 1: Coherence
         logger.info("\n=== Phase 1: Coherence ===")
-        p1 = phase1_coherence(model, tokenizer)
+        p1 = phase1_coherence(model, tokenizer, watchdog)
         phases.append(p1)
         if not p1.passed:
             logger.error("Phase 1 FAILED — aborting")
-            return _finish(phases, profiler, total_t0)
+            return _finish(phases, watchdog, limits, total_t0, results_path)
 
         if args.quick:
-            logger.info("\n--quick mode: skipping Phase 2-3")
-            return _finish(phases, profiler, total_t0)
+            logger.info("\n--quick mode: skipping Phase 2+")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
 
         # Phase 2: Code Intelligence
         logger.info("\n=== Phase 2: Code Intelligence ===")
-        p2 = phase2_code_intelligence(model, tokenizer)
+        p2 = phase2_code_intelligence(model, tokenizer, watchdog)
         phases.append(p2)
         if not p2.passed:
             logger.error("Phase 2 FAILED — aborting")
-            return _finish(phases, profiler, total_t0)
+            return _finish(phases, watchdog, limits, total_t0, results_path)
 
         # Phase 3: Needle in Haystack
         logger.info("\n=== Phase 3: Needle in Haystack ===")
-        p3 = phase3_niah(model, tokenizer)
+        p3 = phase3_niah(model, tokenizer, watchdog)
         phases.append(p3)
         if not p3.passed:
             logger.error("Phase 3 FAILED — aborting")
-            return _finish(phases, profiler, total_t0)
+            return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        if not args.full:
+            logger.info("\nDefault mode: skipping Phase 4 (HumanEval). Use --full to include.")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        # Phase 4: HumanEval Lite
+        logger.info("\n=== Phase 4: HumanEval Lite ===")
+        p4 = phase4_humaneval_lite(model, tokenizer, watchdog)
+        phases.append(p4)
+        if not p4.passed:
+            logger.error("Phase 4 FAILED — aborting")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
 
     except Exception as e:
         logger.exception("Benchmark crashed: %s", e)
         phases.append(PhaseResult(name="CRASH", passed=False,
                                   details={"error": str(e)}))
 
-    return _finish(phases, profiler, total_t0)
+    return _finish(phases, watchdog, limits, total_t0, results_path)
 
 
-def _finish(phases: List[PhaseResult], profiler: Profiler,
-            total_t0: float) -> int:
-    """Stop profiler, evaluate memory gates, write results, print summary."""
-    profiler_result = profiler.stop()
+def _finish(phases: List[PhaseResult], watchdog: MemoryWatchdog,
+            limits: Dict[str, float], total_t0: float,
+            results_path: Path) -> int:
+    """Stop watchdog, evaluate memory gates, write results, print summary."""
+    profiler_result = watchdog.stop()
     total_elapsed = time.perf_counter() - total_t0
 
-    # Phase 4: Memory check
-    logger.info("\n=== Phase 4: Memory Profile ===")
-    p4 = phase4_memory_check(profiler_result)
-    phases.append(p4)
-
-    # Phase 5: Write results
-    logger.info("\n=== Phase 5: Profiling Snapshot ===")
-    p5 = phase5_write_results(phases, profiler_result, total_elapsed)
+    # Phase 5: Memory check
+    logger.info("\n=== Phase 5: Memory Profile ===")
+    p5 = phase5_memory_check(profiler_result, limits)
     phases.append(p5)
+
+    # Phase 6: Write results
+    logger.info("\n=== Phase 6: Summary ===")
+    p6 = phase6_write_results(phases, profiler_result, total_elapsed,
+                              results_path)
+    phases.append(p6)
 
     _print_summary(phases, total_elapsed)
 

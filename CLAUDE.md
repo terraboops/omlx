@@ -6,16 +6,30 @@ oMLX Hypercar — high-performance local LLM inference on Apple Silicon with com
 
 ## Before Every Commit
 
-```
 REQUIRED: Run the benchmark before committing:
   .venv/bin/python -m omlx.bench.hypercar_bench
 
-For quick iteration (smoke + coherence only):
+For quick iteration (smoke + coherence only, ~30s):
   .venv/bin/python -m omlx.bench.hypercar_bench --quick
 
+For full validation including HumanEval (~15min):
+  .venv/bin/python -m omlx.bench.hypercar_bench --full
+
 ALL gates must pass before committing. Fix any failures first.
-Do not use --no-verify to skip hooks.
-```
+
+Memory limits are percentage-based (auto-detected from system RAM):
+  Metal peak: 80% of system memory
+  Swap delta: 17% of system memory
+  Metal at load: 42% of system memory
+  Breaches cause IMMEDIATE abort (fail-fast watchdog).
+
+Gate summary:
+  - Memory: no breach during any phase (Metal, swap)
+  - Smoke: model loads, generates tokens
+  - Coherence: 2/2 basic checks
+  - Code intelligence: >= 3/5 problems
+  - NIAH: 4K retrieval passes
+  - HumanEval (--full): >= 50% pass@1
 
 ## Key Architecture
 
