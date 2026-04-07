@@ -284,9 +284,11 @@ class TaskManager:
     # Save to disk
     save_path = "/tmp/hypercar_session.npz"
     t0 = time.perf_counter()
+    saved_layers = 0
     for i, c in enumerate(cache):
-        if hasattr(c, 'save_to_disk'):
+        if hasattr(c, 'save_to_disk') and hasattr(c, 'offset') and c.offset > 0:
             c.save_to_disk(f"/tmp/hypercar_session_layer{i}")
+            saved_layers += 1
     save_time = time.perf_counter() - t0
 
     total_size = sum(
@@ -294,7 +296,8 @@ class TaskManager:
         for i in range(n_layers)
         if Path(f"/tmp/hypercar_session_layer{i}.npz").exists()
     ) / 1e6
-    logger.info(f"Saved {n_layers} layer caches in {save_time:.2f}s ({total_size:.1f}MB)")
+    logger.info(f"Saved {saved_layers} TQ3 layer caches in {save_time:.2f}s ({total_size:.1f}MB)")
+    logger.info(f"(Layer 0 is fp16 — not saved, will re-prefill on load)")
 
     # Clear everything
     del cache, logits
@@ -307,15 +310,18 @@ class TaskManager:
     logger.info("Loading session from disk...")
     cache2 = _make_tq3_cache(n_layers)
     t0 = time.perf_counter()
+    loaded_count = 0
     for i, c in enumerate(cache2):
         path = f"/tmp/hypercar_session_layer{i}.npz"
         if hasattr(c, 'load_from_disk') and Path(path).exists():
             c.load_from_disk(path)
+            loaded_count += 1
     load_time = time.perf_counter() - t0
 
     loaded_offset = cache2[1].offset if hasattr(cache2[1], 'offset') else 0
-    logger.info(f"Loaded {loaded_offset} tokens in {load_time:.2f}s")
-    logger.info(f"Compare: original prefill was {prefill_time:.2f}s\n")
+    logger.info(f"Loaded {loaded_count} layers ({loaded_offset} tokens) in {load_time:.2f}s")
+    logger.info(f"Compare: original prefill was {prefill_time:.2f}s")
+    logger.info(f"(Layer 0 fp16 needs re-prefill — 1 layer is fast)\n")
 
     # Generate from the restored cache
     text, _, _ = _generate(
