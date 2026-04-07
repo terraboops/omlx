@@ -54,12 +54,19 @@ def _make_tq3_cache(n_layers):
 def _generate(model, tokenizer, cache, prompt_tokens=None, prompt_text=None,
               max_tokens=64, stop_on="\n\n"):
     """Generate text, return (text, cache, logits)."""
-    if prompt_tokens is None:
+    if prompt_tokens is None and prompt_text is not None:
         prompt_tokens = tokenizer.encode(prompt_text)
 
-    # Prefill
-    logits = model(mx.array([prompt_tokens]), cache=cache)
-    mx.eval(logits)
+    # Prefill (skip if no new tokens to add)
+    if prompt_tokens:
+        logits = model(mx.array([prompt_tokens]), cache=cache)
+        mx.eval(logits)
+    else:
+        # Continue from existing cache — need a dummy forward to get logits
+        # Use the last token from the cache as seed
+        seed = mx.array([[tokenizer.eos_token_id or 0]])
+        logits = model(seed, cache=cache)
+        mx.eval(logits)
 
     # Decode
     generated = []
@@ -176,14 +183,23 @@ def demo_rewind(model, tokenizer, n_layers):
     checkpoint_offset = cache[1].offset if hasattr(cache[1], 'offset') else 0
     logger.info(f"Checkpoint saved at offset: {checkpoint_offset}\n")
 
-    # Generate attempt 1
-    text1, cache, logits = _generate(
-        model, tokenizer, cache,
-        prompt_tokens=[], max_tokens=60, stop_on="\n\n",
-    )
+    # Generate attempt 1 — continue from current state
+    generated = []
+    for _ in range(60):
+        token = mx.argmax(logits[:, -1, :], axis=-1)
+        mx.eval(token)
+        tid = token.item()
+        generated.append(tid)
+        text = tokenizer.decode(generated)
+        if "\n\n" in text:
+            break
+        logits = model(token.reshape(1, 1), cache=cache)
+        mx.eval(logits)
+    text1 = tokenizer.decode(generated)
     post_gen_offset = cache[1].offset if hasattr(cache[1], 'offset') else 0
     logger.info(f"Attempt 1 ({post_gen_offset - checkpoint_offset} new tokens):")
     logger.info(f"  {text1.strip()[:100]}\n")
+    del logits  # will get fresh logits after rewind
 
     # Rewind to checkpoint
     t0 = time.perf_counter()
