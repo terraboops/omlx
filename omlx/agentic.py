@@ -45,10 +45,11 @@ def _load():
     return model, tokenizer, n
 
 
-def _make_tq3_cache(n_layers):
+def _make_tq3_cache(n_layers, min_quant_tokens=0):
     from mlx_lm.models.cache import KVCache
     from omlx.turboquant_kv import TurboQuantKVCache
-    return [KVCache() if i == 0 else TurboQuantKVCache(bits=3) for i in range(n_layers)]
+    return [KVCache() if i == 0 else TurboQuantKVCache(bits=3, min_quant_tokens=min_quant_tokens)
+            for i in range(n_layers)]
 
 
 def _generate(model, tokenizer, cache, prompt_tokens=None, prompt_text=None,
