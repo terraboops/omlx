@@ -815,6 +815,177 @@ def _tq_sdpa_prefill_kernel():
     )
 
 
+@lru_cache(maxsize=None)
+def _tq_fused_prefill_kernel():
+    """Fused TQ3 FlashAttention for prefill: dequant + scores + softmax + V accumulate.
+
+    Single-pass over all history tokens for a tile of TILE_Q queries.
+    No intermediate partials buffer — online softmax in registers.
+
+    Grid: (H_kv, B, num_q_tiles)
+    Threadgroup: (32, GQA, 1) — 32 threads per SIMD, GQA query heads per KV head
+
+    For each threadgroup:
+      - Iterates over ALL history tokens (no block splitting)
+      - Each SIMD thread handles QK_PER_THREAD = D/32 dimensions
+      - Codebook (8 entries) loaded into thread-local registers
+      - Online softmax: running max + exp rescale per query per head
+
+    Memory layout per threadgroup (SRAM):
+      - Q tile: TILE_Q * Dim * 4 bytes = 16 * 128 * 4 = 8KB
+      - Online softmax state: TILE_Q * (max + sum + D output) in registers
+      - Codebook: 8 floats in registers (32 bytes)
+      Total SRAM: ~8KB (well under 32KB limit)
+    """
+    source = r"""
+        auto simd_lid = thread_index_in_simdgroup;       // 0..31 within SIMD
+        auto kv_head = threadgroup_position_in_grid.x;    // which KV head
+        auto batch_idx = threadgroup_position_in_grid.y;  // batch index
+        auto q_tile_idx = threadgroup_position_in_grid.z; // which Q tile
+        auto gqa_factor = threads_per_threadgroup.y;      // GQA ratio
+        auto q_head_in_group = thread_position_in_threadgroup.y;  // 0..GQA-1
+        auto q_head = gqa_factor * kv_head + q_head_in_group;
+        auto num_kv_heads = threadgroups_per_grid.x;
+        auto total_tokens = k_norms_shape[2];
+
+        // Flat output index: batch * (num_q_tiles * TILE_Q) * H_q * Dim
+        // But we use a simpler layout: output[(batch, q_head, q_tile_idx * TILE_Q + qi), d]
+
+        // KV base pointers (shared across all queries in this tile)
+        auto kv_bh = batch_idx * num_kv_heads + kv_head;
+        auto k_base = k_packed + kv_bh * total_tokens * KPackedWidth;
+        auto v_base = v_packed + kv_bh * total_tokens * VPackedWidth;
+        auto kn_base = k_norms + kv_bh * total_tokens;
+        auto vn_base = v_norms + kv_bh * total_tokens;
+
+        // Process TILE_Q queries sequentially (pinned KV, looped Q)
+        for (int qi = 0; qi < TileQ; qi++) {
+            int global_qi = q_tile_idx * TileQ + qi;
+            if (global_qi >= NumQueries) break;
+
+            // Load query from input
+            auto q_bhl = (batch_idx * NumQueries * num_kv_heads * gqa_factor)
+                       + (global_qi * num_kv_heads * gqa_factor)
+                       + q_head;
+            auto q_ptr = queries + q_bhl * Dim;
+
+            float q[QK_PER_THREAD];
+            for (int i = 0; i < QK_PER_THREAD; i++)
+                q[i] = static_cast<float>(q_ptr[simd_lid * QK_PER_THREAD + i]) * scale[0];
+
+            // Online softmax state for this query
+            float o[QK_PER_THREAD] = {0};
+            float max_score = -INFINITY;
+            float sum_exp = 0.0f;
+
+            // Loop over ALL history tokens (single pass, no block splitting)
+            for (int t = 0; t < total_tokens; t++) {
+                // Unpack K and compute dot product
+                auto k_ptr = k_base + t * KPackedWidth;
+                float score = 0.0f;
+                for (int j = 0; j < QK_PER_THREAD; j++) {
+                    int d = simd_lid * QK_PER_THREAD + j;
+                    int bit_off = d * KBits;
+                    int word = bit_off / 32;
+                    int off = bit_off % 32;
+                    uint val = k_ptr[word] >> off;
+                    int spill = off + KBits - 32;
+                    if (spill > 0) val |= k_ptr[word + 1] << (KBits - spill);
+                    val &= ((1u << KBits) - 1u);
+                    score += q[j] * k_codebook[val];
+                }
+                score = simd_sum(score) * static_cast<float>(kn_base[t]);
+
+                // Online softmax update
+                float new_max = max(max_score, score);
+                float factor = exp(max_score - new_max);
+                float exp_score = exp(score - new_max);
+                max_score = new_max;
+                sum_exp = sum_exp * factor + exp_score;
+
+                // Unpack V and accumulate
+                auto v_ptr = v_base + t * VPackedWidth;
+                float v_norm = static_cast<float>(vn_base[t]);
+                for (int j = 0; j < QK_PER_THREAD; j++) {
+                    int d = simd_lid * QK_PER_THREAD + j;
+                    int bit_off = d * VBits;
+                    int word = bit_off / 32;
+                    int off = bit_off % 32;
+                    uint val = v_ptr[word] >> off;
+                    int spill = off + VBits - 32;
+                    if (spill > 0) val |= v_ptr[word + 1] << (VBits - spill);
+                    val &= ((1u << VBits) - 1u);
+                    o[j] = o[j] * factor + exp_score * v_codebook[val] * v_norm;
+                }
+            }
+
+            // Normalize output
+            float inv_sum = sum_exp > 0 ? 1.0f / sum_exp : 0.0f;
+            for (int j = 0; j < QK_PER_THREAD; j++)
+                o[j] *= inv_sum;
+
+            // Write output
+            auto out_idx = q_bhl * Dim;
+            for (int j = 0; j < QK_PER_THREAD; j++)
+                out[out_idx + simd_lid * QK_PER_THREAD + j] = static_cast<half>(o[j]);
+        }
+    """
+    return mx.fast.metal_kernel(
+        name="tq_fused_prefill",
+        input_names=["queries", "k_packed", "k_norms", "k_codebook",
+                     "v_packed", "v_norms", "v_codebook", "scale"],
+        output_names=["out"],
+        source=source,
+        ensure_row_contiguous=True,
+    )
+
+
+def _fused_tq_prefill(
+    queries: mx.array,       # (B*L*H_q, D) — pre-rotated, flattened
+    k_packed: mx.array,      # (B, H_kv, T, packed_width)
+    k_norms: mx.array,       # (B, H_kv, T)
+    k_codebook: mx.array,    # (n_levels,)
+    v_packed: mx.array,      # (B, H_kv, T, packed_width)
+    v_norms: mx.array,       # (B, H_kv, T)
+    v_codebook: mx.array,    # (n_levels,)
+    scale: float,
+    B: int, L: int, H_q: int, H_kv: int, D: int, bits: int,
+    tile_q: int = 16,
+) -> mx.array:
+    """Fused TQ3 prefill: single-pass FlashAttention for L queries × T history.
+
+    One kernel dispatch per call. Handles all L queries by tiling into
+    groups of tile_q, each processed sequentially within a threadgroup.
+    """
+    GQA = H_q // H_kv
+    pw = _packed_width(D, bits)
+    qpt = D // 32
+    T = k_norms.shape[2]
+    total_heads = B * L * H_q
+
+    num_q_tiles = (L + tile_q - 1) // tile_q
+    scale_arr = mx.array([scale], dtype=mx.float32)
+
+    out = _tq_fused_prefill_kernel()(
+        inputs=[queries, k_packed, k_norms, k_codebook,
+                v_packed, v_norms, v_codebook, scale_arr],
+        output_shapes=[(total_heads, D)],
+        output_dtypes=[mx.float16],
+        grid=(H_kv * 32, B * GQA, num_q_tiles),
+        threadgroup=(32, GQA, 1),
+        template=[
+            ("Dim", D), ("QK_PER_THREAD", qpt),
+            ("KBits", bits), ("VBits", bits),
+            ("KPackedWidth", pw), ("VPackedWidth", pw),
+            ("TileQ", tile_q), ("NumQueries", L),
+        ],
+        init_value=0.0,
+    )
+
+    # Reshape: (B*L*H_q, D) → (B, H_q, L, D)
+    return out[0].reshape(B, L, H_q, D).transpose(0, 2, 1, 3)
+
+
 def _fused_tq_sdpa_prefill(
     queries: mx.array,       # (B, L, H_q, D) — interleaved layout
     k_packed: mx.array,      # (B, H_kv, T, packed_width)
