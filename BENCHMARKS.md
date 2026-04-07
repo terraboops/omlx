@@ -340,47 +340,6 @@ Fail-fast working as designed:
 Next: wire STARC decode to hit 25 tok/s target.
 ```
 
-### Adaptive Memory Budget (omlx/memory_budget.py)
-```
-Live headroom calculation — uses system memory, active memory, and KV
-cache size to dynamically pick dequant chunk sizes:
-
-  System state     | Budget  | Chunk @ L=2048
-  Fresh prefill    | 17GB    | 16K (fast, saturates bandwidth)
-  Decode at 65K    | 14.6GB  | 8K
-  Decode at 256K   | 10.3GB  | 8K
-  Large queries L=8K fresh | 17GB | 4K (scales with L)
-
-The budget shrinks automatically when active KV grows, preventing OOM
-when context builds up. Background prefill of a "next context" while
-user is decoding can use the remaining 14.6GB safely.
-
-Safety factor tau=1.2 for MLX version variance. Computed ONCE per
-prefill step (not per layer) — avoids 47× overhead in hot path.
-```
-
-### KV Cache Persistence (omlx/turboquant_kv.py)
-```
-Three new features unlock stateful sessions:
-
-rewind_to(offset):
-  - O(1) context rewind, no re-prefill
-  - Just moves offset pointer, compressed storage unchanged
-  - Use case: user undoes last turn
-
-save_to_disk(path):
-  - Freezes compressed KV as .npz (5GB for 256K context)
-  - ~1.5s write on NVMe
-  - Use case: snapshot codebase context at end of session
-
-load_from_disk(path):
-  - Thaws cache from disk, no prefill needed
-  - Instant resume
-  - Use case: reload yesterday's codebase in 1.5s
-
-Combined: persistent sessions with instant context switching.
-```
-
 ### Run 11: Long-Context Quality Crisis + fp16_layers=16 Fix
 ```
 Date: 2026-04-04 (evening)
