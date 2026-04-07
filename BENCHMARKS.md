@@ -381,7 +381,7 @@ load_from_disk(path):
 Combined: persistent sessions with instant context switching.
 ```
 
-### Run 12: Long-Context Quality Crisis + fp16_layers=16 Fix
+### Run 11: Long-Context Quality Crisis + fp16_layers=16 Fix
 ```
 Date: 2026-04-04 (evening)
 Model: Qwen3-Coder-30B-A3B-Instruct-4bit
@@ -422,7 +422,7 @@ Default changed: fp16_layers now 16 (was 1).
 New flag: --fp16-layers N to tune the hybrid ratio.
 ```
 
-### Run 13: Medusa Distillation (works mechanically, needs code data)
+### Run 12: Medusa Distillation (works mechanically, needs code data)
 ```
 Date: 2026-04-04 (evening)
 Model: Qwen3-Coder-30B-A3B-Instruct-4bit
@@ -453,7 +453,7 @@ Needs proper training setup with:
 Deferred as production work.
 ```
 
-### Run 11: Intelligence Validation + Feature Matrix
+### Run 13: Intelligence Validation + Feature Matrix
 ```
 Date: 2026-04-04 (PM)
 Model: Qwen3-Coder-30B-A3B-Instruct-4bit
@@ -492,7 +492,7 @@ Attempted: L>1 fused Metal prefill kernel
   - Deferred: requires proper Metal SIMD kernel redesign
 ```
 
-### Run 14: 3-Bit Native KV — The Breakthrough
+### Run 14: 3-Bit Native KV + Server Working with OpenCode
 ```
 Date: 2026-04-06
 Model: Qwen3-Coder-30B-A3B-Instruct-4bit (M4 Pro 48GB)
@@ -526,6 +526,43 @@ Memory projection (3-bit native KV):
 Server: hypercar_server.py with 3-bit default, prompt caching,
 tool parse safety, and generation progress logging.
 Tested with OpenCode: 48 tok/s first response, 25 tok/s follow-up.
+```
+
+### Run 15: WHT TQ3 — Paper-Correct Implementation, All Gates Pass
+```
+Date: 2026-04-06
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit (M4 Pro 48GB)
+Cache: TurboQuantKVCache(bits=3) with Walsh-Hadamard Transform
+
+Key fix: replaced Givens rotation (only mixes pairs) with Walsh-Hadamard
+Transform (decorrelates ALL dimensions). This makes the Beta((d-1)/2, (d-1)/2)
+codebook valid per TurboQuant paper (arXiv:2504.19874).
+
+Gated benchmark results (hypercar_bench.py):
+
+  Mode    | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Memory  | Total
+  --------|---------|---------|---------|---------|---------|------
+  native  | PASS    | PASS    | 5/5     | PASS    | 20.0GB  | 17.6s
+  tq3     | PASS    | PASS    | 5/5     | PASS    | 18.7GB  | 17.5s
+
+Both modes produce identical quality:
+  - 5/5 coding problems (factorial, reverse, palindrome, fibonacci, flatten)
+  - NIAH "ALPHA-7749" retrieval at 4K context
+  - Swap: 0GB (no memory leaks)
+
+TQ3 advantages over native:
+  - 1.3GB lower peak memory (codebook more compact than affine)
+  - save_to_disk() / load_from_disk() — session persistence
+  - rewind_to() — O(1) context undo
+  - deepcopy — context forking for parallel exploration
+
+Memory projection (both modes, 3-bit):
+  65K:   18.6 GB total
+  256K:  22.8 GB total
+  1M:    39.7 GB total ← fits in 48GB
+
+Server: hypercar_server.py --kv-mode {native,tq3,fp16}
+Benchmark: hypercar_bench.py --kv-mode {native,tq3,fp16}
 ```
 
 ---
