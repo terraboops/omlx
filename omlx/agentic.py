@@ -235,8 +235,8 @@ def demo_save_load(model, tokenizer, n_layers):
     """Save a session to disk, reload it without re-prefill."""
     logger.info("=== DEMO: Session Persistence ===\n")
 
-    # Build a meaningful context
-    context = """# Project: Task Management API
+    # Build a context LONGER than min_quant_tokens (512) so TQ3 activates
+    context = """# Project: Task Management API — a comprehensive REST backend
 # This is a large codebase with many utility functions.
 
 from typing import List, Optional, Dict
@@ -270,7 +270,35 @@ class TaskManager:
         return False
 
 """
-    prompt = context + "\n# Add a method to filter tasks by tag:\n"
+    # Pad context to exceed min_quant_tokens (512)
+    extra = '''
+    def list_by_priority(self, min_priority: int = 0) -> List[Task]:
+        return [t for t in self.tasks.values() if t.priority >= min_priority]
+
+    def search(self, query: str) -> List[Task]:
+        return [t for t in self.tasks.values()
+                if query.lower() in t.title.lower() or query.lower() in t.description.lower()]
+
+    def stats(self) -> Dict[str, int]:
+        total = len(self.tasks)
+        completed = sum(1 for t in self.tasks.values() if t.completed)
+        return {"total": total, "completed": completed, "pending": total - completed}
+
+    def export_json(self) -> str:
+        import json
+        return json.dumps([{"id": t.id, "title": t.title, "completed": t.completed}
+                          for t in self.tasks.values()])
+
+    def import_json(self, data: str) -> int:
+        import json
+        items = json.loads(data)
+        count = 0
+        for item in items:
+            self.create(item["title"], item.get("description", ""))
+            count += 1
+        return count
+'''
+    prompt = context + extra + "\n# Add a method to filter tasks by tag:\n"
     tokens = tokenizer.encode(prompt)
     logger.info(f"Prefilling {len(tokens)} tokens...")
 
@@ -286,7 +314,7 @@ class TaskManager:
     t0 = time.perf_counter()
     saved_layers = 0
     for i, c in enumerate(cache):
-        if hasattr(c, 'save_to_disk') and hasattr(c, 'offset') and c.offset > 0:
+        if hasattr(c, 'save_to_disk') and hasattr(c, '_k_norms') and c._k_norms is not None:
             c.save_to_disk(f"/tmp/hypercar_session_layer{i}")
             saved_layers += 1
     save_time = time.perf_counter() - t0
