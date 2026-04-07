@@ -606,12 +606,13 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
 
         logger.info(f"  NIAH @ {ctx_len // 1024}K context...")
 
-        haystack = _build_code_haystack(tokenizer, ctx_len, NIAH_NEEDLE, 50.0)
+        # Leave room for ChatML template overhead + question (~200 tokens)
+        haystack = _build_code_haystack(tokenizer, ctx_len - 200, NIAH_NEEDLE, 50.0)
 
         # Use ChatML formatting via tokenizer.apply_chat_template
         messages = [
             {"role": "user",
-             "content": f"Here is some code:\n\n{haystack}\n\nQuestion: {NIAH_QUESTION}"}
+             "content": f"Here is some code:\n\n{haystack}\n\nBased on the code above, answer this question: {NIAH_QUESTION}\nRespond with ONLY the answer, nothing else."}
         ]
         try:
             prompt = tokenizer.apply_chat_template(
