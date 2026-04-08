@@ -465,7 +465,13 @@ def main():
                 sid = getattr(_request_session, 'session_id', None)
                 if sid and sid in _sessions:
                     session = _sessions[sid]
-                    _agentic_logger.info(f"📦 Session {sid}: injecting TQ3 cache ({session['tokens']} tokens)")
+                    _agentic_logger.info(
+                        f"📦 Session {sid}: injecting TQ3 cache "
+                        f"({session['tokens']} cached, {len(tokens)} new)"
+                    )
+                    # Return session cache + ALL tokens as "rest" to prefill.
+                    # The new tokens (from the chat template) will be prefilled
+                    # on top of the existing session context.
                     return session["cache"], tokens
                 return _prev_fetch(self, model, tokens)
             _srv.LRUPromptCache.fetch_nearest_cache = _session_fetch
@@ -491,20 +497,37 @@ def main():
                     try:
                         cl = int(handler_self.headers.get("Content-Length", 0))
                         if cl > 0:
-                            # Read body, check for session_id, then stuff it back
                             raw = handler_self.rfile.read(cl)
                             body = _json.loads(raw)
                             sid = body.get("session_id")
                             if sid and sid in _sessions:
                                 _request_session.session_id = sid
                                 _agentic_logger.info(f"📦 Injecting session {sid} into completion request")
-                            # Re-create rfile with the body we consumed
                             import io
                             handler_self.rfile = io.BytesIO(raw)
                             handler_self.headers['Content-Length'] = str(len(raw))
                     except Exception as e:
                         _agentic_logger.debug(f"Session peek failed: {e}")
-                    return orig_do_post(handler_self)
+
+                    # Run standard handler
+                    result = orig_do_post(handler_self)
+
+                    # After generation: update session token count from cache offset
+                    sid = getattr(_request_session, 'session_id', None)
+                    if sid and sid in _sessions:
+                        session = _sessions[sid]
+                        # Find the first TQ3 cache with a valid offset
+                        for c in session["cache"]:
+                            if hasattr(c, 'offset') and c.offset > 0:
+                                old = session["tokens"]
+                                session["tokens"] = c.offset
+                                if c.offset != old:
+                                    _agentic_logger.info(
+                                        f"📊 Session {sid}: tokens {old} → {c.offset}"
+                                    )
+                                break
+                    _request_session.session_id = None
+                    return result
 
                 if handler_self.path == "/v1/sessions/fork":
                     body = _read_json_body(handler_self)
@@ -579,8 +602,11 @@ def main():
                     from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
                     import time as _time
 
-                    model_obj = handler_self.response_generator.model_provider.model
-                    tokenizer_obj = handler_self.response_generator.model_provider.tokenizer
+                    mp = handler_self.response_generator.model_provider
+                    if mp.model is None:
+                        mp.load("default_model")
+                    model_obj = mp.model
+                    tokenizer_obj = mp.tokenizer
                     n_layers = len(model_obj.layers)
 
                     cache = [KVCache() if i == 0 else TurboQuantKVCache(bits=3, min_quant_tokens=0)
