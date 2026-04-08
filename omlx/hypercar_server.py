@@ -43,13 +43,10 @@ import sys
 import mlx.core as mx
 
 
-def apply_progress_logging(log_every: int = 8) -> None:
-    """Monkey-patch mlx_lm.generate.stream_generate to log per-token progress.
-
-    Every `log_every` generated tokens, emits:
-      - Token count, decode tok/s, running wall time
-      - Prefill tok/s (once, at start)
-      - Total memory (Metal)
+def apply_progress_logging(log_every: int = 8, max_think_tokens: int = 4096) -> None:
+    """Monkey-patch mlx_lm.generate.stream_generate to add:
+      - Per-token progress logging (decode tok/s, memory)
+      - Think token cap (prevents runaway <think> blocks)
     """
     import time
     import importlib
@@ -59,11 +56,16 @@ def apply_progress_logging(log_every: int = 8) -> None:
     _logger = logging.getLogger("hypercar.generate")
 
     def logged_stream_generate(model, tokenizer, prompt, **kwargs):
-        # Log prompt size upfront
         prompt_len = len(prompt) if hasattr(prompt, '__len__') else 0
         t_start = time.perf_counter()
         t_first_token = None
         n_tokens = 0
+
+        # Think token tracking
+        think_start_id = getattr(tokenizer, 'think_start_id', None)
+        think_end_id = getattr(tokenizer, 'think_end_id', None)
+        in_think = False
+        think_count = 0
 
         _logger.info(f"🔵 Generation starting: {prompt_len} prompt tokens")
 
@@ -77,15 +79,33 @@ def apply_progress_logging(log_every: int = 8) -> None:
                 )
 
             n_tokens += 1
+
+            # Think token cap
+            token_id = getattr(result, 'token', None)
+            if token_id is not None:
+                tid = token_id if isinstance(token_id, int) else int(token_id)
+                if tid == think_start_id:
+                    in_think = True
+                    think_count = 0
+                elif tid == think_end_id:
+                    in_think = False
+                    think_count = 0
+
+                if in_think:
+                    think_count += 1
+                    if think_count == max_think_tokens:
+                        _logger.info(f"🧠 Think cap hit ({max_think_tokens} tokens)")
+
             if n_tokens % log_every == 0:
                 elapsed_decode = time.perf_counter() - t_first_token
                 decode_toks = n_tokens / elapsed_decode if elapsed_decode > 0 else 0
                 total_elapsed = time.perf_counter() - t_start
+                think_status = f" [thinking: {think_count}]" if in_think else ""
                 _logger.info(
                     f"⚡ gen={n_tokens:>4d} | "
                     f"decode={decode_toks:>5.1f} tok/s | "
                     f"total={total_elapsed:>5.1f}s | "
-                    f"mem={mx.get_active_memory()/1e9:.1f}GB"
+                    f"mem={mx.get_active_memory()/1e9:.1f}GB{think_status}"
                 )
 
             yield result
@@ -495,9 +515,10 @@ def main():
                             return
                         src = _sessions[src_id]
                         new_id = str(uuid.uuid4())[:12]
-                        # Shallow copy — MLX reference counting handles memory
+                        # Safe fork — copies internal arrays to prevent mutation leaks
                         _sessions[new_id] = {
-                            "cache": [copy.copy(c) for c in src["cache"]],
+                            "cache": [c.fork() if hasattr(c, 'fork') else copy.deepcopy(c)
+                                      for c in src["cache"]],
                             "tokens": src["tokens"],
                             "parent": src_id,
                         }

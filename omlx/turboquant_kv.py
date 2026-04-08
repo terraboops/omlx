@@ -1547,6 +1547,30 @@ class TurboQuantKVCache(_BaseCache):
         self.offset -= n
         return n
 
+    def fork(self) -> "TurboQuantKVCache":
+        """Create an independent copy for context branching.
+
+        Unlike copy.copy() (which shares array references), fork() copies
+        the internal arrays so both branches can generate independently
+        without corrupting each other via in-place slice assignments.
+
+        Cost: O(cache_size) — copies all compressed arrays.
+        At 8K context with TQ3: ~0.3MB per layer, 47 layers = ~14MB total.
+        """
+        import copy
+        new = copy.copy(self)
+        # Copy internal arrays to prevent shared mutation
+        if self._k_norms is not None:
+            new._k_norms = mx.array(self._k_norms)
+            new._k_packed = mx.array(self._k_packed)
+            new._v_norms = mx.array(self._v_norms)
+            new._v_packed = mx.array(self._v_packed)
+        if self._fp16_keys is not None:
+            new._fp16_keys = mx.array(self._fp16_keys)
+            new._fp16_values = mx.array(self._fp16_values)
+        # Codec is shared (immutable) — no copy needed
+        return new
+
     def rewind_to(self, target_offset: int) -> int:
         """O(1) context rewind: drop tokens after target_offset.
 
