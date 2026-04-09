@@ -642,6 +642,81 @@ These endpoints are the foundation for autonomous coding agents:
   - Save/Load: persist 256K codebase context, resume in 1.5s
 ```
 
+### Run 20: Granite TQ3.5 Weight Rotation — The Alignment Problem
+```
+Date: 2026-04-08
+Model: ibm-granite/granite-4.0-h-small (30B params, 4 attn + 36 Mamba)
+
+GOAL: Stream-convert Granite fp16 (60GB) to TQ3.5 (WHT rotation + 3-bit)
+for a hybrid Mamba + attention architecture with ultra-long context.
+
+CONVERSION RESULTS:
+  fp16 → TQ3.5 (WHT + 3-bit): 16.7GB in 72 seconds ✓
+  Hybrid cache factory: 4 QuantizedKV + 36 ArraysCache ✓
+  Model loads at 16.7GB Metal ✓
+
+QUALITY RESULTS:
+  Pre-quantized 4-bit (no rotation):  "4"         ✓ CORRECT
+  TQ3.5 3-bit with WHT rotation:      "vet vet"   ✗ GARBAGE
+  TQ4 4-bit with WHT rotation:        "is is is"  ✗ GARBAGE
+  3-bit WITHOUT rotation:             (not tested)
+
+ROOT CAUSE: Weight rotation misalignment.
+  The WHT rotation changes the weight distributions. At runtime,
+  x @ R compensates for individual linear layers, but the ERROR
+  accumulates through 40 layers because:
+
+  1. Mamba layers were trained with UN-rotated attention outputs.
+     After quantizing attention weights with rotation, the signal
+     flowing into Mamba layers is slightly different. Mamba's
+     recurrent state amplifies this difference exponentially.
+
+  2. The rotation compensation (x @ R before each linear layer)
+     is mathematically correct for a SINGLE layer in isolation.
+     But the cascade of 40 layers — where each layer's output
+     feeds into the next layer's normalization, attention/SSM,
+     and MoE routing — accumulates floating-point drift from
+     the quantization error that the rotation was supposed to fix.
+
+  3. This is fundamentally different from KV cache quantization
+     (which works perfectly with WHT) because KV values are
+     consumed within one layer. Weight quantization errors
+     propagate ACROSS layers.
+
+WHY IT WORKS FOR KV BUT NOT WEIGHTS:
+  - KV cache: quantize → dequant → use within same layer → error stays local
+  - Weights: quantize → dequant every forward pass → error compounds layer to layer
+  - The TurboQuant paper targets KV caches, not weights, for this reason
+  - Weight quantization with rotation needs rotation-aware fine-tuning
+
+THE FIX: Streaming Mamba Distillation
+  The Mamba layers need to be re-aligned with the quantized attention
+  layers through a short distillation:
+
+  1. Teacher: 4-bit Granite (18.1GB, fits in memory)
+  2. Student: TQ3.5 Granite (16.7GB)
+  3. Freeze all quantized attention layers
+  4. Train ONLY 36 Mamba layers (A, B, C, D, in_proj, out_proj)
+  5. Loss: KL divergence between teacher and student logits
+  6. Data: ~1M tokens of diverse code/text
+  7. Memory: ~35GB (both models fit side-by-side on 48GB)
+
+  This is analogous to "upcycling" — when Mamba layers are added to
+  existing transformers, they require distillation to align with the
+  surrounding layers. Here, the surrounding layers changed (via
+  quantization), so the Mamba layers need the same treatment.
+
+  Estimated: 1 day of engineering + 2-8 hours GPU time.
+
+OUTCOME: Abandoned for now. Using pre-quantized 4-bit Granite (18.1GB)
+which works perfectly. TQ3.5 weight rotation is a research direction
+that needs rotation-aware training to be viable.
+
+Key takeaway: TurboQuant's WHT rotation is proven for KV caches
+(cosine 1.000000, 5/5 code intel, 16K NIAH) but does NOT transfer
+directly to weight quantization without distillation.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
