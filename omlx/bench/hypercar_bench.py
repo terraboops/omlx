@@ -620,9 +620,8 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
     results = {}
 
     niah_contexts = [4096, 16384]
-    # 500K NIAH requires --niah-500k flag (only feasible on hybrid models)
     if getattr(args_ref, 'niah_500k', False):
-        niah_contexts.append(524288)
+        niah_contexts.extend([65536, 131072, 262144, 524288])
 
     for ctx_len in niah_contexts:
         if watchdog.breached.is_set():
@@ -695,8 +694,10 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         mx.synchronize()
         mx.clear_cache()
 
-    # Gate: must pass at 4K
-    gate_passed = results[4096]["found"]
+    # Gate: must pass at 4K, 16K, and all contexts up to 256K
+    # 500K+ is a warning (prefill takes too long for gating)
+    gate_contexts = [c for c in niah_contexts if c <= 262144]
+    gate_passed = all(results.get(c, {}).get("found", False) for c in gate_contexts)
 
     return PhaseResult(
         name="Phase 3: Needle in Haystack",
