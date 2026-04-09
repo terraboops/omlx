@@ -23,18 +23,39 @@ import mlx.nn as nn
 logger = logging.getLogger(__name__)
 
 
-def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Random orthogonal rotation via QR decomposition.
+def _wht(x: mx.array) -> mx.array:
+    """Walsh-Hadamard Transform via butterfly — reused from turboquant_kv."""
+    import math
+    shape = x.shape
+    D = shape[-1]
+    flat = x.reshape(-1, D).astype(mx.float32)
+    h = 1
+    while h < D:
+        flat_r = flat.reshape(-1, D // (2 * h), 2, h)
+        a = flat_r[:, :, 0, :]
+        b = flat_r[:, :, 1, :]
+        flat_r = mx.stack([a + b, a - b], axis=2)
+        flat = flat_r.reshape(-1, D)
+        h *= 2
+    flat = flat / math.sqrt(D)
+    return flat.reshape(shape)
 
-    Reuses the same algorithm as turboquant_kv.py for consistency.
+
+def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
+    """WHT rotation matrix: R = diag(signs) @ H.
+
+    Per TurboQuant paper (arXiv:2504.19874). At runtime:
+    x_rotated = x @ R computes WHT(signs * x).
     """
     key = mx.random.key(seed)
-    Q, R = mx.linalg.qr(mx.random.normal(shape=(dim, dim), key=key), stream=mx.cpu)
-    signs = mx.sign(mx.diag(R))
-    signs = mx.where(signs == 0, mx.ones_like(signs), signs)
-    Q = (Q * signs[None, :]).astype(mx.float32)
-    mx.eval(Q)
-    return Q
+    uniform = mx.random.uniform(shape=(dim,), key=key)
+    signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+    mx.eval(signs)
+    I = mx.eye(dim, dtype=mx.float32)
+    H = _wht(I)
+    R = signs[:, None] * H
+    mx.eval(R)
+    return R
 
 
 class TurboQuantLinear(nn.Module):

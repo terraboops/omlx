@@ -26,43 +26,41 @@ logger = logging.getLogger(__name__)
 _MAX_SHARD_BYTES = 4 * 1024 * 1024 * 1024  # 4GB per shard
 
 
-def _givens_angles(dim: int, seed: int = 0):
-    """Generate random Givens rotation angles for D/2 coordinate pairs."""
-    key = mx.random.key(seed)
-    n_pairs = dim // 2
-    angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
-    cos_a = mx.cos(angles).astype(mx.float32)
-    sin_a = mx.sin(angles).astype(mx.float32)
-    mx.eval(cos_a, sin_a)
-    return cos_a, sin_a
+def _wht(x: mx.array) -> mx.array:
+    """Walsh-Hadamard Transform via butterfly — same as turboquant_kv._wht."""
+    import math
+    shape = x.shape
+    D = shape[-1]
+    flat = x.reshape(-1, D).astype(mx.float32)
+    h = 1
+    while h < D:
+        flat_r = flat.reshape(-1, D // (2 * h), 2, h)
+        a = flat_r[:, :, 0, :]
+        b = flat_r[:, :, 1, :]
+        flat_r = mx.stack([a + b, a - b], axis=2)
+        flat = flat_r.reshape(-1, D)
+        h *= 2
+    flat = flat / math.sqrt(D)
+    return flat.reshape(shape)
 
 
 def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Build dense rotation matrix from PlanarQuant Givens rotations.
+    """Build dense WHT rotation matrix: R = diag(signs) @ H.
 
-    For the offline converter, we build the full D×D matrix from D/2
-    independent 2×2 Givens rotations. At runtime, the fast O(D) Givens
-    application is used instead (no dense matrix needed).
+    Uses Walsh-Hadamard Transform with random sign flips for full
+    dimension decorrelation. Per TurboQuant paper (arXiv:2504.19874).
 
-    The matrix is block-diagonal with 2×2 rotation blocks:
-        [[cos θ_i, -sin θ_i],
-         [sin θ_i,  cos θ_i]]
+    At runtime, TurboQuantLinear applies: x_rotated = x @ R
+    which computes WHT(signs * x) via dense matmul.
     """
-    import numpy as np
+    key = mx.random.key(seed)
+    uniform = mx.random.uniform(shape=(dim,), key=key)
+    signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+    mx.eval(signs)
 
-    cos_a, sin_a = _givens_angles(dim, seed=seed)
-    cos_np = np.array(cos_a)
-    sin_np = np.array(sin_a)
-
-    R = np.eye(dim, dtype=np.float32)
-    for i in range(dim // 2):
-        j = 2 * i
-        R[j, j] = cos_np[i]
-        R[j, j+1] = -sin_np[i]
-        R[j+1, j] = sin_np[i]
-        R[j+1, j+1] = cos_np[i]
-
-    R = mx.array(R, dtype=mx.float32)
+    I = mx.eye(dim, dtype=mx.float32)
+    H = _wht(I)  # Each row is WHT of a basis vector
+    R = signs[:, None] * H  # diag(signs) @ H
     mx.eval(R)
     return R
 
@@ -85,9 +83,18 @@ def _is_linear_weight(tensor_name: str, shape: tuple) -> bool:
         return False
     if len(shape) < 2:
         return False
-    # Skip embeddings, norms, lm_head, conv1d
+    # Skip embeddings, norms, lm_head, conv1d, and ALL Mamba/SSM weights.
+    # Mamba SSM params (A, B, C, D, dt) are recurrent — 3-bit errors compound
+    # exponentially over long sequences. Must stay fp16.
     lower = tensor_name.lower()
-    skip = ["embed", "norm", "lm_head", "wte", "wpe", "rotary", "rope", "conv1d"]
+    skip = [
+        "embed", "norm", "lm_head", "wte", "wpe", "rotary", "rope",
+        "conv1d",  # Mamba conv state
+        "a_log", "d_param", "dt_proj", "dt_bias",  # SSM discretization
+        "x_proj", "b_proj", "c_proj",  # SSM input/output projections
+        "mamba",  # Catch-all for any Mamba-specific weights
+        "ssm",  # SSM state parameters
+    ]
     return not any(s in lower for s in skip)
 
 
