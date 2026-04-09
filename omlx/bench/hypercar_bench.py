@@ -42,7 +42,7 @@ logger = logging.getLogger("omlx.bench.hypercar")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"  # Override with --model
 KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
@@ -200,8 +200,9 @@ def _peak_metal_gb() -> float:
     return mx.get_peak_memory() / 1e9
 
 
-# Module-level KV mode (set from CLI in main())
+# Module-level KV mode and model ref (set from CLI in main())
 _KV_MODE = "native"
+_MODEL_REF = None  # Set after model loads, used by _make_cache for hybrid models
 
 
 def _load_model():
@@ -223,19 +224,41 @@ def _load_model():
     return model, tokenizer
 
 
-def _make_cache(n_layers: int):
-    """Create KV cache based on current _KV_MODE."""
+def _make_cache(n_layers: int, model=None):
+    """Create KV cache based on current _KV_MODE.
+
+    For hybrid models (Granite): uses model.make_cache() to get the right
+    cache types per layer (ArraysCache for Mamba, KVCache for attention),
+    then replaces KVCache with quantized variants.
+    """
     from mlx_lm.models.cache import KVCache, QuantizedKVCache
 
     if _KV_MODE == "fp16":
+        if model and hasattr(model, 'make_cache'):
+            return model.make_cache()
         return [KVCache() for _ in range(n_layers)]
-    elif _KV_MODE == "tq3":
-        from omlx.turboquant_kv import TurboQuantKVCache
-        return [KVCache() if i == 0 else TurboQuantKVCache(bits=KV_BITS)
-                for i in range(n_layers)]
-    else:  # native
-        return [QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS)
-                for _ in range(n_layers)]
+
+    if model is None:
+        model = _MODEL_REF
+
+    # Get base caches (handles hybrid models with ArraysCache + KVCache)
+    if model and hasattr(model, 'make_cache'):
+        base_caches = model.make_cache()
+    else:
+        base_caches = [KVCache() for _ in range(n_layers)]
+
+    # Replace KVCache layers with quantized variants
+    result = []
+    for i, c in enumerate(base_caches):
+        if isinstance(c, KVCache):
+            if _KV_MODE == "tq3":
+                from omlx.turboquant_kv import TurboQuantKVCache
+                result.append(TurboQuantKVCache(bits=KV_BITS))
+            else:  # native
+                result.append(QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS))
+        else:
+            result.append(c)  # Keep ArraysCache (Mamba state) as-is
+    return result
 
 
 def _generate(model, tokenizer, prompt: str, max_tokens: int = 64,
@@ -590,13 +613,18 @@ def merge(left: list, right: list) -> list:
     return tokenizer.decode(tokens)
 
 
-def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
+def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> PhaseResult:
     """Needle-in-a-haystack at 4K context using ChatML formatting."""
     t0 = time.perf_counter()
     n_layers = len(model.layers)
     results = {}
 
-    for ctx_len in [4096, 16384]:
+    niah_contexts = [4096, 16384]
+    # 500K NIAH requires --niah-500k flag (only feasible on hybrid models)
+    if getattr(args_ref, 'niah_500k', False):
+        niah_contexts.append(524288)
+
+    for ctx_len in niah_contexts:
         if watchdog.breached.is_set():
             return PhaseResult(
                 name="Phase 3: Needle in Haystack", passed=False,
@@ -1028,6 +1056,10 @@ def main():
                         help="Swap delta limit as %% of system memory (default: 17)")
     parser.add_argument("--max-load-pct", type=float, default=42.0,
                         help="Metal at load limit as %% of system memory (default: 42)")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Override model path (e.g. /tmp/granite-4.0-h-small-TQ3.5-wht)")
+    parser.add_argument("--niah-500k", action="store_true",
+                        help="Add 500K token NIAH test (requires hybrid model with low KV overhead)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
@@ -1043,10 +1075,13 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Set KV mode
-    global _KV_MODE
+    # Set KV mode and model
+    global _KV_MODE, MODEL_ID
     _KV_MODE = args.kv_mode
+    if args.model:
+        MODEL_ID = args.model
     logger.info(f"KV mode: {_KV_MODE}")
+    logger.info(f"Model: {MODEL_ID}")
 
     # Detect system memory and compute limits
     total_gb = _detect_system_memory_gb()
@@ -1078,6 +1113,8 @@ def main():
         logger.info("Loading model: %s", MODEL_ID)
         load_t0 = time.perf_counter()
         model, tokenizer = _load_model()
+        global _MODEL_REF
+        _MODEL_REF = model  # For hybrid cache factory
         # Don't force-eval all parameters — let MLX load lazily.
         # Force-eval causes 2x peak memory during load (mmap + Metal copy).
         # Parameters will be materialized on first forward pass instead.
@@ -1118,7 +1155,7 @@ def main():
 
         # Phase 3: Needle in Haystack
         logger.info("\n=== Phase 3: Needle in Haystack ===")
-        p3 = phase3_niah(model, tokenizer, watchdog)
+        p3 = phase3_niah(model, tokenizer, watchdog, args_ref=args)
         phases.append(p3)
         if not p3.passed:
             logger.error("Phase 3 FAILED — aborting")
