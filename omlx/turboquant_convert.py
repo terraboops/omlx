@@ -44,23 +44,64 @@ def _wht(x: mx.array) -> mx.array:
     return flat.reshape(shape)
 
 
+def _next_power_of_2(n: int) -> int:
+    """Round up to next power of 2."""
+    if n <= 0:
+        return 1
+    p = 1
+    while p < n:
+        p <<= 1
+    return p
+
+
 def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """Build dense WHT rotation matrix: R = diag(signs) @ H.
+    """Build dense WHT rotation matrix: block-diagonal diag(signs) @ H.
 
-    Uses Walsh-Hadamard Transform with random sign flips for full
-    dimension decorrelation. Per TurboQuant paper (arXiv:2504.19874).
-
-    At runtime, TurboQuantLinear applies: x_rotated = x @ R
-    which computes WHT(signs * x) via dense matmul.
+    For power-of-2 dimensions: standard WHT.
+    For non-power-of-2: block-diagonal WHT where each block is the largest
+    power of 2 that fits. E.g. dim=768 → 512 + 256 blocks.
+    Preserves orthogonality for all dimensions.
     """
-    key = mx.random.key(seed)
-    uniform = mx.random.uniform(shape=(dim,), key=key)
-    signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
-    mx.eval(signs)
+    if dim > 0 and (dim & (dim - 1)) == 0:
+        # Power of 2 — standard WHT
+        key = mx.random.key(seed)
+        uniform = mx.random.uniform(shape=(dim,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(dim, dtype=mx.float32)
+        H = _wht(I)
+        R = signs[:, None] * H
+        mx.eval(R)
+        return R
 
-    I = mx.eye(dim, dtype=mx.float32)
-    H = _wht(I)  # Each row is WHT of a basis vector
-    R = signs[:, None] * H  # diag(signs) @ H
+    # Non-power-of-2: decompose into power-of-2 blocks
+    import numpy as np
+    R_np = np.zeros((dim, dim), dtype=np.float32)
+    remaining = dim
+    offset = 0
+    block_seed = seed
+
+    while remaining > 0:
+        # Find largest power of 2 ≤ remaining
+        block_size = 1
+        while block_size * 2 <= remaining:
+            block_size *= 2
+
+        # Build WHT block
+        key = mx.random.key(block_seed)
+        uniform = mx.random.uniform(shape=(block_size,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(block_size), -mx.ones(block_size)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(block_size, dtype=mx.float32)
+        H = _wht(I)
+        block = np.array(signs[:, None] * H)
+
+        R_np[offset:offset+block_size, offset:offset+block_size] = block
+        offset += block_size
+        remaining -= block_size
+        block_seed += 1
+
+    R = mx.array(R_np, dtype=mx.float32)
     mx.eval(R)
     return R
 

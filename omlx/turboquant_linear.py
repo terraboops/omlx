@@ -41,19 +41,52 @@ def _wht(x: mx.array) -> mx.array:
     return flat.reshape(shape)
 
 
-def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
-    """WHT rotation matrix: R = diag(signs) @ H.
+def _next_power_of_2(n: int) -> int:
+    if n <= 0:
+        return 1
+    p = 1
+    while p < n:
+        p <<= 1
+    return p
 
-    Per TurboQuant paper (arXiv:2504.19874). At runtime:
-    x_rotated = x @ R computes WHT(signs * x).
+
+def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
+    """WHT rotation matrix: block-diagonal diag(signs) @ H.
+
+    Handles non-power-of-2 dims via block decomposition (e.g. 768 → 512+256).
     """
-    key = mx.random.key(seed)
-    uniform = mx.random.uniform(shape=(dim,), key=key)
-    signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
-    mx.eval(signs)
-    I = mx.eye(dim, dtype=mx.float32)
-    H = _wht(I)
-    R = signs[:, None] * H
+    if dim > 0 and (dim & (dim - 1)) == 0:
+        key = mx.random.key(seed)
+        uniform = mx.random.uniform(shape=(dim,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(dim, dtype=mx.float32)
+        H = _wht(I)
+        R = signs[:, None] * H
+        mx.eval(R)
+        return R
+
+    import numpy as np
+    R_np = np.zeros((dim, dim), dtype=np.float32)
+    remaining = dim
+    offset = 0
+    block_seed = seed
+    while remaining > 0:
+        block_size = 1
+        while block_size * 2 <= remaining:
+            block_size *= 2
+        key = mx.random.key(block_seed)
+        uniform = mx.random.uniform(shape=(block_size,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(block_size), -mx.ones(block_size)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(block_size, dtype=mx.float32)
+        H = _wht(I)
+        block = np.array(signs[:, None] * H)
+        R_np[offset:offset+block_size, offset:offset+block_size] = block
+        offset += block_size
+        remaining -= block_size
+        block_seed += 1
+    R = mx.array(R_np, dtype=mx.float32)
     mx.eval(R)
     return R
 
