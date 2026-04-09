@@ -642,6 +642,39 @@ These endpoints are the foundation for autonomous coding agents:
   - Save/Load: persist 256K codebase context, resume in 1.5s
 ```
 
+### Run 21: TQ3 WHT Full Stack — NIAH to 64K PASS
+```
+Date: 2026-04-08
+Model: Qwen3-Coder-30B-A3B-Instruct-4bit (M4 Pro 48GB)
+Cache: TQ3 WHT (streaming dequant + fused kernel + vertical eval)
+
+Full hypercar stack: WHT rotation + Beta((d-1)/2) codebook + fused
+dequant kernel (1.9x) + streaming online softmax + vertical graph
+eval + adaptive memory budget.
+
+  Context | Result | Time   | Notes
+  --------|--------|--------|------
+  4K      | PASS   | 7s     | "ALPHA-7749" retrieved
+  16K     | PASS   | 72s    | "ALPHA-7749" retrieved
+  64K     | PASS   | 12 min | "ALPHA-7749" retrieved ← TQ3 wins!
+  128K    | KILLED | —      | Swap thrashing (6.7GB), system sluggish
+
+Code Intelligence: 5/5 (100%)
+
+TQ3 vs Native at 64K:
+  Native 3-bit: SWAP BREACH at 65K (10.5GB swap, OOM risk)
+  TQ3 WHT:      PASS at 64K (6.3GB swap, within limit)
+
+Why TQ3 wins: streaming dequant processes chunks and frees immediately.
+Native QuantizedKVCache keeps full fp16 intermediates during attention.
+
+128K failure: prefill overhead (MLX lazy graph + 47-layer forward pass
+intermediates) temporarily doubles active memory → swap thrashing.
+System had ~12GB of non-MLX apps consuming RAM (Firefox, Slack, etc).
+
+Next: SSD-backed paged KV cache for 128K+ without swap dependency.
+```
+
 ### Run 20: Granite TQ3.5 Weight Rotation — The Alignment Problem
 ```
 Date: 2026-04-08
