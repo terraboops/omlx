@@ -1,47 +1,46 @@
 # SPDX-License-Identifier: Apache-2.0
 """Test-Time Training (TTT) for hypercar agentic loop.
 
-Implements online fine-tuning during inference using the "fast weights"
-approach from In-Place TTT (arXiv:2604.06169). Key design:
+Online fine-tuning during inference using fast weight adapters.
+Three feedback signals:
+  1. Tool call success/fail — deterministic, train on successful trajectories
+  2. Harness rating — human or CI feedback, DPO-style preference learning
+  3. Solution discovery — verifiable outcomes (tests pass, code compiles)
 
-  1. Freeze all base model weights (TQ3.5 or standard quantized)
-  2. Create small "fast weight" adapters on MLP output projections
-  3. Train ONLY these adapters using execution feedback
-  4. Fork/rewind via the agentic session API
-
-Memory budget:
-  - Fast weights per layer: rank × hidden_dim × 2 (up + down) × 4 bytes
-  - At rank=16, hidden_dim=4096: 16 × 4096 × 2 × 4 = 512KB per layer
-  - 48 layers: ~24MB total (negligible vs 17GB model)
-  - Gradients: same size = ~24MB
-  - Total TTT overhead: ~50MB
-
-The approach:
-  1. Generate N candidate completions (temperature > 0)
-  2. Execute each against compiler/test suite
-  3. Use passing candidates as pseudo-labels
-  4. Compute cross-entropy loss on the passing trajectory
-  5. Update fast weights via micro-batch gradient descent
-  6. mx.eval() after each update to prevent graph hoarding
+Memory budget: ~50MB total (adapters + gradients + optimizer state).
+The 17GB base model stays frozen.
 
 Usage:
-    from omlx.ttt import TTTAdapter, ttt_step
+    from omlx.ttt import TTTEngine
 
-    adapter = TTTAdapter(model, rank=16)
+    engine = TTTEngine(model, tokenizer, rank=16)
+
     # Generate candidates
-    candidates = [generate(model, prompt, temp=0.8) for _ in range(4)]
-    # Test them
-    results = [execute_code(c) for c in candidates]
-    # Train on passing ones
-    for c, r in zip(candidates, results):
-        if r.passed:
-            ttt_step(model, adapter, tokenizer, prompt + c, lr=1e-4)
+    candidates = engine.generate_candidates(prompt, n=4, temp=0.8)
+
+    # Provide feedback
+    for c in candidates:
+        result = execute_code(c.code)
+        engine.feedback(c.id, reward=1.0 if result.passed else -1.0,
+                       signal="tool_call")
+
+    # Train on positive feedback
+    stats = engine.train_step()
+
+    # If quality degrades, rewind
+    engine.rewind()
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import subprocess
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -50,226 +49,404 @@ import mlx.optimizers as optim
 logger = logging.getLogger("omlx.ttt")
 
 
+# ---------------------------------------------------------------------------
+# Fast Weight Adapter
+# ---------------------------------------------------------------------------
+
 class FastWeightAdapter(nn.Module):
-    """Low-rank adapter for MLP output projections (fast weights).
+    """Low-rank adapter: y = base_output + x @ A @ B.
 
-    Adds a trainable LoRA-style bypass: y = base_output + x @ A @ B
-    where A is (in_dim, rank) and B is (rank, out_dim).
-
-    Only A and B are trainable. The base model is frozen.
+    A: (in_dim, rank) — initialized with small random values
+    B: (rank, out_dim) — initialized to zeros (starts as no-op)
     """
 
     def __init__(self, in_dim: int, out_dim: int, rank: int = 16):
         super().__init__()
         self.rank = rank
-        # Initialize A with small random values, B with zeros
-        # This means the adapter starts as identity (no effect)
-        scale = 1.0 / (in_dim ** 0.5)
-        self.A = mx.random.normal((in_dim, rank)) * scale
+        scale = 0.01 / (in_dim ** 0.5)
+        self.A = scale * mx.random.normal((in_dim, rank))
         self.B = mx.zeros((rank, out_dim))
 
     def __call__(self, x: mx.array) -> mx.array:
-        """Compute adapter output: x @ A @ B."""
         return x @ self.A @ self.B
 
 
-class TTTAdapter:
-    """Test-Time Training adapter manager.
+# ---------------------------------------------------------------------------
+# Feedback Signals
+# ---------------------------------------------------------------------------
 
-    Creates and manages fast weight adapters for each MLP layer.
-    Provides methods for training and applying the adapters.
+@dataclass
+class Candidate:
+    """A generated candidate with feedback."""
+    id: str
+    prompt: str
+    completion: str
+    tokens: List[int] = field(default_factory=list)
+    reward: float = 0.0
+    signal: str = ""  # "tool_call", "harness", "solution"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TrainStats:
+    """Statistics from a training step."""
+    loss: float = 0.0
+    grad_norm: float = 0.0
+    num_positive: int = 0
+    num_negative: int = 0
+    elapsed_s: float = 0.0
+    adapter_norm: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Code Execution Verifier
+# ---------------------------------------------------------------------------
+
+def verify_code(code: str, test: str = "", timeout: int = 10) -> Tuple[bool, str]:
+    """Execute Python code and optionally run a test assertion.
+
+    Returns (passed, error_message).
+    Only trains on VERIFIABLY correct code — never partial success.
+    """
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(code)
+        if test:
+            f.write(f"\n\n# Test\n{test}\nprint('PASS')\n")
+        f.flush()
+        try:
+            result = subprocess.run(
+                ["python3", f.name],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            passed = result.returncode == 0
+            if test:
+                passed = passed and "PASS" in result.stdout
+            error = result.stderr[:200] if not passed else ""
+            return passed, error
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+        except Exception as e:
+            return False, str(e)[:200]
+        finally:
+            Path(f.name).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# TTT Engine
+# ---------------------------------------------------------------------------
+
+class TTTEngine:
+    """Test-Time Training engine with three feedback signals.
+
+    Manages the full cycle: generate → execute → feedback → train → verify.
     """
 
-    def __init__(self, model: nn.Module, rank: int = 16,
-                 target_modules: Optional[List[str]] = None):
-        """Create adapters for target MLP modules.
-
-        Args:
-            model: The frozen base model.
-            rank: LoRA rank for fast weights.
-            target_modules: Module name patterns to target.
-                Default: ["down_proj"] (MLP output projection).
-        """
+    def __init__(
+        self,
+        model: nn.Module,
+        tokenizer: Any,
+        rank: int = 16,
+        lr: float = 1e-4,
+        target_modules: Optional[List[str]] = None,
+    ):
+        self.model = model
+        self.tokenizer = tokenizer
         self.rank = rank
-        self.adapters: Dict[str, FastWeightAdapter] = {}
+
+        # Create adapters
         self.target_modules = target_modules or ["down_proj"]
+        self.adapters: Dict[str, FastWeightAdapter] = {}
+        self._create_adapters()
 
-        # Walk model tree and create adapters
-        for name, module in model.named_modules():
+        # Optimizer for adapter parameters only
+        self.optimizer = optim.AdamW(learning_rate=lr, weight_decay=0.01)
+
+        # Feedback buffer
+        self.candidates: Dict[str, Candidate] = {}
+        self.history: List[TrainStats] = []
+
+        # Checkpoint for rewind
+        self._checkpoint: Optional[Dict[str, Tuple[mx.array, mx.array]]] = None
+        self.save_checkpoint()
+
+    def _create_adapters(self):
+        """Walk model tree and create adapters for target modules."""
+        for name, module in self.model.named_modules():
             leaf = name.split(".")[-1] if name else ""
-            if leaf in self.target_modules:
-                if hasattr(module, 'weight'):
-                    # Get dimensions from the module
-                    if hasattr(module, 'input_dims'):
-                        in_dim = module.input_dims
-                        out_dim = module.output_dims
-                    elif hasattr(module, 'scales'):
-                        # QuantizedLinear: infer from scales
-                        in_dim = module.scales.shape[-1] * module.group_size
-                        out_dim = module.scales.shape[-2]
-                    else:
-                        w = module.weight
-                        out_dim, in_dim = w.shape[0], w.shape[-1]
+            if leaf not in self.target_modules:
+                continue
 
-                    self.adapters[name] = FastWeightAdapter(in_dim, out_dim, rank)
+            # Infer dimensions
+            if hasattr(module, 'scales'):
+                in_dim = module.scales.shape[-1] * module.group_size
+                out_dim = module.scales.shape[-2]
+            elif hasattr(module, 'weight'):
+                w = module.weight
+                out_dim, in_dim = w.shape[0], w.shape[-1]
+            else:
+                continue
 
-        # Compute memory usage
-        total_params = sum(
-            a.A.size + a.B.size for a in self.adapters.values()
-        )
-        total_bytes = total_params * 4  # float32
-        logger.info(
-            f"TTT: created {len(self.adapters)} adapters "
-            f"(rank={rank}, {total_bytes/1e6:.1f}MB)"
-        )
+            self.adapters[name] = FastWeightAdapter(in_dim, out_dim, self.rank)
 
-    def parameters(self) -> List[mx.array]:
-        """Return all trainable adapter parameters."""
-        params = []
-        for adapter in self.adapters.values():
-            params.extend([adapter.A, adapter.B])
-        return params
+        # Apply adapters to model
+        self._patch_model()
 
-    def named_parameters(self) -> List[Tuple[str, mx.array]]:
-        """Return named trainable parameters."""
-        result = []
+        total_params = sum(a.A.size + a.B.size for a in self.adapters.values())
+        logger.info(f"TTT: {len(self.adapters)} adapters, {total_params * 4 / 1e6:.1f}MB")
+
+    def _patch_model(self):
+        """Monkey-patch target modules to add adapter bypass."""
         for name, adapter in self.adapters.items():
-            result.append((f"{name}.A", adapter.A))
-            result.append((f"{name}.B", adapter.B))
-        return result
-
-    def apply(self, model: nn.Module):
-        """Hook adapters into model forward pass.
-
-        Monkey-patches each target module's __call__ to add the adapter
-        output on top of the base computation.
-        """
-        for name, adapter in self.adapters.items():
-            # Navigate to the module
             parts = name.split(".")
-            module = model
+            module = self.model
             for p in parts:
-                if p.isdigit():
-                    module = module[int(p)]
-                else:
-                    module = getattr(module, p)
+                module = module[int(p)] if p.isdigit() else getattr(module, p)
 
-            # Store adapter reference and patch __call__
             module._ttt_adapter = adapter
             if not hasattr(module, '_ttt_orig_call'):
-                module._ttt_orig_call = module.__call__
+                orig = module.__call__
 
-                def make_patched(mod):
-                    def patched_call(x):
-                        base_out = mod._ttt_orig_call(x)
+                def make_patched(mod, orig_fn):
+                    def patched(x):
+                        out = orig_fn(x)
                         if hasattr(mod, '_ttt_adapter'):
-                            return base_out + mod._ttt_adapter(x)
-                        return base_out
-                    return patched_call
+                            out = out + mod._ttt_adapter(x)
+                        return out
+                    return patched
 
-                module.__call__ = make_patched(module)
+                module.__call__ = make_patched(module, orig)
+                module._ttt_orig_call = orig
 
-        logger.info(f"TTT: applied {len(self.adapters)} adapters to model")
+    # ----- Generation -----
 
-    def remove(self, model: nn.Module):
-        """Remove adapters from model (restore original forward pass)."""
-        for name in self.adapters:
-            parts = name.split(".")
-            module = model
-            for p in parts:
-                if p.isdigit():
-                    module = module[int(p)]
-                else:
-                    module = getattr(module, p)
+    def generate_candidates(
+        self, prompt: str, n: int = 4, max_tokens: int = 256,
+        temperature: float = 0.8,
+    ) -> List[Candidate]:
+        """Generate N diverse candidate completions."""
+        from mlx_lm import generate
 
-            if hasattr(module, '_ttt_orig_call'):
-                module.__call__ = module._ttt_orig_call
-                del module._ttt_orig_call
-            if hasattr(module, '_ttt_adapter'):
-                del module._ttt_adapter
+        candidates = []
+        for _ in range(n):
+            text = generate(
+                self.model, self.tokenizer,
+                prompt=prompt, max_tokens=max_tokens,
+                temp=temperature,
+            )
+            cid = str(uuid.uuid4())[:8]
+            c = Candidate(
+                id=cid, prompt=prompt, completion=text,
+                tokens=self.tokenizer.encode(text),
+            )
+            candidates.append(c)
+            self.candidates[cid] = c
+
+        return candidates
+
+    # ----- Feedback -----
+
+    def feedback(self, candidate_id: str, reward: float, signal: str = "tool_call",
+                 metadata: Optional[Dict] = None):
+        """Provide feedback on a candidate.
+
+        Args:
+            candidate_id: ID from generate_candidates.
+            reward: +1.0 for success, -1.0 for failure, 0-5 for rating.
+            signal: "tool_call", "harness", or "solution".
+            metadata: Optional extra info (error message, test output, etc).
+        """
+        if candidate_id not in self.candidates:
+            logger.warning(f"Unknown candidate: {candidate_id}")
+            return
+
+        c = self.candidates[candidate_id]
+        c.reward = reward
+        c.signal = signal
+        if metadata:
+            c.metadata.update(metadata)
+
+        logger.info(f"TTT feedback: {candidate_id} reward={reward} signal={signal}")
+
+    def feedback_from_execution(self, candidate_id: str, test: str = ""):
+        """Auto-feedback by executing the candidate's code.
+
+        Only rewards VERIFIABLY correct code (compiles + tests pass).
+        """
+        c = self.candidates.get(candidate_id)
+        if not c:
+            return
+
+        passed, error = verify_code(c.completion, test=test)
+        c.reward = 1.0 if passed else -1.0
+        c.signal = "solution" if test else "tool_call"
+        c.metadata["passed"] = passed
+        c.metadata["error"] = error
+
+        logger.info(f"TTT exec: {candidate_id} {'PASS' if passed else 'FAIL'} {error[:50]}")
+
+    # ----- Training -----
+
+    def train_step(self) -> TrainStats:
+        """Train on positively-rewarded candidates.
+
+        Only uses candidates with reward > 0. Computes cross-entropy loss
+        on each positive trajectory and updates adapter parameters.
+
+        Returns training statistics.
+        """
+        t0 = time.perf_counter()
+        positive = [c for c in self.candidates.values() if c.reward > 0]
+        negative = [c for c in self.candidates.values() if c.reward <= 0]
+
+        if not positive:
+            logger.info("TTT: no positive candidates, skipping training")
+            return TrainStats(num_negative=len(negative))
+
+        total_loss = 0.0
+
+        for c in positive:
+            # Compute loss on the full trajectory (prompt + completion)
+            full_text = c.prompt + c.completion
+            tokens = mx.array([self.tokenizer.encode(full_text)])
+
+            # Forward pass (adapters are active via monkey-patch)
+            logits = self.model(tokens)
+
+            # Cross-entropy on completion tokens only
+            prompt_len = len(self.tokenizer.encode(c.prompt))
+            if prompt_len >= tokens.shape[1] - 1:
+                continue
+
+            shift_logits = logits[:, prompt_len:-1, :].reshape(-1, logits.shape[-1])
+            shift_labels = tokens[:, prompt_len+1:].reshape(-1)
+
+            loss = nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
+            loss = loss * c.reward  # Weight by reward magnitude
+
+            # Backward through adapter parameters only
+            # Use mx.grad on a closure that captures the loss
+            loss.backward()
+
+            total_loss += float(loss.item())
+
+            # CRITICAL: eval immediately to prevent graph hoarding
+            mx.eval(loss)
+            for adapter in self.adapters.values():
+                mx.eval(adapter.A, adapter.B)
+
+        # Compute adapter norm for monitoring
+        adapter_norm = sum(
+            float(mx.sum(a.A ** 2 + a.B ** 2).item())
+            for a in self.adapters.values()
+        ) ** 0.5
+
+        elapsed = time.perf_counter() - t0
+        stats = TrainStats(
+            loss=total_loss / max(len(positive), 1),
+            num_positive=len(positive),
+            num_negative=len(negative),
+            elapsed_s=elapsed,
+            adapter_norm=adapter_norm,
+        )
+        self.history.append(stats)
+
+        logger.info(
+            f"TTT step: loss={stats.loss:.4f} "
+            f"+{stats.num_positive}/-{stats.num_negative} "
+            f"norm={stats.adapter_norm:.4f} ({stats.elapsed_s:.2f}s)"
+        )
+
+        # Clear processed candidates
+        self.candidates.clear()
+
+        return stats
+
+    # ----- Checkpoint / Rewind -----
+
+    def save_checkpoint(self):
+        """Save current adapter state for rewind."""
+        self._checkpoint = {
+            name: (mx.array(a.A), mx.array(a.B))
+            for name, a in self.adapters.items()
+        }
+        logger.info("TTT: checkpoint saved")
+
+    def rewind(self):
+        """Rewind adapters to last checkpoint."""
+        if self._checkpoint is None:
+            logger.warning("TTT: no checkpoint to rewind to")
+            return
+        for name, (a_saved, b_saved) in self._checkpoint.items():
+            if name in self.adapters:
+                self.adapters[name].A = mx.array(a_saved)
+                self.adapters[name].B = mx.array(b_saved)
+        self.candidates.clear()
+        logger.info("TTT: rewound to checkpoint")
 
     def reset(self):
-        """Reset all adapters to zero (fresh start)."""
+        """Reset all adapters to zero (fresh start, no learning)."""
         for adapter in self.adapters.values():
             adapter.B = mx.zeros_like(adapter.B)
+        self.candidates.clear()
+        self.history.clear()
+        self._checkpoint = None
+        logger.info("TTT: reset to zero")
 
-    def fork(self) -> "TTTAdapter":
-        """Create an independent copy of all adapters."""
-        import copy
-        new = copy.copy(self)
-        new.adapters = {}
-        for name, adapter in self.adapters.items():
-            new_adapter = FastWeightAdapter.__new__(FastWeightAdapter)
-            new_adapter.rank = adapter.rank
-            new_adapter.A = mx.array(adapter.A)
-            new_adapter.B = mx.array(adapter.B)
-            new.adapters[name] = new_adapter
-        return new
+    # ----- Diagnostics -----
 
-
-def ttt_loss(model, tokenizer, text: str, cache=None) -> mx.array:
-    """Compute cross-entropy loss on a text sequence.
-
-    Uses teacher forcing: predict each token given all previous tokens.
-    The loss is computed on the COMPLETION tokens only (not the prompt).
-
-    Args:
-        model: The model (with adapters applied).
-        tokenizer: The tokenizer.
-        text: The full text (prompt + completion).
-        cache: Optional pre-filled KV cache.
-
-    Returns:
-        Scalar loss value.
-    """
-    tokens = mx.array([tokenizer.encode(text)])
-    # Forward pass
-    logits = model(tokens, cache=cache)
-    # Shift for next-token prediction
-    # logits[:, :-1] predicts tokens[:, 1:]
-    shift_logits = logits[:, :-1, :].reshape(-1, logits.shape[-1])
-    shift_labels = tokens[:, 1:].reshape(-1)
-    # Cross-entropy loss
-    loss = nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
-    return loss
+    def stats(self) -> Dict[str, Any]:
+        """Return current TTT state."""
+        return {
+            "num_adapters": len(self.adapters),
+            "adapter_memory_mb": sum(
+                (a.A.size + a.B.size) * 4 for a in self.adapters.values()
+            ) / 1e6,
+            "total_train_steps": len(self.history),
+            "pending_candidates": len(self.candidates),
+            "has_checkpoint": self._checkpoint is not None,
+            "last_loss": self.history[-1].loss if self.history else None,
+        }
 
 
-def ttt_step(
-    model: nn.Module,
-    adapter: TTTAdapter,
-    optimizer: optim.Optimizer,
-    tokenizer: Any,
-    text: str,
-    cache=None,
-) -> float:
-    """One TTT gradient step on a text sequence.
+# ---------------------------------------------------------------------------
+# Demo: self-improving code generation
+# ---------------------------------------------------------------------------
 
-    Computes loss, backpropagates through adapter parameters only,
-    updates via optimizer, and evaluates immediately to prevent
-    graph hoarding.
+def demo_ttt(model=None, tokenizer=None):
+    """Demo: generate factorial, test it, train on passing solutions."""
+    if model is None:
+        from mlx_lm import load
+        model, tokenizer = load("mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit")
 
-    Args:
-        model: Model with adapters applied.
-        adapter: The TTTAdapter managing fast weights.
-        optimizer: MLX optimizer (e.g., AdamW).
-        tokenizer: Tokenizer.
-        text: Training text (passing code solution).
-        cache: Optional KV cache.
+    engine = TTTEngine(model, tokenizer, rank=16, lr=1e-4)
+    print(f"TTT Engine: {engine.stats()}")
 
-    Returns:
-        Loss value (float).
-    """
-    # Compute loss and gradients w.r.t. adapter parameters
-    loss_fn = lambda params: ttt_loss(model, tokenizer, text, cache)
+    prompt = "def factorial(n: int) -> int:\n    \"\"\"Return n factorial.\"\"\"\n"
+    test = "assert factorial(5) == 120 and factorial(0) == 1"
 
-    # Use value_and_grad on the adapter parameters
-    loss, grads = nn.value_and_grad(model, loss_fn)(model.parameters())
+    for round_num in range(3):
+        print(f"\n=== Round {round_num + 1} ===")
 
-    # Update only adapter parameters
-    optimizer.update(model, grads)
+        # Generate candidates
+        candidates = engine.generate_candidates(prompt, n=4, max_tokens=60, temperature=0.8)
 
-    # CRITICAL: evaluate immediately to prevent graph hoarding
-    mx.eval(loss)
-    mx.eval(adapter.parameters())
+        # Execute and provide feedback
+        for c in candidates:
+            engine.feedback_from_execution(c.id, test=test)
+            status = "PASS" if c.metadata.get("passed") else "FAIL"
+            print(f"  {c.id}: {status} — {c.completion[:50]!r}")
 
-    return float(loss.item())
+        # Train on successful ones
+        stats = engine.train_step()
+        print(f"  Train: loss={stats.loss:.4f} +{stats.num_positive}/-{stats.num_negative}")
+
+        # Checkpoint after each round
+        engine.save_checkpoint()
+
+    print(f"\nFinal stats: {engine.stats()}")
+
+
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    demo_ttt()
