@@ -124,17 +124,17 @@ def _is_linear_weight(tensor_name: str, shape: tuple) -> bool:
         return False
     if len(shape) < 2:
         return False
-    # Skip embeddings, norms, lm_head, conv1d, and ALL Mamba/SSM weights.
-    # Mamba SSM params (A, B, C, D, dt) are recurrent — 3-bit errors compound
-    # exponentially over long sequences. Must stay fp16.
+    # Skip: embeddings, norms, lm_head, and SSM-specific recurrent params.
+    # Mamba's in_proj/out_proj are standard linear layers — safe to quantize.
+    # Only the SSM recurrent params (A, D, dt, conv1d) must stay fp16.
     lower = tensor_name.lower()
     skip = [
         "embed", "norm", "lm_head", "wte", "wpe", "rotary", "rope",
-        "conv1d",  # Mamba conv state
-        "a_log", "d_param", "dt_proj", "dt_bias",  # SSM discretization
-        "x_proj", "b_proj", "c_proj",  # SSM input/output projections
-        "mamba",  # Catch-all for any Mamba-specific weights
-        "ssm",  # SSM state parameters
+        "conv1d",       # Mamba convolutional state (recurrent, sensitive)
+        "a_log",        # SSM state transition (recurrent, exponential)
+        "d_param",      # SSM skip connection
+        "dt_proj",      # SSM time-step projection (recurrent)
+        "dt_bias",      # SSM time-step bias
     ]
     return not any(s in lower for s in skip)
 
