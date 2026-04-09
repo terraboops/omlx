@@ -23,47 +23,64 @@ _patch_applied = False
 
 
 @lru_cache(maxsize=16)
-def _givens_angles(dim: int, seed: int = 0) -> Tuple[mx.array, mx.array]:
-    """Generate random Givens rotation angles for D/2 coordinate pairs.
+def _rotation_matrix(dim: int, seed: int = 0) -> mx.array:
+    """WHT rotation matrix: block-diagonal diag(signs) @ H.
 
-    Returns (cos_angles, sin_angles) each of shape (D/2,).
+    Must match turboquant_convert.py and turboquant_linear.py exactly.
+    Uses Walsh-Hadamard Transform with random sign flips.
+    For non-power-of-2 dims: block decomposition (e.g. 768 → 512+256).
     """
-    key = mx.random.key(seed)
-    n_pairs = dim // 2
-    angles = mx.random.uniform(shape=(n_pairs,), key=key) * 2.0 * 3.14159265
-    cos_a = mx.cos(angles).astype(mx.float32)
-    sin_a = mx.sin(angles).astype(mx.float32)
-    mx.eval(cos_a, sin_a)
-    return cos_a, sin_a
+    import math
 
+    def _wht(x):
+        shape = x.shape
+        D = shape[-1]
+        flat = x.reshape(-1, D).astype(mx.float32)
+        h = 1
+        while h < D:
+            flat_r = flat.reshape(-1, D // (2 * h), 2, h)
+            a = flat_r[:, :, 0, :]
+            b = flat_r[:, :, 1, :]
+            flat_r = mx.stack([a + b, a - b], axis=2)
+            flat = flat_r.reshape(-1, D)
+            h *= 2
+        flat = flat / math.sqrt(D)
+        return flat.reshape(shape)
 
-def _apply_givens_rotation(x: mx.array, cos_a: mx.array, sin_a: mx.array) -> mx.array:
-    """Apply D/2 independent 2D Givens rotations: O(D) per vector.
+    if dim > 0 and (dim & (dim - 1)) == 0:
+        key = mx.random.key(seed)
+        uniform = mx.random.uniform(shape=(dim,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(dim), -mx.ones(dim)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(dim, dtype=mx.float32)
+        H = _wht(I)
+        R = signs[:, None] * H
+        mx.eval(R)
+        return R
 
-    Each pair (x[..., 2i], x[..., 2i+1]) is rotated by angle_i:
-        x_new[2i]   = cos(a_i) * x[2i] - sin(a_i) * x[2i+1]
-        x_new[2i+1] = sin(a_i) * x[2i] + cos(a_i) * x[2i+1]
-
-    Args:
-        x: (..., D) input tensor, D must be even
-        cos_a: (D/2,) cosines of rotation angles
-        sin_a: (D/2,) sines of rotation angles
-
-    Returns:
-        (..., D) rotated tensor
-    """
-    # Split into even/odd pairs
-    x_even = x[..., 0::2]  # (..., D/2)
-    x_odd = x[..., 1::2]   # (..., D/2)
-
-    # Apply 2D rotation to each pair
-    y_even = cos_a * x_even - sin_a * x_odd
-    y_odd = sin_a * x_even + cos_a * x_odd
-
-    # Interleave back: stack and reshape
-    # (..., D/2) + (..., D/2) → (..., D/2, 2) → (..., D)
-    y = mx.stack([y_even, y_odd], axis=-1).reshape(*x.shape)
-    return y
+    import numpy as np
+    R_np = np.zeros((dim, dim), dtype=np.float32)
+    remaining = dim
+    offset = 0
+    block_seed = seed
+    while remaining > 0:
+        block_size = 1
+        while block_size * 2 <= remaining:
+            block_size *= 2
+        key = mx.random.key(block_seed)
+        uniform = mx.random.uniform(shape=(block_size,), key=key)
+        signs = mx.where(uniform > 0.5, mx.ones(block_size), -mx.ones(block_size)).astype(mx.float32)
+        mx.eval(signs)
+        I = mx.eye(block_size, dtype=mx.float32)
+        H = _wht(I)
+        block = np.array(signs[:, None] * H)
+        R_np[offset:offset+block_size, offset:offset+block_size] = block
+        offset += block_size
+        remaining -= block_size
+        block_seed += 1
+    R = mx.array(R_np, dtype=mx.float32)
+    mx.eval(R)
+    return R
 
 
 def _get_layer_index(name: str) -> int:
@@ -138,17 +155,9 @@ def apply_turboquant_runtime_patch(
         # QuantizedLinear/QuantizedSwitchLinear: in_dim = scales.shape[-1] * group_size
         in_dim = module.scales.shape[-1] * module.group_size
 
-        # PlanarQuant: D/2 independent Givens rotations — O(D) per vector
-        if in_dim % 2 == 0:
-            cos_a, sin_a = _givens_angles(in_dim, seed=in_dim)
-            module._tq_givens_cos = cos_a
-            module._tq_givens_sin = sin_a
-        else:
-            # Odd dimension: pad to even, rotate, slice back (rare edge case)
-            cos_a, sin_a = _givens_angles(in_dim + 1, seed=in_dim)
-            module._tq_givens_cos = cos_a
-            module._tq_givens_sin = sin_a
-            module._tq_givens_odd = True
+        # WHT rotation: x_rotated = x @ R (matching converter's rotation)
+        R = _rotation_matrix(in_dim, seed=in_dim)
+        module._tq_rotation = R
 
         patched += 1
 
@@ -170,8 +179,8 @@ def _patch_quantized_linear_class():
         _orig_ql_call = nn.QuantizedLinear.__call__
 
         def _rotated_ql_call(self, x):
-            if hasattr(self, '_tq_givens_cos'):
-                x = _apply_givens_rotation(x, self._tq_givens_cos, self._tq_givens_sin)
+            if hasattr(self, '_tq_rotation'):
+                x = x @ self._tq_rotation
             return _orig_ql_call(self, x)
 
         nn.QuantizedLinear.__call__ = _rotated_ql_call
@@ -182,8 +191,8 @@ def _patch_quantized_linear_class():
         _orig_qsl_call = QuantizedSwitchLinear.__call__
 
         def _rotated_qsl_call(self, x, indices, sorted_indices=False):
-            if hasattr(self, '_tq_givens_cos'):
-                x = _apply_givens_rotation(x, self._tq_givens_cos, self._tq_givens_sin)
+            if hasattr(self, '_tq_rotation'):
+                x = x @ self._tq_rotation
             return _orig_qsl_call(self, x, indices, sorted_indices=sorted_indices)
 
         QuantizedSwitchLinear.__call__ = _rotated_qsl_call

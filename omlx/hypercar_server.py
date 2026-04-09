@@ -2,7 +2,7 @@
 """Hypercar MLX server — OpenAI-compatible API with TQ3 + streaming.
 
 Wraps mlx_lm.server with all hypercar patches pre-applied:
-  - Streaming TQ3 KV cache (8x compression + fused Givens kernel)
+  - Streaming TQ3 KV cache (8x compression + fused WHT kernel)
   - Vertical graph eval (prevents cross-layer memory hoarding)
   - Adaptive memory budget (chunk sizing based on live headroom)
   - fp16 layer 0 anchor (quality insurance)
