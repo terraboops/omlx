@@ -225,13 +225,15 @@ class TTTEngine:
     ) -> List[Candidate]:
         """Generate N diverse candidate completions."""
         from mlx_lm import generate
+        from mlx_lm.sample_utils import make_sampler
 
+        sampler = make_sampler(temp=temperature)
         candidates = []
         for _ in range(n):
             text = generate(
                 self.model, self.tokenizer,
                 prompt=prompt, max_tokens=max_tokens,
-                temp=temperature,
+                sampler=sampler, verbose=False,
             )
             cid = str(uuid.uuid4())[:8]
             c = Candidate(
@@ -305,38 +307,54 @@ class TTTEngine:
         total_loss = 0.0
 
         for c in positive:
-            # Compute loss on the full trajectory (prompt + completion)
-            full_text = c.prompt + c.completion
+            full_text = c.prompt + c.completion.split("\n\n")[0]
             tokens = mx.array([self.tokenizer.encode(full_text)])
 
-            # Forward pass (adapters are active via monkey-patch)
-            logits = self.model(tokens)
-
-            # Cross-entropy on completion tokens only
             prompt_len = len(self.tokenizer.encode(c.prompt))
             if prompt_len >= tokens.shape[1] - 1:
                 continue
 
-            shift_logits = logits[:, prompt_len:-1, :].reshape(-1, logits.shape[-1])
-            shift_labels = tokens[:, prompt_len+1:].reshape(-1)
+            # Build loss function that closes over tokens
+            def loss_fn(adapter_params):
+                # Set adapter parameters from the flat list
+                idx = 0
+                for adapter in self.adapters.values():
+                    adapter.A = adapter_params[idx]
+                    adapter.B = adapter_params[idx + 1]
+                    idx += 2
 
-            loss = nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
-            loss = loss * c.reward  # Weight by reward magnitude
+                logits = self.model(tokens)
+                shift_logits = logits[:, prompt_len:-1, :].reshape(-1, logits.shape[-1])
+                shift_labels = tokens[:, prompt_len+1:].reshape(-1)
+                return nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
 
-            # Backward through adapter parameters only
-            # Use mx.grad on a closure that captures the loss
-            loss.backward()
+            # Collect adapter parameters
+            params = []
+            for adapter in self.adapters.values():
+                params.extend([adapter.A, adapter.B])
 
-            total_loss += float(loss.item())
+            # Compute loss and gradients w.r.t adapter params only
+            loss_and_grad = mx.value_and_grad(loss_fn)
+            loss_val, grads = loss_and_grad(params)
+
+            # SGD update on adapter params
+            lr = self.optimizer.learning_rate
+            idx = 0
+            for adapter in self.adapters.values():
+                adapter.A = adapter.A - lr * grads[idx]
+                adapter.B = adapter.B - lr * grads[idx + 1]
+                idx += 2
+
+            total_loss += float(loss_val.item())
 
             # CRITICAL: eval immediately to prevent graph hoarding
-            mx.eval(loss)
+            mx.eval(loss_val)
             for adapter in self.adapters.values():
                 mx.eval(adapter.A, adapter.B)
 
         # Compute adapter norm for monitoring
         adapter_norm = sum(
-            float(mx.sum(a.A ** 2 + a.B ** 2).item())
+            float(mx.sum(a.A ** 2).item()) + float(mx.sum(a.B ** 2).item())
             for a in self.adapters.values()
         ) ** 0.5
 
@@ -421,20 +439,26 @@ def demo_ttt(model=None, tokenizer=None):
     engine = TTTEngine(model, tokenizer, rank=16, lr=1e-4)
     print(f"TTT Engine: {engine.stats()}")
 
-    prompt = "def factorial(n: int) -> int:\n    \"\"\"Return n factorial.\"\"\"\n"
+    prompt = "def factorial(n):\n    if n <= 1: return 1\n    return n *"
     test = "assert factorial(5) == 120 and factorial(0) == 1"
 
     for round_num in range(3):
         print(f"\n=== Round {round_num + 1} ===")
 
-        # Generate candidates
-        candidates = engine.generate_candidates(prompt, n=4, max_tokens=60, temperature=0.8)
+        # Generate candidates — enough tokens to complete the function
+        candidates = engine.generate_candidates(prompt, n=4, max_tokens=30, temperature=0.8)
 
         # Execute and provide feedback
         for c in candidates:
-            engine.feedback_from_execution(c.id, test=test)
-            status = "PASS" if c.metadata.get("passed") else "FAIL"
-            print(f"  {c.id}: {status} — {c.completion[:50]!r}")
+            # Build executable code: prompt + completion (stop at double newline)
+            code = c.prompt + c.completion.split("\n\n")[0].split("\ndef ")[0]
+            passed, error = verify_code(code, test=test)
+            c.reward = 1.0 if passed else -1.0
+            c.signal = "solution"
+            c.metadata["passed"] = passed
+            c.metadata["error"] = error
+            status = "PASS" if passed else "FAIL"
+            print(f"  {c.id}: {status} — {code.strip()[:80]!r}")
 
         # Train on successful ones
         stats = engine.train_step()
