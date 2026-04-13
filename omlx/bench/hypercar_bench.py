@@ -1406,17 +1406,34 @@ def main():
     # Exclusive lock: only one bench instance at a time on this machine.
     # Running two model loads concurrently on 48GB causes catastrophic swap.
     import fcntl
+    import signal
     LOCK_PATH = Path("/tmp/hypercar_bench.lock")
     lock_fd = open(LOCK_PATH, "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print("ERROR: Another hypercar_bench is already running. "
-              "Only one instance allowed at a time (48GB memory constraint).",
-              file=sys.stderr)
-        sys.exit(1)
+        # Check if the holder is still alive — stale locks from crashed runs
+        try:
+            stale_pid = int(LOCK_PATH.read_text().strip())
+            os.kill(stale_pid, 0)  # Probe only, no signal sent
+            # Process exists — genuine contention
+            print(f"ERROR: Another hypercar_bench (PID {stale_pid}) is running. "
+                  "Only one instance allowed at a time (48GB memory constraint).",
+                  file=sys.stderr)
+            sys.exit(1)
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            # PID is dead or unreadable — stale lock, break it
+            lock_fd.close()
+            LOCK_PATH.unlink(missing_ok=True)
+            lock_fd = open(LOCK_PATH, "w")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     lock_fd.write(f"{os.getpid()}\n")
     lock_fd.flush()
+    # Clean up lock on normal exit and common signals
+    import atexit
+    atexit.register(lambda: (lock_fd.close(), LOCK_PATH.unlink(missing_ok=True)))
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda s, f: (lock_fd.close(), LOCK_PATH.unlink(missing_ok=True), sys.exit(128 + s)))
 
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
