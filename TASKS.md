@@ -1299,3 +1299,129 @@ _(none)_
 - **Effort**: M-L (biggest unknown is the colima/lima setup; if it
   proves flaky, fall back to the subprocess runner for a reduced
   per-issue subset)
+
+## Research-derived tasks (from LIT_REVIEW.md pass 5, 2026-04-13)
+
+### 41. QuaRot 4-bit weight-quant spike on one MoE expert layer
+- **Goal**: 6 (48GB fit — weight bytes), 5 (swap headroom)
+- **Derived from**: QuaRot (2404.00456)
+- **Change**:
+  - New `omlx/turboquant_weights.py` module that reuses the Walsh-
+    Hadamard rotation already implemented in
+    `omlx/turboquant_kv.py` (do NOT duplicate the WHT primitive —
+    import it). The module exposes `quarot_pack_linear(weight,
+    scheme="w4a4")` returning a 4-bit packed weight + per-row scale
+    and a pre-applied rotation matrix.
+  - One-layer-only spike: take the `down_proj` of a single Qwen3-
+    Coder expert in layer 24, rotate (weight and activation path)
+    using the existing WHT, quantize to 4-bit RTN per row, and swap
+    it into the model at load time via a monkey-patched `Linear`.
+    All other experts and layers stay at 8-bit.
+  - Add `omlx/bench/quarot_probe.py` that measures, at fixed
+    context 4K: (a) perplexity on a 500-token Python code corpus
+    vs the 8-bit baseline, (b) decode tok/s delta, (c) Metal
+    memory delta. Report all three in a single JSON row.
+  - Do NOT ship a full runtime. This is a de-risking spike — the
+    decision to graduate to a multi-layer port happens only after
+    the probe shows perplexity drift <2% and no decode regression.
+- **Verify**: `.venv/bin/python -m omlx.bench.quarot_probe` prints
+  a row with `perplexity_delta < 0.02`, `decode_tps_delta > -5%`,
+  and `metal_mem_delta` is strictly negative (weight bytes shrank).
+  Full hypercar_bench smoke + coherence gates still pass with the
+  patched expert in place.
+- **Effort**: M (3-5 days — the port is small because WHT is already
+  shipping)
+- **Depends on**: none (WHT is the only prereq and it already ships
+  in `omlx/turboquant_kv.py`)
+
+### 42. CacheBlend cross-chunk KV reuse in prompt cache
+- **Goal**: 4 (prefill speed — cross-request reuse), 1 (effective 1M context reuse)
+- **Derived from**: CacheBlend (2405.16444)
+- **Change**:
+  - New per-chunk KV store in `omlx/hypercar_server.py`'s caching
+    layer, keyed on `blake2b(chunk_tokens)[:16]`. Chunk boundaries
+    are delimited by a new `<|cache-chunk|>` sentinel token that
+    OpenCode can emit between tool outputs (or we segment
+    automatically on double-newline for backwards compat).
+  - Implement the paper's HKVD (Highest Key-Value Divergence)
+    selective-recompute policy: for each chunk reused in a new
+    context, recompute only the top-p% of tokens whose attention
+    to prior chunks would most diverge from a full prefill. Start
+    with p=15% per the paper's default.
+  - Reuse TQ3 save/load primitives (already shipping for session
+    persistence) to serialize per-chunk KV to a bounded LRU
+    on-disk cache under `~/.cache/omlx/cacheblend/`. Eviction by
+    LRU with a 4GB cap by default.
+  - New request header `X-Hypercar-CacheBlend: on` (off by
+    default). When enabled, compare CacheBlend-prefilled first-token
+    logits against a reference full-prefill on a 100-prompt
+    calibration set; gate the feature rollout on
+    `KL(cacheblend || full_prefill) < 0.05` mean and `< 0.2` p99.
+  - New phase `phase_cacheblend()` in
+    `omlx/bench/hypercar_bench.py` (`--full` only) that measures
+    TTFT delta on a synthetic 3-tool-call agentic trace where two
+    of the three tool outputs repeat from a previous request.
+- **Verify**: `curl` with `X-Hypercar-CacheBlend: on` on a
+  previously-seen multi-chunk prompt returns identical completion
+  tokens to the same prompt without the header for at least 95/100
+  calibration prompts, and TTFT drops by >=40% on the repeat-tool
+  synthetic trace in `phase_cacheblend()`.
+- **Effort**: M (3-5 days)
+- **Depends on**: none directly, but sequence *after* LLMLingua-2
+  (Task 17) if both land — compress first, then cache the compressed
+  chunks
+
+### 43. InfLLM two-tier KV cache for effective 1M context
+- **Goal**: 1 (effective 1M context beyond KV budget), 5 (swap
+  headroom), 3 (constant decode cost vs context length)
+- **Derived from**: InfLLM (2402.04617)
+- **Change**:
+  - Extend `omlx/turboquant_kv.py` with a two-tier policy: hot tier
+    holds the sink window (first 128 tokens), the local window
+    (last 4096 tokens), and the top-K most-likely-attended blocks.
+    Cold tier holds everything else in the same 3-bit WHT format
+    but in a separately-allocated `mx.array` region flagged for
+    eager `mx.clear_cache()` eviction.
+  - Per-block representative-key: mean of the block's keys,
+    precomputed when the block is finalised at prefill time.
+  - Top-K block selection at attention time: cheap dot product
+    between the current query and the per-block rep-keys, pick
+    top-K=32 blocks (tunable via `--infllm-blocks`).
+  - Compose with Quest (Task 2): Quest picks top-K *pages* within
+    the hot tier, InfLLM picks top-K *blocks* from cold into hot.
+    The two pass selections run in sequence.
+  - New gate row in `omlx/bench/hypercar_bench.py`: NIAH at 256K
+    and 512K under `--infllm-blocks 32` to prove effective context
+    does not regress.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench
+  --full --infllm-blocks 32` passes NIAH at 256K AND 512K with
+  hot-tier Metal footprint staying under 10GB at 512K context
+  (measured by the existing metal-watchdog telemetry).
+- **Effort**: L (1-2 weeks — two-tier allocator is the hard part)
+- **Depends on**: 44 (SVD-rank probe decides whether InfLLM or
+  ShadowKV is the right tiering policy to build first); 2 (Quest
+  lands on the hot tier, not the cold tier)
+
+### 44. ShadowKV SVD-rank probe on Qwen3-Coder K cache
+- **Goal**: 5 (swap headroom — decides between InfLLM vs ShadowKV)
+- **Derived from**: ShadowKV (2410.21465)
+- **Change**:
+  - New one-shot script `omlx/bench/shadowkv_rank_probe.py`: prefill
+    a 64K context (synthetic Python code sample) with fp16 KV
+    cache, then for each of the 48 layers run `mx.linalg.svd()` on
+    the RoPE-applied K cache and report the rank needed to capture
+    99%, 99.5%, and 99.9% of the Frobenius norm.
+  - Decision rule encoded in the script: if the median layer needs
+    rank <= 256 for 99% norm capture, report "ShadowKV viable" and
+    recommend Task 43 be replaced by a ShadowKV implementation. If
+    median rank > 256, report "InfLLM is the better bet" and
+    recommend proceeding with Task 43 as written.
+  - Save the full rank-vs-layer table as JSON under
+    `research/shadowkv_rank_<date>.json` so the result is
+    reproducible across commits.
+- **Verify**: Script runs to completion in under 15 minutes on the
+  M4 Pro reference machine, emits a decision line matching one of
+  the two regimes above, and writes the JSON artifact. No
+  production code changes — this is a pure measurement task.
+- **Effort**: S (half a day to a day)
+- **Depends on**: none (pure offline probe)

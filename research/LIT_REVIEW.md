@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-13 (pass 4)_
+_Last updated: 2026-04-13 (pass 5)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -717,6 +717,216 @@ count, and measure whether the bottom-50% (cold) experts could be
 re-quantized to 4-bit with negligible output drift. That is a Task
 32 follow-up, not a paper review.
 
+## Pass 5 — 2026-04-13
+
+Bucket coverage from uncovered territory: (1) rotation-invariant 4-bit
+*weight* quantization distinct from KV quant (QuaRot), (2) cross-request
+KV prefix reuse / semantic prefix caching (CacheBlend), (3) training-free
+memory-augmented long-context extension distinct from attention sparsity
+(InfLLM), (4) CPU-offloaded long-context KV for throughput-bounded decode
+(ShadowKV). Prior passes covered attention sparsity, KV quant, speculative
+decoding, prefill token-drop, evals, and MoE expert-weight offload — this
+pass explicitly targets the *weight-quant* and *cache-reuse-across-requests*
+axes which were not touched by any prior paper in this review. Gap-not-
+closed note at the end of this section.
+
+### [QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs](https://arxiv.org/abs/2404.00456) — 2404.00456
+- **Authors**: Saleh Ashkboos, Amirkeivan Mohtashami, Maximilian L. Croci, Bo Li, Martin Jaggi, Dan Alistarh, Torsten Hoefler, James Hensman (ETH Zürich, EPFL, Microsoft Research, IST Austria)
+- **Published**: 2024-04 (NeurIPS 2024)
+- **Hypercar goals it addresses**: Goal 6 (48GB fit — weight bytes), Goal 5 (swap headroom), Goal 3 (decode — memory-bound cost)
+- **TL;DR**: Applies a computational-invariant Hadamard rotation to both
+  weights *and* activations end-to-end so that the rotated representation
+  has no per-channel outliers. Because all outliers are smeared across the
+  rotation basis, plain round-to-nearest 4-bit quantization (W4A4 KV4)
+  becomes lossless-quality — no mixed precision, no activation-aware
+  scaling, no calibration data beyond a few hundred samples. Reports
+  <0.3 perplexity loss on LLaMA-2-70B at W4A4KV4 and end-to-end 2.16x
+  prefill speedup on A100 because the whole matmul is genuine 4-bit.
+- **Why it matters for Hypercar**: The entire TurboQuant codec in
+  `omlx/turboquant_kv.py` is built on the *same* Walsh-Hadamard rotation
+  trick that QuaRot uses — we already know the rotation works on Qwen3-
+  Coder (the TQ3 KV cache ships in production). QuaRot is the paper that
+  says "now apply this to the weights too." Our 32GB of 8-bit expert
+  weights are Goal 6's biggest line item; a 4-bit re-pack via QuaRot's
+  rotation on top of the existing `omlx/turboquant_kv.py` machinery would
+  drop the model footprint from ~32GB → ~16GB and free the swap headroom
+  that DuoAttention + KIVI can't reach on their own (because they only
+  touch the KV, not the 32GB of weight bytes). Crucially, QuaRot's
+  *online* Hadamard on activations happens inside the attention layer,
+  where MLX already has `mx.fast.scaled_dot_product_attention` — the
+  activation rotation is one contiguous matmul we can express in MLX
+  without a custom Metal kernel. This is the cleanest path to a 4-bit
+  Qwen3-Coder that keeps quality, because it reuses machinery we have
+  already proven on the KV side. Note: BENCHMARKS.md lists "TQ3.5 weight
+  quantization" as abandoned, but that was a *different* recipe that did
+  not use a rotation — QuaRot-style weight quant on top of our existing
+  WHT is fundamentally new territory, not a revival of the abandoned
+  approach.
+- **Cost of adoption**: M-L (1-2 weeks). New
+  `omlx/turboquant_weights.py` module that holds the 4-bit rotated-weight
+  packer (reuses the existing WHT rotation from
+  `omlx/turboquant_kv.py`), a calibration script to pick per-layer
+  scales, and an MLX `Linear` replacement that runs the online Hadamard
+  before each matmul. Biggest risk: QuaRot's numbers are on dense
+  LLaMA, not on fine-grained MoE. A 4-bit Qwen3-Coder expert that was
+  never trained with rotation-aware quantization may regress on the
+  coding evals even with Hadamard smoothing. Mitigation: gate the port
+  against LiveCodeBench (Task 18) and RULER multi-key at 16K before
+  shipping.
+- **Local PDF**: research/2404.00456_quarot.pdf
+
+### [CacheBlend: Fast Large Language Model Serving for RAG with Cached Knowledge Fusion](https://arxiv.org/abs/2405.16444) — 2405.16444
+- **Authors**: Jiayi Yao, Hanchen Li, Yuhan Liu, Siddhant Ray, Yihua Cheng, Qizheng Zhang, Kuntai Du, Shan Lu, Junchen Jiang (University of Chicago, Stanford, Microsoft Research)
+- **Published**: 2024-05 (EuroSys 2025)
+- **Hypercar goals it addresses**: Goal 4 (prefill speed — cross-request reuse), Goal 1 (effective 1M context reuse)
+- **TL;DR**: The problem: prefix caching only works when the whole prefix
+  matches byte-for-byte. For RAG / agentic workloads where each request
+  concatenates a *different* set of cached chunks (retrieved docs, tool
+  outputs, prior turns), naive prefix caching fails because position
+  embeddings and cross-chunk attention don't survive concatenation.
+  CacheBlend caches each chunk's KV independently, then at request time
+  *selectively recomputes* only the tokens whose attention would
+  actually differ from a full prefill — typically a small fraction of
+  each chunk. Reports 2.2x-3.3x TTFT reduction on RAG workloads with
+  <1% quality loss vs full prefill, and most importantly the win
+  *grows* with the number of distinct chunks being composed.
+- **Why it matters for Hypercar**: Our `omlx/hypercar_server.py` has
+  prompt caching today but it's strict-prefix only — it saves on the
+  second decode of a repeat system prompt, but does nothing for the
+  agentic common case where the system prompt is fixed and each tool
+  call appends a *different* file or search result to a previously-
+  cached context. That is 90% of the OpenCode workload and 100% of
+  the reason Goal 4 (prefill constant across context) is still the
+  biggest gap. CacheBlend turns every distinct tool output into a
+  one-time KV compute, and every *re-use* of it into a selective
+  patch — which for a session that includes the same repo files across
+  many tool calls is dramatic. This composes with LLMLingua-2 (Task
+  17): compress once, cache the compressed KV, reuse across requests.
+  The TQ3 cache already has `save/load` primitives (the basis for
+  session persistence), so storing and reloading per-chunk KV segments
+  is mostly plumbing rather than new cache machinery.
+- **Cost of adoption**: M (3-5 days). Requires: (a) a per-chunk KV
+  store keyed on `hash(chunk_tokens)` inside
+  `omlx/hypercar_server.py`'s caching layer, (b) a selective-
+  recompute policy (the paper's "HKVD" — Highest Key-Value Divergence
+  tokens), (c) a new prefill path that concatenates cached chunks and
+  recomputes only the HKVD subset. Biggest risk: selective recompute
+  correctness. Get the HKVD threshold wrong and downstream tokens
+  diverge silently from a full prefill — we need a gate that compares
+  CacheBlend-prefilled outputs to full-prefilled outputs on the same
+  prompt and bounds the KL divergence. Mitigation: start with
+  CacheBlend disabled by default, opt-in via a request header, and
+  gate on HumanEval parity before flipping the default.
+- **Local PDF**: research/2405.16444_cacheblend.pdf
+
+### [InfLLM: Training-Free Long-Context Extrapolation for LLMs with an Efficient Context Memory](https://arxiv.org/abs/2402.04617) — 2402.04617
+- **Authors**: Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, Song Han, Maosong Sun (Tsinghua, Renmin, MIT)
+- **Published**: 2024-02 (NeurIPS 2024)
+- **Hypercar goals it addresses**: Goal 1 (effective 1M context beyond trained length), Goal 3 (decode — constant attention cost), Goal 5 (swap headroom)
+- **TL;DR**: Splits the context into three populations: a small fixed
+  sink window at the start, a local sliding window at the end, and a
+  large *memory bank* of past blocks in between. The memory bank lives
+  in CPU or "far" memory; at each attention step a cheap
+  representative-key score picks the top-K memory blocks most likely to
+  be attended to, and only those are loaded back into the fast-tier
+  cache. Because only a tiny fraction of the memory bank is touched per
+  step, the effective context is essentially unbounded while the decode
+  cost stays constant. Shows a 4K-trained Mistral extended to 1024K
+  context with no fine-tuning and no quality loss on long-range
+  benchmarks, and a 90%+ memory reduction on the hot tier vs holding
+  the full KV resident.
+- **Why it matters for Hypercar**: InfLLM is the cleanest known way to
+  make Goal 5 (swap <8GB) comfortable at 1M context without touching
+  decode quality. DuoAttention (pass 2) drops cache for *streaming
+  heads* but keeps the full cache for retrieval heads; InfLLM keeps all
+  heads but tiers the cache so only the hot blocks live in the Metal
+  heap. On M4 Pro unified memory the "memory bank" doesn't even need to
+  be on a separate device — it's the *same* memory, just a different
+  allocator region, which means the "load a cold block back" cost that
+  the paper measures in PCIe bandwidth is effectively free on our
+  hardware. That makes InfLLM's economics *strictly better* on the M4
+  Pro than on the A100 the paper evaluates. Slots into
+  `omlx/turboquant_kv.py` as a cache-tier policy — hot blocks in the
+  current 3-bit WHT format, cold blocks in the same format but in a
+  separate mx.array region flagged for mmap eviction. This also
+  composes with Quest (Task 2/3): Quest picks top-K pages within the
+  hot tier, InfLLM decides which blocks *are* in the hot tier.
+  Orthogonal mechanisms, multiplicative win.
+- **Cost of adoption**: M (3-5 days). Per-block representative-key
+  scoring (mean-of-group key, per the paper) in the cache writer path,
+  a top-K block-selection pass at attention time, and a two-tier
+  allocator in `omlx/turboquant_kv.py`. Biggest risk: Apple's unified-
+  memory allocator may not actually free the "cold" tier back to the
+  system if we keep a Python reference alive — we'd need to either
+  explicitly `mx.clear_cache()` between block evictions or
+  round-trip the cold tier through an `mmap`-backed file. The second
+  option is robust but adds filesystem I/O to the decode path; the
+  first option is cheap but depends on MLX allocator behaviour.
+- **Local PDF**: research/2402.04617_infllm.pdf
+
+### [ShadowKV: KV Cache in Shadows for High-Throughput Long-Context LLM Inference](https://arxiv.org/abs/2410.21465) — 2410.21465
+- **Authors**: Hanshi Sun, Li-Wen Chang, Wenlei Bao, Size Zheng, Ningxin Zheng, Xin Liu, Harry Dong, Yuejie Chi, Beidi Chen (CMU, ByteDance)
+- **Published**: 2024-10 (ICLR 2025)
+- **Hypercar goals it addresses**: Goal 5 (swap — explicit CPU offload), Goal 1 (effective 1M context in fixed memory), Goal 3 (decode throughput with offloaded cache)
+- **TL;DR**: Observes that the K cache after RoPE is extremely
+  low-rank (rank ~160 in Llama-3 at 128K context) and that the V cache
+  has heavy locality — sibling tokens attend to overlapping V entries.
+  ShadowKV keeps a low-rank factorization of K plus a compact landmark
+  index in the fast tier, and evicts V blocks to CPU "shadow" memory.
+  At decode time the landmark pass picks the top blocks and only those
+  V blocks are staged back. Reports 6x larger batch and 3.04x higher
+  throughput on A100 at 128K context with <1% quality loss on
+  Needle-in-a-Haystack and LongBench.
+- **Why it matters for Hypercar**: This is a different answer to the
+  same "tier the KV" question that InfLLM addresses, but with a very
+  specific mechanism (low-rank K + landmarks) that may compose better
+  with our *existing* WHT-rotated 3-bit KV. The WHT rotation is
+  specifically a decorrelating transform, which is the same reason K
+  becomes low-rank after RoPE — so the representations are friendly to
+  each other. Crucially for Hypercar's M4 Pro target, ShadowKV's
+  "shadow" tier on A100 costs a PCIe round trip per block stage; on
+  unified memory it is free. Goal 5 (swap <8GB) is the gap this paper
+  most directly attacks: at 1M context our 22.5GB KV bill is almost
+  entirely what's driving us into swap, and ShadowKV's landmark-based
+  eviction is the clearest path to keeping only ~2GB of K indices +
+  top-K V blocks in the hot tier. Slots into `omlx/turboquant_kv.py`
+  as a per-head low-rank-K factorization plus a landmark scorer,
+  layered under the existing 3-bit codec.
+- **Cost of adoption**: L (1-2 weeks). The low-rank factorization of
+  the RoPE'd K is an offline SVD per layer per head — that's a
+  calibration script, not a runtime cost. The runtime additions are a
+  landmark top-K pass and a V-block staging loop. Biggest risk: the
+  SVD rank is input-dependent; the paper picks rank 160 on Llama-3 but
+  we don't know the Qwen3-Coder number and the paper doesn't evaluate
+  MoE. Mitigation: run the SVD-rank probe as a one-day experiment
+  before committing. Overlap with InfLLM (Task 42) is significant —
+  we should pick *one* of the two to implement first rather than both,
+  and the choice depends on the SVD-rank measurement.
+- **Local PDF**: research/2410.21465_shadowkv.pdf
+
+**Gap not closed this pass**: semantic prefix caching *beyond* exact-
+token match. CacheBlend addresses the cross-chunk composition problem,
+but the deeper question — "can we reuse KV across prompts that differ
+in wording but share meaning?" — has no credible 2024-2026 paper that
+works without a full re-embedding pass. The candidate directions
+(embedding-similarity KV retrieval, prefix-distillation caches) are
+mostly papers that target batched serving systems where the reuse
+economics are driven by concurrent-request sharing, which we do not
+have in a single-user local setting. The honest next step for this
+bucket is not another paper download but the CacheBlend integration
+(new Task) — if exact-token composition turns out to be the entire
+practical savings, the semantic-match question becomes academic.
+
+**Gap not closed this pass**: rotation-invariant W4A4 quantization
+*specifically validated on fine-grained MoE* (128-expert Qwen3 style).
+QuaRot evaluates on dense LLaMA and Mistral; SpinQuant evaluates on
+LLaMA and MoE-8x7B (Mixtral). Neither paper has data on a 128-expert
+model where each expert is much smaller and the outlier distribution
+is expert-conditional. The right next step for this bucket is not to
+wait for a paper but to run QuaRot's recipe on Qwen3-Coder's experts
+one layer at a time and measure perplexity drift — that is the Task
+41 spike, not a literature question.
+
 ## Synthesis
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -907,3 +1117,69 @@ downstream optimisation benchmark gets more meaningful once we're
 measuring a faster baseline. LazyLLM (Task 39) is a prefill lever that
 composes with the MInference work from pass 1 (Tasks 4/5) and should
 land after those to avoid double-counting prefill wins.
+
+### Pass 5 adds (2026-04-13)
+
+**Highest-leverage find this pass: QuaRot (2404.00456).** Every prior
+pass has attacked the *KV cache* (Quest, DuoAttention, KIVI,
+LLMLingua-2, LazyLLM, ShadowKV) or the *attention compute* (MInference,
+EAGLE-2, LayerSkip) or the *expert dispatch* (ProMoE). None of them
+touches the 32GB of 8-bit expert weights that dominates our Goal 6
+budget and drives Goal 5 into swap the moment anything else needs
+memory. QuaRot is the first paper in this review that credibly
+4-bit-quantizes the weights themselves — and it does it with the
+*exact* machinery we already have shipping in production. Our
+`omlx/turboquant_kv.py` proves that a Walsh-Hadamard rotation is a
+valid outlier-killer on Qwen3-Coder's activations at 3-bit KV; QuaRot
+says "now extend that rotation to the weight matmul and you can pack
+the weights to 4 bits too." The port cost is dominated by the
+`Linear`-wrapper plumbing, not new research, because the rotation
+itself is already in `omlx/turboquant_kv.py`. A successful QuaRot
+integration drops the model footprint from ~32GB → ~16GB, which
+turns Goal 5 (swap <8GB) from "borderline" to "comfortable" *and*
+turns Goal 6 (48GB fit) from "passes on a clean boot" to "runs fine
+with a full browser session alongside." This is the single largest
+axis of unrealised wins left in the project, and it composes with
+every existing backlog item — every optimisation ProMoE, Quest,
+DuoAttention, and LayerSkip make is now applied to a weight set half
+the size. The fact that it reuses the same WHT rotation we already
+ship makes it the most de-risked "big win" on the entire backlog.
+
+**Second highest: CacheBlend (2405.16444).** The project's Goal 4
+(prefill constant across context) has two sub-gaps. LazyLLM and
+MInference reduce the cost *inside* one prefill; CacheBlend reduces
+the number of prefills you need to run at all, by reusing KV across
+requests that share chunks but not whole prefixes. For OpenCode's
+actual workload (repeat system prompt + tool calls that pull in
+*different* repo files per turn) this is the difference between
+"TTFT is 5 seconds every turn" and "TTFT is 5 seconds on the first
+turn and <1 second on every subsequent turn that reuses the same
+files." No prior paper in the review addresses cross-request KV
+reuse — every optimisation so far has been within-request. This is a
+pure orthogonal-axis win and slots into the existing prompt-cache
+machinery in `omlx/hypercar_server.py`.
+
+**InfLLM (2402.04617) and ShadowKV (2410.21465)** are a matched pair
+both attacking Goal 5 via KV tiering — InfLLM with an activation-
+frequency block policy, ShadowKV with low-rank K + landmark-selected
+V blocks. On M4 Pro unified memory both papers' "cold tier" round-
+trip cost is effectively zero, so their economics are strictly better
+than on the A100 baselines they publish. We should pick exactly one
+to land first, not both — the choice hinges on a one-day SVD-rank
+probe (Task 44) to decide whether Qwen3-Coder's RoPE'd K cache is
+low-rank enough for ShadowKV's landmark compression to beat InfLLM's
+block-frequency heuristic. They are *not* additive: both tier the KV,
+just with different policies. The gap-not-closed notes above explain
+why we are not adding a semantic-prefix-caching task or a third
+weight-quant paper — those buckets are better served by *measuring*
+than by reading more papers.
+
+Sequencing for Pass 5 tasks: QuaRot weight-quant probe (Task 41) is
+the highest-impact bet and should land as a de-risking spike first
+(one layer at a time, measure perplexity drift), then graduate to a
+full port. CacheBlend (Task 42) is the lowest-risk and can run in
+parallel — it touches the server request path, not the model, so it
+cannot destabilise the decode loop. The InfLLM vs ShadowKV pick (Task
+43/44) is gated on the SVD-rank probe and sequences after Quest and
+DuoAttention have landed so we know which portion of the KV bill
+actually survives to be tiered.
