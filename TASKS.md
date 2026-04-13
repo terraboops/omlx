@@ -246,6 +246,169 @@ _Last updated: 2026-04-13_
   sysctl/iostat/pgrep.
 - **Effort**: S-M
 
+### 20. Identify root cause of per-task bimodal timing in Phase 3 NIAH and RULER 16K keys=5
+- **Goal**: 3 (decode speed reliability) and 4 (prefill speed reliability)
+- **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8),
+  bench/snapshots/run23..run30_*/ — eight consecutive runs on an
+  unchanged SHA reveal a clean bimodal distribution for two specific
+  tasks:
+  - Phase 3 NIAH (4K + 16K combined): at N=8 the sorted values are
+    68, 69, 73, 82, 208, 231, 232, 243 seconds.
+    Fast cluster [68, 69, 73, 82] mean 73.0s std 5.4s (N=4).
+    Slow cluster [208, 231, 232, 243] mean 228.5s std 12.7s (N=4).
+    Inter-cluster gap 126s, slow/fast ratio 3.13x, balance even 4/4.
+  - RULER 16K keys=5: at N=8 the sorted values are
+    61, 85, 98, 221, 231, 236, 241, 259 seconds.
+    Fast cluster [61, 85, 98] mean 81.3s std 18.5s (N=3).
+    Slow cluster [221, 231, 236, 241, 259] mean 237.6s std 13.2s (N=5).
+    Inter-cluster gap 123s, slow/fast ratio 2.92x.
+  - Within-cluster std (5-18s) is much smaller than inter-cluster gap
+    (~125s). This is a real distribution, not noise. The fast/slow
+    draw is INDEPENDENT per task — all 4 cells of the combination
+    matrix are populated across the 8 runs.
+- **Change**: This is fundamentally an INVESTIGATION task, not a fix.
+  Concrete deliverable: a writeup at `docs/bimodal_timing_root_cause.md`
+  that identifies which Metal/MLX subsystem is responsible. To get there:
+  - Add `MTL_DEBUG_LAYER=1` and `MTL_SHADER_VALIDATION=1` to the bench
+    subprocess env and capture Metal command buffer dispatch counts and
+    kernel compile timestamps from the OS log.
+  - Use `xcrun xctrace record --template 'Metal System Trace'` to capture
+    one fast-mode and one slow-mode run side by side; diff the trace.
+  - Hypothesis to test FIRST: is the bimodality from Metal kernel cache
+    cold/warm state? If yes, prewarming the kernel cache before the
+    timing measurement should eliminate the slow mode. Add a `warmup_pass`
+    flag to `phase3_niah` and `phase3b_ruler` that runs the same task code
+    once for warmup before the timed pass.
+  - Hypothesis to test SECOND: is it page-fault cost on the first
+    allocation of a particular tensor shape under unified memory pressure?
+    If yes, the bimodality should disappear when running with reduced
+    background memory pressure (e.g., after a fresh reboot with no other
+    apps).
+- **Verify**: After identifying the root cause, the writeup MUST include:
+  (a) a reproduction recipe that can force fast-mode 3 times in 3 runs
+  on the same SHA, (b) a reproduction recipe that can force slow-mode
+  3 times in 3 runs, (c) one-line root cause statement that references
+  a specific Metal/MLX subsystem.
+- **Effort**: M-L (investigation depth uncertain; may decompose into
+  follow-ups based on what the trace reveals)
+
+### 21. Add multi-run statistical aggregation to omlx/bench/aggregate.py
+- **Goal**: 3, 4 (single-run hypercar_bench timings are not fit for
+  Goal 3/4 regression detection at observed variance levels)
+- **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13). At N=8
+  the runtime CV is 17% (range 732-1303s, 78% of the mean span). To
+  detect a real 10% performance regression with this variance,
+  N >= 16 is needed; for 5%, N >= 64. Current BENCHMARKS.md records
+  per-run prose entries which do not surface medians, percentiles, or
+  per-phase distributions. The /tmp/hypercar_bench_results.json file
+  is overwritten each run, so historical trend reconstruction requires
+  walking bench/snapshots/runNN_*/results.json by hand.
+- **Change**:
+  - Add `omlx/bench/aggregate.py` that walks `bench/snapshots/run*/results.json`,
+    groups by SHA + cache_mode + model_id, and emits a JSON file at
+    `bench/snapshots/aggregate/<sha>_<mode>_<model>.json` containing for
+    each phase: `[N, mean, std, median, p10, p50, p90, p99, min, max]`.
+    Re-runnable; idempotent; updates incrementally as new snapshots land.
+  - Add `omlx/bench/aggregate.py --report <sha>` that prints a
+    pretty-printed table comparing the aggregate stats for two SHAs
+    (current vs baseline) and flags any phase where the median delta
+    exceeds 2 sigma of the combined std. This is the actual regression
+    detector.
+  - Hook the aggregate run into the analyst cron prompt's Step 9 final
+    report so each fire shows N, median delta, and significance flags
+    instead of single-sample numbers.
+- **Verify**:
+  `.venv/bin/python -m omlx.bench.aggregate` reads all existing
+  bench/snapshots/run*/ directories, writes aggregate JSON files, and
+  exits 0. Then `.venv/bin/python -m omlx.bench.aggregate --report HEAD`
+  prints a per-phase median table and flags any 2-sigma deviations as
+  REGRESSION/IMPROVEMENT. The script itself should fit in <300 lines
+  and have no dependencies beyond stdlib + json.
+- **Effort**: M
+
+### 22. Fix 8-bit model Goal 5 violation rate (50% of runs exceed 8 GB swap)
+- **Goal**: 5 (swap headroom), 6 (M4 Pro fit)
+- **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8),
+  bench/snapshots/run*/env.json swap_peak_gb values. 4 of 8 runs
+  exceeded the CLAUDE.md Goal 5 threshold of 8 GB peak swap:
+    Run 23: 8.63 GB (VIOLATE)
+    Run 24: 6.93 GB (pass)
+    Run 25: 6.73 GB (pass) ← min
+    Run 26: 7.76 GB (pass, tight)
+    Run 27: 7.80 GB (pass, tight)
+    Run 28: 8.30 GB (VIOLATE)
+    Run 29: 9.70 GB (VIOLATE, max)
+    Run 30: 8.50 GB (VIOLATE)
+  This is not a one-off — it's a 50% violation rate that indicates the
+  8-bit model + native 3-bit KV + current chunk sizes produces a swap
+  profile that only barely fits the 48 GB machine. The underlying cause
+  is that the 8-bit model loads at 32.4 GB, leaving ~8.8 GB Metal
+  headroom at the 41.2 GB ceiling, and RULER 64K multi-key prefill
+  allocations sporadically push total wired+compressed memory past the
+  point where macOS has to spill to disk-backed swap.
+- **Change**: This is a STRUCTURAL headroom issue, not a harness bug.
+  The concrete change path is one of these three remediations, pick
+  whichever lands first:
+  - (a) Land Task #2 (--kv-bits 2) and verify Goal 5 on N=8 replication
+    with `--kv-bits 2`. 2-bit codebook drops KV memory by ~33% which
+    should give ~3 GB more Metal headroom per 64K context — enough to
+    keep swap peak under 8 GB on all runs.
+  - (b) Land Task #3 (--quest-topk) and verify Goal 5 on N=8
+    replication with `--quest-topk 32`. Query-aware page selection
+    reduces working-set K per decode step without changing the prefill
+    allocation pattern, so it should help the sustained swap rate but
+    may not help the allocation-cliff peak.
+  - (c) Land Task #9 (RULER projected-headroom gate). This prevents
+    the crash but does NOT fix Goal 5 — RULER@64K will still be
+    attempted up to the point of projected-memory exhaustion. Only a
+    partial fix.
+  - Recommend (a) first because it addresses the root cause (too much
+    KV for the available headroom) rather than working around it.
+- **Verify**: Run `.venv/bin/python -m omlx.bench.hypercar_bench --full
+  --kv-bits 2` eight times and compute swap peak per run. Goal 5 PASS
+  criterion: 8 of 8 runs have swap peak < 8 GB AND HumanEval pass@1
+  stays within 10 points of the 3-bit baseline (90%). If the 2-bit
+  path regresses HumanEval below 80%, back out and try option (c).
+- **Effort**: S (if Task #2 already landed) to M (if Task #2 still
+  needs integration)
+
+### 23. Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
+- **Goal**: Meta — CLAUDE.md Goal 5 definition fit-for-purpose
+- **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8).
+  The current Goal 5 phrasing in CLAUDE.md is "Swap usage: < 8 GB at
+  any point," which has two problems:
+  - The profiler's `swap_gb` metric measures DEPTH (peak
+    disk-backed swap) but misses THROUGHPUT. Across the 8 runs,
+    sustained swap rate (pageins+swapins+swapouts / run duration) was
+    **431 ± 34 MB/s (CV 8%)** — tighter than any other metric. This
+    is the actual hardware constraint on Apple Silicon's page
+    compressor, and the depth gate misses it entirely. Run 25 had 6.73
+    GB depth but still pushed 271 GB of swap I/O over 732s.
+  - The depth metric is inversely correlated with actual pressure in
+    some cases (Run 24 had lower depth than Run 23 but higher swap I/O
+    and runtime). A threshold on depth alone is not well-defined.
+- **Change**:
+  - Update `CLAUDE.md` Goal 5 row in the "Hypercar Goals (North Star)"
+    table from "Swap usage: < 8 GB at any point" to "Swap throughput:
+    p90 sustained swap I/O rate < 100 MB/s over N >= 8 runs (hardware
+    floor on M4 Pro is ~430 MB/s based on 8-run measurement; 100 MB/s
+    leaves 4x headroom for foreground work during inference)."
+  - Update the "Current status against goals" row for Goal 5 to
+    reference the measured p90 from the most recent N=8 aggregate.
+  - Add a note referencing Task #21's aggregate script as the source
+    of truth for the metric.
+  - Do NOT remove the depth tracking — keep `swap_peak_gb` as a
+    secondary observability metric but not a gate.
+- **Verify**: After the edit, `.venv/bin/python -m omlx.bench.aggregate
+  --report HEAD` (from Task #21) reads the current CLAUDE.md gate
+  definition and reports p90 sustained rate for the last N=8 runs.
+  Goal 5 gate passes at p90 < 100 MB/s. Current measurement would
+  fail this gate (p90 ~= 460 MB/s), which is the honest signal we
+  want — failing clearly is better than passing-by-depth while actual
+  pressure is 4x the stated threshold.
+- **Effort**: S (CLAUDE.md edit + one aggregate script run; depends
+  on Task #21 for the measurement tooling)
+
 ## In Progress
 
 _(none)_
