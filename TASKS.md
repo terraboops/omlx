@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 25**: Add --warmup flag to hypercar_bench for Metal kernel cache priming
+_(none)_
 
 ## Completed
 
@@ -568,6 +568,11 @@ all in `## In Progress`.
   - Decode/prefill tok/s deltas shown inline per phase
   - NEW/REMOVED detection for phases that exist in only one SHA
   - Minference layer counter already correct via `% num_layers` wrapping — `reset_layer_counter()` kept as defense-in-depth API
+- **Task 25**: Add --warmup flag to hypercar_bench for Metal kernel cache priming (2026-04-13)
+  - `--warmup` runs 16-token generation before Phase 0 to prime Metal shader cache
+  - Result: decode 20→45 tok/s (2.25x), Phase 0 time 9s→0.3s after warmup
+  - Strong evidence for Task 20 hypothesis 1 (Metal kernel cache cold/warm bimodality)
+  - Clears Metal cache after warmup to avoid inflating memory baselines
 
 ---
 

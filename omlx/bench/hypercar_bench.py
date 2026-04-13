@@ -1391,6 +1391,8 @@ def main():
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill: minference (per-head pattern dispatch)")
+    parser.add_argument("--warmup", action="store_true",
+                        help="Run a warmup pass before Phase 0 to prime Metal kernel cache")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
@@ -1467,6 +1469,16 @@ def main():
         if watchdog.breached.is_set():
             logger.error("MEMORY BREACH during model load — aborting")
             return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        # Warmup pass: prime Metal kernel cache + GPU pipeline state
+        if args.warmup:
+            logger.info("\n=== Warmup: priming Metal kernels ===")
+            warmup_t0 = time.perf_counter()
+            _generate(model, tokenizer, "Hello", max_tokens=16)
+            gc.collect()
+            mx.clear_cache()
+            logger.info(f"  Warmup done in {time.perf_counter() - warmup_t0:.1f}s "
+                        f"(Metal cache primed, memory cleared)")
 
         # Phase 0: Smoke
         logger.info("\n=== Phase 0: Smoke ===")
