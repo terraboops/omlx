@@ -1,0 +1,7 @@
+=== HEAD ===
+655c22bae52c9f58aa1a8f784f439be75ae85198
+
+=== log -3 ===
+655c22b fix: Phase 3b quality-gate failure no longer blocks Phase 4 HumanEval
+5b2426c tasks: Resume Task 22 — try Option (c) loosened watchdog for full bench
+10725df bench: Run 37 — Phase 3b 15/15 reproduced; slow-cluster Goal 5 FAIL confirms Task 22 need

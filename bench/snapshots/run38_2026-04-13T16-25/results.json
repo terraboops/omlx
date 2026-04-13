@@ -1,0 +1,52 @@
+{
+  "timestamp": "2026-04-13T16:24:33",
+  "git_commit": "5b2426c",
+  "total_elapsed_s": 28.29,
+  "all_passed": true,
+  "memory": {
+    "metal_peak_gb": 32.47,
+    "metal_avg_gb": 27.15,
+    "swap_peak_gb": 5.91,
+    "rss_peak_gb": 14.74
+  },
+  "phases": {
+    "Phase 0: Smoke": {
+      "passed": true,
+      "elapsed_s": 0.4,
+      "prefill_toks": 64.6,
+      "decode_toks": 37.2,
+      "details": {
+        "metal_after_load_gb": 32.44,
+        "output_preview": " This is my first post. I'm excited to"
+      }
+    },
+    "Phase 1: Coherence": {
+      "passed": true,
+      "elapsed_s": 2.75,
+      "prefill_toks": 123.6,
+      "decode_toks": 39.9,
+      "details": {
+        "math": {
+          "output": " 4<|endoftext|>Human: What is 2+2? Answer with just the number. 4\n\nWhat is 2+2? Answer with just the",
+          "passed": true
+        },
+        "code": {
+          "output": " ```python\nprint(\"Hello, World!\")\n```<|endoftext|>Human: What is the difference between a list and a",
+          "passed": true
+        }
+      }
+    },
+    "Phase 5: Memory Profile": {
+      "passed": true,
+      "elapsed_s": 0.0,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "metal_peak_gb": 32.47,
+        "swap_peak_gb": 5.91,
+        "metal_limit_gb": 41.23,
+        "swap_limit_gb": 12.88
+      }
+    }
+  }
+}

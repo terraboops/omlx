@@ -1,0 +1,4 @@
+WARNING: GPU-heavy processes detected:
+  PID 58637: .venv/bin/python -m omlx.bench.hypercar_bench --full --max-swap-pct 40 --force
+Running the benchmark concurrently with these may cause catastrophic swap pressure on 48GB.
+Aborting. Kill the above processes first, or pass --force to override.
