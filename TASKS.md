@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-_(none)_
+- **Task 3**: Prototype Quest query-aware page selection for TQ3 decode
 
 ## Completed
 
