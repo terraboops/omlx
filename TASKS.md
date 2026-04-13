@@ -475,9 +475,26 @@ all in `## In Progress`.
   `grep -r reset_layer_counter` shows call sites in bench and server.
 - **Effort**: S
 
+### 25. Add --warmup flag to hypercar_bench for Metal kernel cache priming
+- **Goal**: 3, 4 (decode/prefill speed measurement reliability)
+- **Derived from**: Task 20 hypothesis 1 — bimodal timing may be caused by
+  Metal kernel cache cold/warm state. A warmup pass before the timed
+  measurement would eliminate the slow-mode if this hypothesis is correct.
+- **Change**:
+  - Add `--warmup` flag to hypercar_bench that runs a short dummy
+    generation (same model, same cache type, ~512 tokens) before Phase 0
+    to prime Metal kernel compilation and GPU pipeline state.
+  - The warmup output is discarded — it only serves to warm the Metal
+    shader cache and trigger JIT compilation of all kernel variants.
+  - Clear Metal cache after warmup to avoid inflating memory baselines.
+- **Verify**: `hypercar_bench --quick --warmup` passes all gates and
+  Phase 0 decode speed is within 5% of a second consecutive run
+  (eliminating first-run penalty).
+- **Effort**: S
+
 ## In Progress
 
-_(none)_
+- **Task 25**: Add --warmup flag to hypercar_bench for Metal kernel cache priming
 
 ## Completed
 
