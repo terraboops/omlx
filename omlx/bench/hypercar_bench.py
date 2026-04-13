@@ -666,9 +666,8 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         prefill_time = time.perf_counter() - prefill_t0
         prefill_toks = len(tokens) / prefill_time if prefill_time > 0 else 0.0
 
-        # Generate response
+        # Generate response (32 tokens for NIAH answer)
         generated = []
-        decode_t0 = time.perf_counter()
         for _ in range(32):
             token = mx.argmax(logits[:, -1, :], axis=-1)
             mx.eval(token)
@@ -676,11 +675,24 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
             x = token.reshape(1, 1)
             logits = model(x, cache=cache)
             mx.eval(logits)
-        decode_time = time.perf_counter() - decode_t0
-        decode_toks = len(generated) / decode_time if decode_time > 0 else 0.0
 
         response = tokenizer.decode(generated).strip()
         found = NIAH_ANSWER in response
+
+        # Decode stress: generate 128 MORE tokens to measure decode speed
+        # honestly. The NIAH answer tokens are too few (32) to amortize
+        # MLX graph compilation + kernel warmup, producing artifact readings
+        # like 0.3 tok/s at 16K when real speed is ~20 tok/s.
+        DECODE_STRESS_TOKENS = 128
+        decode_t0 = time.perf_counter()
+        for _ in range(DECODE_STRESS_TOKENS):
+            token = mx.argmax(logits[:, -1, :], axis=-1)
+            mx.eval(token)
+            x = token.reshape(1, 1)
+            logits = model(x, cache=cache)
+            mx.eval(logits)
+        decode_time = time.perf_counter() - decode_t0
+        decode_toks = DECODE_STRESS_TOKENS / decode_time if decode_time > 0 else 0.0
 
         results[ctx_len] = {
             "found": found,
@@ -688,6 +700,7 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
             "context_tokens": len(tokens),
             "prefill_toks": round(prefill_toks, 1),
             "decode_toks": round(decode_toks, 1),
+            "decode_stress_tokens": DECODE_STRESS_TOKENS,
         }
 
         status = "PASS" if found else "FAIL"

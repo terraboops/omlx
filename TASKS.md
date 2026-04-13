@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 10**: Fix NIAH decode-speed measurement artifact for short generations
+_(none)_
 
 ## Completed
 
@@ -450,6 +450,11 @@ _Last updated: 2026-04-13_
   - Guarded logger format string: breach results now log `BREACH: <reason>` instead of crashing on missing `found`/`total`/`accuracy` keys
   - Gate aggregation (`mk_16k`, `vt_4k`) and `by_type` summary now skip breach results via `"accuracy" in r` filter
   - Phase 3b completes with a failed PhaseResult on breach instead of an unhandled KeyError
+- **Task 10**: Fix NIAH decode-speed measurement artifact for short generations (2026-04-13)
+  - Option (b): added 128-token decode stress measurement after the 32-token NIAH answer retrieval
+  - Decode speed is now measured on 128 tokens (amortizes MLX graph compilation + kernel warmup)
+  - NIAH retrieval check unchanged — answer is still from the first 32 tokens
+  - New `decode_stress_tokens` field in results for auditability
 
 ---
 
