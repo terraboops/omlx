@@ -1286,6 +1286,158 @@ TASKS.md entry, since none of (a)/(b)/(c) is a benchmark-derived
 issue — they're operations decisions for the human.
 ```
 
+### Run 26: N=4 Reveals Per-Task Bimodal Timing — Slowest Run Yet (1303s)
+```
+Date: 2026-04-13
+SHA:  a6db011 (no commits since Run 25; working tree identical)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run26_2026-04-13T03-23/
+
+Fourth reproducibility data point. Same crash, same cliff, but THIS
+run is the slowest of all four (1303s vs prior max 967s) and reveals
+that the timing variance from Run 25 was hiding a per-task bimodal
+distribution: each task can independently land in "fast mode" or
+"slow mode," and Run 26 drew slow on both Phase 3 NIAH and RULER
+16K keys=5 simultaneously — the worst-case combination.
+
+Commits since Run 25: (none — HEAD unchanged at a6db011)
+Uncommitted working tree: byte-identical to Runs 24 and 25.
+
+Benchmark results (--full, total 1303.5s, crashed at task 5/15 Phase 3b):
+
+  Phase                  | Result                      | Time
+  -----------------------|-----------------------------|--------
+  0: Smoke               | decode TBD tok/s            |   8.4s ← fastest
+  1: Coherence           | 2/2                         |   2.4s
+  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
+  3: NIAH                | 4K + 16K PASS (slow mode)   | 231.9s
+  3b: RULER              | 4/15 PASSED then CRASH      | 949s
+  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
+  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
+  4: HumanEval           | NEVER RAN                   |   —
+
+Per-task bimodal timing across 4 runs (the headline finding):
+
+  Phase                       Run 23   Run 24   Run 25   Run 26   Pattern
+  -----------------------     ------   ------   ------   ------   -------
+  Phase 3 NIAH                208      69       68       232      BIMODAL
+                              SLOW     fast     fast     SLOW     ~70 vs ~220
+  RULER 16K keys=5            61       236      85       259      BIMODAL
+                              fast     SLOW     fast     SLOW     ~73 vs ~248
+  RULER 64K keys=3 (breach)   205      283      218      412      monotonic-ish
+  RULER 16K keys=3            231      236      222      257      stable ±7%
+  RULER 4K keys=2 / keys=4    11/9     11/9     11/9     12/9     stable
+  Phase 0/1/2                 ~18      ~17      ~17      ~16      drift down
+  TOTAL RUNTIME               851      967      732      1303     UNSTABLE
+
+  Run combination matrix (per-task fast=F / slow=S):
+                              NIAH     16K-k5   Total       Combo class
+  Run 23                      S        F        851         mixed-best
+  Run 24                      F        S        967         mixed-worst
+  Run 25                      F        F        732         all-fast
+  Run 26                      S        S        1303        all-slow
+
+  Two tasks × {F,S} = 4 cells, all 4 observed across 4 runs. Suggests
+  the slow vs fast outcome of each task is independent (not correlated
+  to system state), and total runtime tracks the SUM of per-task draws.
+
+Memory profile (4-run consistency):
+
+                              Run 23   Run 24   Run 25   Run 26   spread
+  Metal active max (GB)       41.44    41.43    41.44    41.38    ±0.06
+  Metal peak (GB)             41.45    41.45    41.45    41.45    ±0.00 ←byte-identical
+  Swap peak depth (GB)         8.63     6.93     6.73     7.76    ±9%
+
+Allocation cliff at breach (sample boundary, all 4 runs):
+
+  Sample          Run 23      Run 24      Run 25      Run 26
+                  (t=754s)    (t=872s)    (t=639s)    (t=1206s)
+  --------        --------    --------    --------    --------
+  pre-stable      40.13–.27   40.13–.27   40.13–.27   40.13–.27
+  free            33.00 GB    33.00 GB    33.00 GB    33.x GB
+  CLIFF           41.27 GB    41.27 GB    41.27 GB    41.36 GB
+  post peak       41.45 GB    41.45 GB    41.45 GB    41.45 GB
+
+  Note: Run 26's cliff landed at 41.36 GB instead of 41.27 — a +0.09 GB
+  shift attributable to slightly higher concurrent allocation state.
+  The post-cliff peak of 41.45 GB is identical across all 4 runs.
+
+System memory I/O across all 4 runs:
+
+                              Run 23   Run 24   Run 25   Run 26   mean ± σ
+  Pageins (disk reads, GB)    36.4     35.7     34.0     37.4     35.9 ± 1.4
+  Total swap I/O (GB)         337.8    422.7    270.5    608.7    410 ± 145 (35% CV)
+  Sustained swap rate (MB/s)  406      448      369      467      423 ± 44 (10%)
+  Compressions (M pages)      30.7     34.5     34.1     48.3     36.9 ± 7.7 (21%)
+  Run duration (s)            850.7    966.7    732.4    1303.5   963 ± 213 (22% CV)
+
+  Strongest correlation: Run 26 had +40% compressions vs Run 25 and is
+  +78% slower. The page compressor's CPU work scales linearly with
+  decompressions/compressions, and that work blocks Metal allocations
+  via the unified-memory contention path.
+
+Analysis notes (snapshot: bench/snapshots/run26_2026-04-13T03-23/):
+
+- **Per-task bimodality is the headline finding.** N=3 looked like
+  uniform high variance; N=4 reveals two tasks (Phase 3 NIAH and
+  RULER 16K keys=5) are each independently bimodal with a ~3.3x ratio
+  between modes. The total runtime is the sum of independent per-task
+  outcomes, so the worst case (Run 26) is ~1.8x the best case (Run 25)
+  with no system-level explanation. Hypothesis: the bimodality is
+  driven by Metal driver state at task entry — first allocation of
+  a particular tensor shape pays a kernel-compile / page-fault cost
+  that the second allocation skips. NEEDS more N to confirm.
+
+- **Allocation cliff is structurally deterministic for the 4th time.**
+  Pre-cliff metal_active 40.20 GB → free to 33 GB → cliff to 41.27/41.36
+  in all four runs. Post-cliff peak is 41.45 GB across all four. The
+  64K multi_key_niah prefill peak is a code constant.
+
+- **Compressor work explains runtime variance.** Run 26: 48.3M
+  compressions vs Run 25's 34.1M (+42%). Runtime: 1303s vs 732s (+78%).
+  The page compressor consumes CPU and stalls Metal allocations via
+  the unified-memory shared-page mechanism. This is mechanistically
+  consistent with the swap-pressure → slowdown chain we've been
+  seeing — Run 26 just hit a much higher pressure level.
+
+- **CPU metric still 0.0 in all 1276 samples.** Cumulative across 4
+  runs: 3,762 broken samples, 0 non-zero. Task #8 profiler bug
+  has now produced more broken telemetry than most projects produce
+  total telemetry.
+
+- **First load-avg contamination signal**: pre-Run-26 load was 2.52
+  (clean), post-run was 6.38 (over the 4.0 threshold). The post-run
+  spike includes the benchmark itself winding down + the macOS
+  compressor catching up on its 48M pending compressions. The PRE
+  load was clean so the run is not contaminated, but the ONLY way
+  to be sure is to compare swap I/O rate (467 MB/s) against prior
+  baselines (369-448 MB/s) — Run 26 is in the high end of the
+  observed band but not anomalously so per second. The slowdown
+  came from MORE seconds, not faster pressure.
+
+- **Statistical power is poor at N=4.** Total runtime CV is now
+  22% (was 14% at N=3). std of per-phase outliers is ~80s. To
+  detect a 10% genuine regression, we'd need N ≥ 16. To detect
+  a 5% regression, N ≥ 64. Single-run hypercar_bench timing
+  numbers are NOT FIT FOR PURPOSE for Goal 3 / Goal 4 tracking.
+
+New TASKS.md entries filed: **NONE**.
+All five Run-23 findings (#7-11) are still blocking and reproduced
+for the fourth consecutive time.
+
+Cadence note (yet again, but this time with a stronger angle): four
+consecutive runs against the same SHA have produced ~28,000 lines of
+snapshot data. The bimodal-timing finding from Run 26 is the FIRST
+genuinely new analytical signal since Run 23 — and it took until
+N=4 to surface. If the goal is to characterize variance properly,
+the cron should KEEP firing (we need N=16 or more), but BENCHMARKS.md
+should NOT keep growing — append-only stats files in
+bench/snapshots/aggregate/ would be more useful than per-run prose.
+That's a TASKS.md entry I am NOT filing because it's a meta-process
+issue not a benchmark-derived bug.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
