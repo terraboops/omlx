@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 23**: Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
+_(none)_
 
 ## Completed
 
@@ -474,6 +474,11 @@ _Last updated: 2026-04-13_
   - `--report HEAD` prints per-phase table with timing, decode/prefill tok/s, Goal 5 violation count
   - Writes aggregate JSON to bench/snapshots/aggregate/<sha>.json (idempotent)
   - stdlib only (no numpy) — _stats() uses manual percentile/std computation
+- **Task 23**: Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric (2026-04-13)
+  - Goal 5 target changed from "< 8 GB at any point" to "p90 sustained swap I/O < 100 MB/s (N≥8 runs)"
+  - Status updated to reflect N=8 measurement: p90 ~460 MB/s (FAIL, 4.6x over target)
+  - Swap depth kept as secondary observability metric, not a gate
+  - References aggregate.py as source of truth
 
 ---
 

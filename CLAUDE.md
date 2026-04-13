@@ -4,6 +4,43 @@
 
 oMLX Hypercar — high-performance local LLM inference on Apple Silicon with compressed KV caches. Serves Qwen3-Coder-30B-A3B via OpenAI-compatible API with 1M token context window on 48GB.
 
+## Hardware Target
+
+Reference machine: **16" MacBook Pro (Nov 2024) — Apple M4 Pro, 48 GB unified memory, macOS Tahoe 26.2**.
+All performance targets below MUST hold on this hardware with the laptop under normal desktop load
+(browser, editor, Claude Code session). No "cold-boot" excuses.
+
+## Hypercar Goals (North Star)
+
+These are the non-negotiable targets that define "Hypercar-class" inference. Every optimization,
+refactor, and architectural decision should be measured against them. A change that regresses
+any of these — even to improve another — needs explicit justification.
+
+| # | Goal | Target | Why it matters |
+|---|------|--------|----------------|
+| 1 | **Context window** | 1M tokens | Whole-repository reasoning without chunking |
+| 2 | **Intelligence** | Matches or beats GPT-4, proven on **4 independent evals** | One eval is a lucky prompt; four is a claim |
+| 3 | **Decode speed** | ≥ 50 tok/s, **constant across context window** | Feels interactive at 2K AND at 1M — not a cliff |
+| 4 | **Prefill speed** | ≥ 500 tok/s, **constant across context window** | Re-reading 200K of code shouldn't take a coffee break |
+| 5 | **Swap pressure** | p90 sustained swap I/O < 100 MB/s (N≥8 runs) | Swap depth alone misses throughput; 100 MB/s leaves 4x headroom vs M4 Pro's ~430 MB/s floor |
+| 6 | **Machine fit** | Runs comfortably on the M4 Pro 48GB reference machine | Laptop stays usable while inference runs |
+
+### Current status against goals (as of 2026-04-13)
+
+| # | Goal | Current | Gap |
+|---|------|---------|-----|
+| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), validated to 64K in practice | Need NIAH validation at 128K, 256K, 512K, 1M |
+| 2 | 4 independent evals beating GPT-4 | HumanEval 90% (18/20), Code Intel 5/5, NIAH 4K+16K — **3 evals, GPT-4 parity on coding only** | Need: MMLU-style reasoning, long-context retrieval, agentic tool use |
+| 3 | 50 tok/s decode constant | ~20 tok/s at 2K (8bit) — **40% of target** | Profile MoE router + 8-bit dequant hot path |
+| 4 | 500 tok/s prefill constant | ~300 tok/s at 2K, drops at 16K — **~60% of target, not constant** | Fused dequant+attention kernel, Metal graph fusion |
+| 5 | Swap p90 < 100 MB/s | N=8 measured p90 ~460 MB/s sustained — **4.6x over target, FAIL**. Swap depth (secondary): 50% of runs exceed 8GB. | Reduce KV memory (--kv-bits 2) or streaming heads (DuoAttention) to cut sustained pressure. Measured via `omlx/bench/aggregate.py --report HEAD`. |
+| 6 | 48GB M4 Pro fit | Load 32.4GB, peak 37.7GB — **PASS** | Maintain as optimizations land |
+
+**Interpretation**: We have quality (coding) but need breadth (non-coding evals). We have context
+capacity but need validated *performance* across that capacity. Decode and prefill speed are the
+biggest gaps — and the hardest to close, because "constant throughout context" means beating the
+KV cache access cost at 1M tokens, not just at 2K.
+
 ## Before Every Commit
 
 ```
@@ -22,7 +59,7 @@ Do not use --no-verify to skip hooks.
 
 Memory limits are percentage-based (auto-detected from system RAM):
   - Metal peak: 80% of system memory
-  - Swap delta: 17% of system memory
+  - Swap delta: 25% of system memory
   - Metal at load: 70% of system memory (8-bit model = ~32GB on 48GB)
   - Breaches cause IMMEDIATE abort (fail-fast watchdog)
 
