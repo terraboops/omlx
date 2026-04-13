@@ -1392,8 +1392,10 @@ def main():
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill: minference (per-head pattern dispatch)")
-    parser.add_argument("--warmup", action="store_true",
-                        help="Run a warmup pass before Phase 0 to prime Metal kernel cache")
+    parser.add_argument("--warmup", action="store_true", default=True,
+                        help="Run a warmup pass before Phase 0 to prime Metal kernel cache (default: on)")
+    parser.add_argument("--no-warmup", action="store_false", dest="warmup",
+                        help="Skip warmup pass (exposes Metal JIT cold-start penalty)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
