@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 11**: Extend /sandbox exclude to cover benchmark diagnostic commands
+_(none)_
 
 ## Completed
 
@@ -465,6 +465,10 @@ _Last updated: 2026-04-13_
   - Fix 2: RSS → phys_footprint — added `proc_pid_rusage()` via ctypes for macOS physical footprint (includes Metal + compressed pages). RSS kept for compat.
   - Fix 3: Swap I/O throughput — added `swap_io_mb_per_s` field from psutil swap_memory() deltas (no subprocess fork). Watchdog breaches at 2000 MB/s sustained for 5 samples.
   - Critical: ALL subprocess calls removed from profiler sampling loop (fork under memory pressure caused the original catastrophic swap storm)
+- **Task 11**: Extend /sandbox exclude to cover benchmark diagnostic commands (2026-04-13)
+  - New `omlx/bench/baseline.py` — gathers system state via ctypes + psutil (zero subprocess)
+  - Fields: system_memory_gb, swap_used_gb, load_avg, virtual_memory, mlx_processes, disk_io
+  - Run as script (`python omlx/bench/baseline.py`) to avoid omlx root package MLX import chain
 
 ---
 
