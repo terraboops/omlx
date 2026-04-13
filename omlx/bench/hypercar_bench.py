@@ -1275,6 +1275,9 @@ def main():
                         help="Add 500K token NIAH test (requires hybrid model with low KV overhead)")
     parser.add_argument("--quest-topk", type=int, default=0,
                         help="Quest page selection: attend to top-K pages during decode (0=off)")
+    parser.add_argument("--prefill-sparse", type=str, default=None,
+                        choices=["minference"],
+                        help="Sparse prefill: minference (per-head pattern dispatch)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
@@ -1339,6 +1342,14 @@ def main():
         # Parameters will be materialized on first forward pass instead.
         load_time = time.perf_counter() - load_t0
         logger.info(f"Model loaded in {load_time:.1f}s (lazy — first forward will materialize)")
+
+        # Apply MInference sparse prefill if requested
+        if args.prefill_sparse == "minference":
+            from omlx.patches.minference_prefill import apply_minference_prefill_patch
+            if apply_minference_prefill_patch():
+                logger.info("MInference sparse prefill ENABLED")
+            else:
+                logger.warning("MInference sparse prefill FAILED — dense fallback")
 
         if watchdog.breached.is_set():
             logger.error("MEMORY BREACH during model load — aborting")

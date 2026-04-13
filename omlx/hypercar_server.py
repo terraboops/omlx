@@ -243,6 +243,9 @@ def main():
                         help="TQ3: stay fp16 below this threshold per layer")
     parser.add_argument("--quest-topk", type=int, default=0,
                         help="Quest page selection: attend to top-K pages during decode (0=off)")
+    parser.add_argument("--prefill-sparse", type=str, default=None,
+                        choices=["minference"],
+                        help="Sparse prefill strategy: minference (per-head pattern dispatch)")
     parser.add_argument("--prefill-step-size", type=int, default=8192,
                         help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
     parser.add_argument("--max-tokens", type=int, default=4096)
@@ -296,6 +299,14 @@ def main():
         min_quant_tokens=args.min_quant_tokens,
         quest_topk=args.quest_topk,
     )
+    # Apply MInference sparse prefill if requested
+    if args.prefill_sparse == "minference":
+        from omlx.patches.minference_prefill import apply_minference_prefill_patch
+        if apply_minference_prefill_patch():
+            logger.info("MInference sparse prefill ENABLED")
+        else:
+            logger.warning("MInference sparse prefill FAILED — falling back to dense")
+
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
 

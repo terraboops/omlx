@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-- **Task 5**: Implement MInference vertical-slash prefill kernel behind a flag
+_(none)_
 
 ## Completed
 
@@ -116,6 +116,13 @@ _Last updated: 2026-04-12_
   - Synthetic placeholder table at `omlx/patches/minference_patterns/qwen3_coder_30b_a3b_instruct_8bit.json` (48 layers × 32 heads = 1536 entries)
   - Pattern distribution: 57% vertical_slash, 24% a_shape, 14% block_sparse, 5.7% dense
   - Verify: real calibration requires GPU run of `scripts/minference_calibrate.py --model <qwen3-coder>`
+- **Task 5**: Implement MInference vertical-slash prefill kernel behind a flag (2026-04-12)
+  - New `omlx/patches/minference_prefill.py` with per-head sparse dispatch during prefill
+  - 3 sparse mask builders (a_shape, vertical_slash, block_sparse) + dense fallback
+  - Groups heads by pattern type for batched dispatch (avoids per-head kernel launches)
+  - `--prefill-sparse minference` flag on both bench and server (default off)
+  - Composes with prefill_last_logit_patch and vertical_eval (orthogonal)
+  - Verify: `hypercar_bench --full --prefill-sparse minference` (needs GPU for quality gate)
 
 ---
 
