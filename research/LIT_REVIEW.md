@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-13 (pass 5)_
+_Last updated: 2026-04-12 (pass 6)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -927,6 +927,200 @@ wait for a paper but to run QuaRot's recipe on Qwen3-Coder's experts
 one layer at a time and measure perplexity drift — that is the Task
 41 spike, not a literature question.
 
+## Pass 6 — 2026-04-12
+
+Bucket coverage from the brief: (1) Jacobi/Lookahead parallel decoding
+(genuinely new territory — no draft model, no training), (2) grammar-
+constrained / structured generation for tool-call reliability, (3) KV
+cache eviction policies via observation-window importance (distinct
+from the prior selection/sparsity papers), (4) paged attention without
+PagedAttention's fragmentation cost — single-device serving economics
+for 1M-token KV. None of these buckets has a paper anywhere in passes
+1–5, including the "Already-cited prior art" list. This is the first
+pass to explicitly attack decode-throughput via non-speculative parallel
+decoding, and the first to attack *tool-call correctness* as an
+intelligence lever rather than via preference tuning.
+
+### [Break the Sequential Dependency of LLM Inference Using Lookahead Decoding](https://arxiv.org/abs/2402.02057) — 2402.02057
+- **Authors**: Yichao Fu, Peter Bailis, Ion Stoica, Hao Zhang (UCSD, Google, UC Berkeley, MosaicML)
+- **Published**: 2024-02 (ICML 2024)
+- **Hypercar goals it addresses**: Goal 3 (decode speed, constant across context)
+- **TL;DR**: Reframes autoregressive decoding as solving a nonlinear
+  system by Jacobi iteration, then accelerates it with a two-branch
+  "lookahead" that maintains an n-gram pool of historical Jacobi
+  trajectories. At each step the model runs one forward pass that (a)
+  advances the Jacobi window and (b) verifies n-gram guesses — both in
+  the same batch — yielding 1.5–2.3x lossless decode speedup with *no
+  draft model and no training*. Output distribution is identical to
+  greedy decoding.
+- **Why it matters for Hypercar**: EAGLE-2 (pass 2) is on the backlog
+  for Goal 3, but pays a draft-head training cost we have not yet
+  absorbed — and training a draft model against a 30B MoE target on
+  M4 Pro is a multi-week expedition, not a spike. Lookahead is the
+  "free" counterpart: zero training, zero extra parameters, composes
+  with any KV cache format (so it layers on top of TQ3 without touching
+  `omlx/turboquant_kv.py`), and it happens entirely inside the decode
+  loop in `omlx/hypercar_server.py`. On MoE specifically the win is
+  magnified because each verified n-gram token amortises one MoE
+  expert-dispatch cost across multiple positions — the same reason
+  EAGLE-2 benefits MoE, but without the training. The paper's own 1.5x
+  floor at 13B-70B dense models is a conservative estimate for our
+  workload since our decode is MoE-dispatch-bound, not FLOP-bound.
+- **Cost of adoption**: M (2-3 days). A Jacobi-window rollout, an
+  n-gram pool indexed by trailing-token key, a tree-mask primitive for
+  the single forward pass that verifies the guesses, and a
+  `--lookahead-window` flag on `hypercar_server`. The hardest part is
+  getting the tree-attention mask right on MLX's scaled-dot-product
+  attention path — this is the same mask shape EAGLE-2 uses and is the
+  reason we would want to land Lookahead before EAGLE-2 (it de-risks
+  the tree-attention primitive with a simpler consumer). Risk: n-gram
+  hit rate on code generation is workload-dependent; the paper reports
+  strong results on code but we'd want to validate on HumanEval-style
+  generations before committing.
+- **Local PDF**: research/2402.02057_lookahead_decoding.pdf
+
+### [SnapKV: LLM Knows What You are Looking for Before Generation](https://arxiv.org/abs/2404.14469) — 2404.14469
+- **Authors**: Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Wang, Fan Yang, Deming Chen, Minjia Zhang, Chao Zhang, Tri Dao (UIUC, Cohere, Princeton, Microsoft)
+- **Published**: 2024-04 (NeurIPS 2024)
+- **Hypercar goals it addresses**: Goal 5 (swap p90), Goal 1 (context), Goal 3 (decode indirectly)
+- **TL;DR**: Observes that for each query, a small "observation window"
+  at the end of the prompt already carries strong information about
+  which historical KV positions matter for the rest of generation.
+  SnapKV pools attention scores from that observation window across
+  heads, picks the top-k historical positions per head, and *evicts*
+  the rest before decoding even starts. Reports 3.6x decode memory
+  reduction at 16K context with no quality loss on LongBench and
+  NeedleInAHaystack across six models and up to 380K context.
+- **Why it matters for Hypercar**: Every KV-reduction paper in passes
+  1–5 either *selects* (Quest — still holds the full cache) or
+  *tiers* (InfLLM, ShadowKV — still reads the cold tier on miss) or
+  *compresses* (KIVI, QuaRot-ish). None of them *permanently drop*
+  positions from the KV. SnapKV is the only paper in the review that
+  reduces the *resident* KV memory by evicting before decode — which
+  is exactly what moves Goal 5's swap p90 metric (currently 460 MB/s,
+  target 100 MB/s). Eviction is also uniquely free at 1M context
+  because the memory savings stack multiplicatively with every other
+  KV optimisation we've banked: SnapKV then Quest then DuoAttention
+  reduces resident KV, then bounds per-step work, then removes
+  streaming-head KV entirely. For agentic workloads where the
+  question is fixed at prompt time (tool calls, code review, long-
+  document QA) the "observation window is the question" assumption
+  holds by construction — SnapKV is nearly always correct for our
+  workload. Plugs into `omlx/turboquant_kv.py` as a prefill-time
+  `.compact(keep_indices)` primitive.
+- **Cost of adoption**: S-M (1-2 days). The compaction primitive is a
+  mx.take on the existing per-page layout; the per-head top-k is
+  cheap. Biggest integration wrinkle: our TQ3 cache stores quantised
+  pages, so compaction must re-pack (trivial — existing fork/rewind
+  path already does this). Risk: for continuous conversations where
+  later turns ask about *different* earlier passages, eviction is
+  irreversible and can silently hurt multi-turn quality — we'd gate
+  the feature on single-turn requests only, then extend later.
+- **Local PDF**: research/2404.14469_snapkv.pdf
+
+### [XGrammar: Flexible and Efficient Structured Generation Engine for Large Language Models](https://arxiv.org/abs/2411.15100) — 2411.15100
+- **Authors**: Yixin Dong, Charlie F. Ruan, Yaxing Cai, Ruihang Lai, Ziyi Xu, Yilong Zhao, Tianqi Chen (CMU, SJTU, NVIDIA)
+- **Published**: 2024-11
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth — agentic tool-call correctness), Goal 3 (decode speed — zero runtime overhead for structured outputs)
+- **TL;DR**: A context-free-grammar-constrained decoding engine that
+  precomputes an "adaptive token mask cache" from the grammar so the
+  per-token mask lookup at decode time is a constant-cost table read
+  plus a small runtime pushdown-automaton update. Reports up to 100x
+  speedup over Outlines/llguidance on JSON-mode decoding with zero
+  measurable overhead in end-to-end inference on Llama-3 and Qwen.
+  Crucially the engine handles context-sensitive grammars (not just
+  regular languages) so it supports arbitrary tool-call JSON schemas.
+- **Why it matters for Hypercar**: Our `omlx/hypercar_server.py`
+  serves OpenAI-compatible tool calls to OpenCode, and "tool parse
+  safety" is listed as a specific concern in the server description.
+  Today tool-call correctness is entirely on the model — a single
+  malformed JSON bracket breaks the entire agentic turn, which is a
+  Goal 2 failure mode we don't currently measure. XGrammar makes the
+  malformed-JSON failure mode *impossible by construction*, at zero
+  runtime cost, which converts one of the fuzziest quality axes (tool
+  use) into a hard guarantee. It composes with tau-bench (Task 14)
+  multiplicatively: tau-bench measures whether the model picks the
+  right tool; XGrammar guarantees that once picked, the call parses.
+  Neither replaces the other. The zero-runtime-cost claim means it
+  does not hurt Goal 3 the way runtime FSM masking (Outlines) does.
+- **Cost of adoption**: S (1 day). Off-the-shelf PyPI package with a
+  small C++ extension; the integration point is the sampler in the
+  decode loop. On MLX we'd either port XGrammar's mask-application as
+  an MLX op (fast path) or just materialise the mask on CPU per step
+  (slow path — still likely faster than Outlines). Risk: XGrammar's
+  precomputation step runs on the first request for each grammar; we
+  need to cache those across requests in the server to avoid a
+  per-call compile hit.
+- **Local PDF**: research/2411.15100_xgrammar.pdf
+
+### [vAttention: Dynamic Memory Management for Serving LLMs without PagedAttention](https://arxiv.org/abs/2405.04437) — 2405.04437
+- **Authors**: Ramya Prabhu, Ajay Nayak, Jayashree Mohan, Ramachandran Ramjee, Ashish Panwar (Microsoft Research India, IISc)
+- **Published**: 2024-05 (ASPLOS 2025)
+- **Hypercar goals it addresses**: Goal 6 (48GB fit), Goal 5 (swap), Goal 1 (1M context without fragmentation)
+- **TL;DR**: Shows that PagedAttention's block-indirection and
+  scatter/gather kernels exist purely to work around CUDA allocator
+  fragmentation — and that if you use the GPU's virtual memory
+  primitives directly (cuMemAddressReserve, cuMemMap) you can keep
+  the KV cache logically contiguous while still allocating physical
+  memory on demand. The resulting kernels are the standard
+  contiguous-KV kernels (no custom block-indirection code), with up
+  to 1.97x throughput improvement over vLLM and strictly less memory
+  fragmentation. The paper's CUDA implementation is an existence
+  proof; the *idea* is platform-agnostic.
+- **Why it matters for Hypercar**: Goal 6 status is "Load 32.4GB,
+  peak 37.7GB — PASS" with ~10GB headroom, but at 1M context the KV
+  itself is 22.5GB and must coexist with 16GB of 8-bit weights. MLX
+  on Metal already has a unified-memory allocator that does not
+  suffer from CUDA-style fragmentation, *but* our fork/rewind path in
+  `omlx/turboquant_kv.py` currently allocates a fresh page tensor on
+  every grow — a pattern that on Metal produces allocator churn and
+  shows up in the swap-rate metric as spurious p90 spikes even when
+  total memory is not pressured (see Task 31 in TASKS.md, "Profile
+  KV allocator fragmentation at 1M context"). vAttention's answer is
+  exactly what Task 31 is trying to diagnose: pre-reserve a large
+  virtual address range, commit physical pages on demand. On Metal
+  the equivalent primitive is MTLHeap with
+  MTLHeapTypePlacement — same mechanism, different API. So
+  vAttention is less "port this code" and more "the paper that gives
+  Task 31 a known-correct architecture to converge on." This is the
+  first paper in the review that speaks directly to the allocator-
+  churn class of swap-rate bugs.
+- **Cost of adoption**: M (2-4 days). An MTLHeap-backed page pool
+  under `omlx/turboquant_kv.py`, plus a fork/rewind path that
+  commits/releases pages instead of allocating fresh tensors. The
+  numerical path is unchanged — this is purely an allocator swap.
+  Risk: MTLHeap placement-mode semantics differ from CUDA virtual
+  memory in one important way — heaps are not trivially growable, so
+  we need to reserve an upper-bound heap (sized for 1M context KV)
+  at session start. That is fine for our use case because the server
+  knows context budget up front; it would be wrong for a shared
+  multi-tenant server.
+- **Local PDF**: research/2405.04437_vattention.pdf
+
+**Gap not closed this pass: bucket 5 — Apple Silicon / MLX-native
+attention kernels.** This remains the consistently-uncovered bucket
+across every pass (called out explicitly in passes 2 and 5 as well).
+The reason is structural: MLX kernel optimisation work lives in the
+Apple MLX repo's commit log, WWDC talks, and a handful of engineering
+blogs — not in 2024-2026 arxiv papers. There is no paper to cite
+because the work is not a paper. The right next step for this bucket
+is *not* another literature pass; it is Task 30 ("Survey
+mx.fast.scaled_dot_product_attention source for AMX binding"), which
+reads the MLX source directly. We should stop listing this bucket as
+a research gap — it is an implementation gap, not a literature gap.
+
+**Gap not closed this pass: bucket 6 — adaptive computation / early-
+exit routers beyond LayerSkip.** LayerSkip (pass 4) covers the self-
+speculative version of this idea. A handful of 2024 papers propose
+learned routers that dynamically decide how many layers each token
+needs (e.g., MoD-style mixture-of-depths). None of them land cleanly
+on a 30B MoE with quantised weights because the router itself needs
+training, and routers trained against dense FP16 bases rarely
+transfer to quantised MoEs without re-training from scratch. The
+paper-to-implementation path is not concrete for our stack — this is
+the kind of gap the brief explicitly says should be documented rather
+than filled with a filler task.
+
 ## Synthesis
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -1183,3 +1377,65 @@ cannot destabilise the decode loop. The InfLLM vs ShadowKV pick (Task
 43/44) is gated on the SVD-rank probe and sequences after Quest and
 DuoAttention have landed so we know which portion of the KV bill
 actually survives to be tiered.
+
+### Pass 6 adds (2026-04-12)
+
+**Highest-leverage find this pass: SnapKV (2404.14469).** Every KV
+paper on the backlog so far either *selects* positions at decode
+time (Quest), *tiers* them hot/cold (InfLLM, ShadowKV), *compresses*
+them per-element (KIVI, QuaRot-style), or *drops whole head classes*
+(DuoAttention). None of them *permanently evicts* positions from the
+resident KV cache. That is the single mechanism that directly moves
+Goal 5's p90 swap-rate metric, because the bytes are simply no longer
+resident. Crucially SnapKV composes multiplicatively with the entire
+existing backlog: SnapKV shrinks the cache to the positions that
+matter, then DuoAttention removes streaming-head KV from what's left,
+then Quest bounds per-step work on the retrieval-head remainder,
+then QuaRot halves the weight bill next to it. The observation-window
+assumption holds by construction for our agentic workload (tool-call
+prompts always end with "the question"), so we expect near-zero
+quality cost on the single-turn path. This is the first paper in the
+review that attacks Goal 5's sustained-swap metric directly rather
+than via headroom, and it's a 1-2 day port against the existing
+fork/rewind page layout.
+
+**Second highest: Lookahead Decoding (2402.02057).** Pass 2 put
+EAGLE-2 on the backlog as the big Goal 3 lever beyond Quest, but
+EAGLE-2 pays a draft-model training cost that is a multi-week
+expedition against a 30B MoE. Lookahead is the zero-training
+counterpart: same tree-attention decode pattern, same 1.5–2x
+lossless speedup floor, but no draft network exists. The practical
+play is to *land Lookahead first* — it de-risks the tree-attention
+primitive (Task 28) against a simpler consumer, exercises the same
+mask machinery EAGLE-2 will later reuse, and banks a decode win
+without blocking on a training run. Then if Lookahead's n-gram hit
+rate on code generation turns out to be the gating factor, EAGLE-2
+is the natural upgrade path on a pre-validated kernel. The
+sequencing flip (Lookahead before EAGLE-2) is the most concrete
+change to the backlog this pass produces.
+
+**XGrammar (2411.15100)** is a pure orthogonal-axis quality win on
+Goal 2. Every eval paper so far (tau-bench, LiveCodeBench,
+BigCodeBench, MMLU-Pro, LiveBench, SWE-agent) *measures* how well
+the model picks the right tool and formulates the right call. None
+of them *guarantees* the call parses once picked. XGrammar converts
+malformed-JSON failures into a structural impossibility at zero
+runtime cost, which collapses one category of Goal 2 failure modes
+entirely. It composes with tau-bench (Task 14) multiplicatively —
+tau-bench now measures *only* the intelligent-choice axis, because
+the parse axis is guaranteed. 1-day integration, smallest risk on
+the whole pass.
+
+**vAttention (2405.04437)** is the architecture paper behind Task 31
+(allocator fragmentation at 1M context). It is *not* a port — CUDA
+virtual memory primitives do not translate to Metal — but it is the
+canonical "correct design" for the class of allocator-churn swap
+spikes we see at long context. Pairs with Task 31 as the "read this
+first, then write the MTLHeap-backed page pool" reference.
+
+Sequencing for Pass 6 tasks: XGrammar (smallest, safest — land
+first), SnapKV (single biggest Goal 5 move — land second), Lookahead
+(reshapes Task 28 sequencing — land third, before the existing
+EAGLE-2 work), vAttention-style MTLHeap allocator (upgrades Task 31
+from diagnostic to designed fix — land fourth, gated on measuring
+that Task 31's diagnosis matches the paper's premise).

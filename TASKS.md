@@ -1435,3 +1435,124 @@ _(none)_
   production code changes — this is a pure measurement task.
 - **Effort**: S (half a day to a day)
 - **Depends on**: none (pure offline probe)
+
+## Research-derived tasks (from LIT_REVIEW.md pass 6, 2026-04-12)
+
+### 45. XGrammar tool-call JSON guarantee in hypercar_server
+- **Goal**: 2 (intelligence breadth — tool-call correctness guarantee)
+- **Derived from**: XGrammar (2411.15100)
+- **Change**:
+  - Add `xgrammar` to `pyproject.toml` dependencies.
+  - In `omlx/hypercar_server.py`, extend the OpenAI-compat
+    `/v1/chat/completions` handler so that when the request carries
+    `tools=[...]` or `response_format={"type": "json_schema", ...}`,
+    the server compiles the schema(s) into an XGrammar matcher once
+    (cached in a `dict[str, Grammar]` keyed by schema hash) and
+    applies a per-step token mask in the sampler.
+  - Store the grammar cache at process level; pre-warm it on the
+    first request for each unique schema. Expose a `/v1/internal/
+    grammar_cache_stats` endpoint that returns hit count and compile
+    time so the bench can verify cache correctness.
+  - Make the mask-application path respect the existing sampling
+    temperature and top-p without double-normalizing probabilities
+    (mask before softmax).
+- **Verify**: New test `omlx/bench/xgrammar_bench.py` sends 20
+  synthetic tool-call prompts through the server with a fixed JSON
+  schema and asserts (a) every response parses as valid JSON, (b)
+  every response validates against the schema via `jsonschema`, (c)
+  decode throughput at 2K context degrades by no more than 5% vs a
+  no-grammar baseline run, (d) the second request for the same
+  schema records a grammar-cache hit. All four assertions must pass.
+- **Effort**: S (1 day)
+- **Depends on**: none (orthogonal to every other task)
+
+### 46. SnapKV prefill-time eviction in TurboQuantKVCache
+- **Goal**: 5 (swap p90 sustained rate), 1 (larger effective context in same budget)
+- **Derived from**: SnapKV (2404.14469)
+- **Change**:
+  - Add a `compact(keep_indices: mx.array)` method to
+    `omlx/turboquant_kv.py` that re-packs the quantised page layout
+    around the kept positions only. Must handle both the TQ3 WHT-
+    rotated codebook and the fp16 layer-0 cache path.
+  - Add `omlx/patches/snapkv.py` with a `snapkv_select(cache,
+    obs_window_len, top_k_per_head)` helper that (a) runs the
+    observation-window attention pass, (b) pools attention weights
+    across the window via max-over-positions + mean-over-heads-in-
+    group, (c) returns the top-k-per-head keep indices.
+  - Wire into `omlx/hypercar_server.py` under a new
+    `--snapkv-keep K` flag (default: disabled). When enabled, run
+    eviction exactly once at the end of prefill, before decode
+    starts. Only enable for requests whose conversation history
+    length is 1 (single-turn) to avoid multi-turn quality cliffs.
+- **Verify**: NIAH 4K gate in `omlx/bench/hypercar_bench.py` still
+  passes with `--snapkv-keep 2048` enabled. New micro-benchmark in
+  `omlx/bench/snapkv_bench.py` measures resident KV memory at 16K
+  prefill with and without SnapKV and asserts the eviction path
+  drops resident KV by at least 40% (paper's conservative number is
+  3.6x reduction; 40% is a safe floor). Code Intel gate stays >= 3/5.
+- **Effort**: M (1-2 days)
+- **Depends on**: none — SnapKV operates on the existing cache
+  layout; it does not require Quest or DuoAttention to land first.
+
+### 47. Lookahead Decoding (Jacobi + n-gram pool) in hypercar_server
+- **Goal**: 3 (decode speed, constant across context window)
+- **Derived from**: Lookahead Decoding (2402.02057)
+- **Change**:
+  - New module `omlx/patches/lookahead.py` implementing the
+    Jacobi-window rollout (W positions ahead) and the n-gram pool
+    (size G, n-gram length N) keyed on trailing-(N-1) tokens.
+  - Tree-attention mask primitive shared with the future EAGLE-2
+    port: a function that takes a list of candidate continuations
+    and returns a single packed attention mask + position-id vector
+    for one forward pass that verifies all candidates jointly.
+  - `hypercar_server` flags `--lookahead-window`, `--lookahead-ngram`,
+    `--lookahead-pool-size`; when all three are set, the decode loop
+    runs one forward per step that advances the Jacobi window *and*
+    verifies n-gram guesses, accepting the longest verified prefix.
+  - Output distribution must be provably identical to greedy
+    decoding (no sampling changes): assert this with a bit-exact
+    determinism test in the bench.
+- **Verify**: New `omlx/bench/lookahead_bench.py` runs a fixed 512-
+  token generation task at 2K and 16K context with `--temperature 0`
+  twice — once without lookahead, once with `--lookahead-window 5
+  --lookahead-ngram 3 --lookahead-pool-size 1024`. Must assert (a)
+  decoded token IDs are bit-exact across the two runs (lossless), (b)
+  decode tok/s with lookahead is at least 1.3x the baseline (the
+  paper's 1.5x floor minus a 15% MoE-overhead budget), (c)
+  `hypercar_bench --quick` still passes. Land before Task 28 and 29
+  (EAGLE-2 work) so the tree-attention primitive is validated on the
+  simpler consumer first.
+- **Effort**: M (2-3 days)
+- **Depends on**: none directly, but *blocks* Task 28 and Task 29 —
+  the tree-attention primitive introduced here is the prerequisite
+  those tasks were previously going to build from scratch.
+
+### 48. Pre-read vAttention design note, then scope Task 31's MTLHeap fix
+- **Goal**: 6 (48GB fit — allocator fragmentation at 1M context), 5 (swap spikes)
+- **Derived from**: vAttention (2405.04437)
+- **Change**: This is a scoping task, not an implementation task. Its
+  output is a short design note committed at `research/
+  vattention_mtlheap_notes.md` that:
+  - Summarises vAttention's reserve-then-commit architecture in 3-5
+    bullets (virtual range reserve, physical page commit on grow,
+    contiguous KV tensor view for kernels).
+  - Maps each vAttention primitive to its Metal equivalent
+    (MTLHeap with MTLHeapTypePlacement, placement newBuffer
+    offsets, heap size pre-reservation against the worst-case 1M
+    context KV budget from CLAUDE.md's memory-budget table).
+  - Rewrites Task 31's "Change" section to replace the current
+    diagnostic-only wording with a concrete three-step plan:
+    (a) measure current allocator churn under the existing
+    fork/rewind path at 64K context, (b) implement an MTLHeap page
+    pool behind a `--kv-heap-pool` flag, (c) re-measure churn and
+    file a regression gate in `omlx/bench/aggregate.py`.
+  - Identifies any place vAttention's CUDA-VM semantics *cannot*
+    be reproduced on Metal (heaps are not growable; single-tenant
+    assumption) so Task 31 does not underspecify the risk.
+- **Verify**: The design note exists at the expected path, is
+  referenced from the rewritten Task 31, and Task 31's new verify
+  criterion is a measurable metric (e.g., "allocator-churn bytes/sec
+  under 64K fork/rewind drops by >= 4x with `--kv-heap-pool` vs
+  baseline"). No production code changes in this task itself.
+- **Effort**: S (half a day — read + write, no code)
+- **Depends on**: none; unblocks Task 31.
