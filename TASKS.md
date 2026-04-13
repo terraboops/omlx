@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-_(none)_
+- **Task 2**: Probe 2-bit KV on WHT-rotated codec (KIVI transfer test)
 
 ## Completed
 
