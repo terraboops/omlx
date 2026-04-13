@@ -1725,6 +1725,178 @@ Tasks #16 and #17 still pending engineer review and merge.)
 All five Run-23 findings (#7-11) still blocking, reproduced 6/6.
 ```
 
+### Run 29: Drift Signal — Swap Peak Monotonic Upward Since Run 25
+```
+Date: 2026-04-13
+SHA:  8001e3a (no commits since Run 28)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run29_2026-04-13T06-23/
+
+Seventh reproducibility data point. Same crash mode, same Metal
+peak (7/7 byte-identical at 41.45 GB). But Run 29 is NOT a pure
+confirmation — three anomalies:
+  1. Swap peak 9.7 GB — new high across all runs (prior max 8.63)
+  2. RULER 16K k=3 at 173s broke a previously-"stable" phase (prior
+     range 222-257s)
+  3. Pre-run load 3.13 (highest so far), post-run 4.01 (right at
+     the 4.0 contamination threshold)
+Uncontaminated by the pre-run rule, but the environment was the
+most pressured of any run. Runtime 932.7s, combo cell slow-N +
+fast-k5 (matches Run 23).
+
+Commits since Run 28: (none — HEAD unchanged at 8001e3a)
+
+Benchmark results (--full, total 932.7s):
+  Phase 0  Smoke          PASS   8.3s (fastest yet)
+  Phase 1  Coherence      PASS   2.4s
+  Phase 2  Code Intel 5/5 PASS   5.3s
+  Phase 3  NIAH 4K+16K    PASS 231.4s ← SLOW cluster
+  Phase 3b RULER 4/15     CRASH same as always
+  Phase 4  HumanEval      NEVER RAN
+  Phase 5  Memory         FAIL: Metal 41.4 GB > 41.2 limit
+
+RULER task timings (comparison to prior):
+                            R29     6-run range
+  [1] 4K k=2                17s    [11-12]   ← outlier high
+  [2] 4K k=4                10s    [9-9]
+  [3] 16K k=3              173s    [222-257] ← NEW LOW
+  [4] 16K k=5               98s    [61-259]  ← upper edge of fast cluster
+  [5] 64K k=3 (breach)     377s    [205-412]
+
+Seven-run per-phase snapshot:
+
+  Phase                     R23   R24   R25   R26   R27   R28   R29
+  ----------------------   ----  ----  ----  ----  ----  ----  ----
+  Smoke                    10.3   9.2   8.8   8.4   9.0   9.0   8.3
+  NIAH 4K+16K               208    69    68   232   243    73   231
+  RULER 16K k=3             231   236   222   257   223   230   173 ←
+  RULER 16K k=5              61   236    85   259   221   241    98
+  Total                     851   967   732  1303  1123   999   933
+
+Bimodal clusters (N=7):
+
+  Phase NIAH sorted:  68, 69, 73, 208, 231, 232, 243
+    Fast cluster:  [68, 69, 73]                 mean  70.0  std 2.6
+    Slow cluster:  [208, 231, 232, 243]         mean 228.5  std 12.7
+    Gap 135s, ratio 3.26x. Balance 3/4 leaning slow.
+
+  Phase RULER 16K k=5 sorted:  61, 85, 98, 221, 236, 241, 259
+    Fast cluster:  [61, 85, 98]                 mean 81.3  std 18.5 ← wider
+    Slow cluster:  [221, 236, 241, 259]         mean 239.3 std 13.8
+    Gap 123s (was 136 at N=6), ratio 2.94x (was 3.28 at N=6).
+    Balance 3/4 leaning slow.
+
+  Fast cluster for k5 widened at N=7: Run 29's 98s is the new max
+  of the fast cluster (prior max was 85). The gap to the slow
+  cluster narrowed from 136s to 123s. Still clearly bimodal but
+  the fast cluster is noisier than the N=5/6 picture suggested.
+
+  Combination matrix (N=7):
+    NIAH/k5    fast          slow
+    fast       Run 25        Runs 24, 28
+    slow       Runs 23, 29   Runs 26, 27
+
+  All cells populated; 3 cells now have replicates. Max count 2
+  in three of four cells.
+
+Swap peak trend (by run order):
+
+  Run  Swap peak  Goal 5 (<8 GB)
+  ---  ---------  --------------
+  23    8.63 GB    VIOLATE
+  24    6.93 GB    pass
+  25    6.73 GB    pass
+  26    7.76 GB    pass (tight)
+  27    7.80 GB    pass (tight)
+  28    8.30 GB    VIOLATE
+  29    9.70 GB    VIOLATE (new high)
+
+  From Run 25 onward, swap peak is monotonically rising (6.73 →
+  6.73 → 7.76 → 7.80 → 8.30 → 9.70). That's +2.97 GB drift over
+  4 runs with no code changes. Either:
+  (a) system state is drifting (background processes accumulating),
+  (b) MLX/Metal driver is leaking slightly and peak tracker is
+      accumulating across runs (possible if mx.get_peak_memory is
+      per-process and the Python process is reused),
+  (c) macOS page compressor is gradually losing efficiency as
+      compressed memory fragments.
+  Hypothesis (c) is the most plausible given the compressor stats:
+  pre-compressor pages have climbed from 968K (Run 23) to 1102K
+  (Run 28) to 1094K (Run 29 pre). The compressor's working set
+  is growing.
+
+  Run 23 also violated Goal 5 (8.63 GB) but at that time the
+  system had been up for 0:23. Run 29 is at uptime 6:23 — six
+  hours of system use with the same Claude + benchmark workload.
+  Suggests the drift is real and attributable to accumulated OS
+  state, not run-to-run noise.
+
+Seven-run aggregate statistics:
+
+                       mean    std    CV     min     max
+  Runtime (s)           987    183   19%    732    1303
+  Swap I/O (GB)         428    115   27%    271     609
+  Sustained (MB/s)      431     34    8%    369     467  ← still tight
+  Swap peak (GB)       7.98   1.12   14%   6.73    9.70  ← drift!
+  Metal peak (GB)     41.45   0.00    0%  41.45   41.45
+  Pre-run load         2.62   0.27   10%   2.33    3.13  ← drift!
+  Compressions (M)     38.1    5.7   15%   30.7    48.3
+
+Analysis notes (snapshot: bench/snapshots/run29_2026-04-13T06-23/):
+
+- **Swap peak drift is the headline new finding.** Goal 5 ("swap
+  < 8 GB at any point") was marginally satisfied at Run 25 (6.73 GB)
+  and has been climbing monotonically since — 7.76, 7.80, 8.30, 9.70.
+  Three of seven runs now violate Goal 5, and the most recent is
+  the worst. This is real drift, not noise. Likely cause: macOS
+  page compressor fragmentation accumulating across runs, or
+  compressor internal bookkeeping overhead growing. Consistent
+  with the upward trend in pre-compressor-page counts.
+
+- **Pre-run load is also drifting upward**: 2.51, 2.94, 2.89, 2.52,
+  2.35, 2.33, 3.13 (by run order). Not monotonic but the most
+  recent is the highest. The system is accumulating load even when
+  "idle" between runs. Unclear whether this is the benchmark's
+  cleanup tail (post-run load in Run 26 was 6.38, well over
+  threshold) or something else in the session — need inspection
+  from outside the analyst loop.
+
+- **The "stable" 16K k=3 phase is NOT stable at N=7.** Prior range
+  222-257s, Run 29: 173s. That's a new low, 22% below the prior
+  minimum. With N=7 the range is [173, 257] — 49% spread. The
+  16K k=3 phase should be RE-EXAMINED for its own bimodal structure
+  (not enough data yet to confirm).
+
+- **RULER 16K k=5 fast cluster is widening.** At N=6 it was tight
+  (61, 85 — std 12). At N=7 it includes 98 (std 18.5). The gap
+  between fast and slow clusters narrowed from 136s to 123s.
+  Still clearly bimodal but less clean than the N=5/6 picture.
+
+- **7 runs × 7 phases = 49 data points; Metal peak constant for
+  49/49 samples.** The only perfectly deterministic metric in the
+  benchmark. Memory behavior is structurally fixed; everything
+  else drifts.
+
+- **CPU metric: 0% in all samples.** 7-run cumulative: ~6900 broken
+  samples, 0 non-zero.
+
+- **Runtime CV trajectory**: N=3 14% → N=4 22% → N=5 21% → N=6 19%
+  → N=7 19%. Looks stabilized around 19%. Detection floor for
+  real regressions is ~2σ = 38%, which is too loose to be useful
+  for Goal 3/4 tracking.
+
+New TASKS.md entries: **NONE filed.**
+Candidate new finding (not yet drafted as a task): "investigate
+swap peak drift across N=7 runs — 2.97 GB growth from Run 25 to
+Run 29 with no code changes, Goal 5 now violated in 3/7 runs."
+Holding this at "observation" not "task" until N=10 to rule out
+sampling artifact.
+
+All five Run-23 findings (#7-11) still blocking. Tasks #16, #17
+still in Run 27's proposed_tasks.md awaiting engineer merge.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
