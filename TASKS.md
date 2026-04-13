@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-_(none)_
+- **Task 11**: Extend /sandbox exclude to cover benchmark diagnostic commands
 
 ## Completed
 
