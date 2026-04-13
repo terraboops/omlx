@@ -1,0 +1,35 @@
+=== HEAD ===
+c3a60c161bd44e34212ef40b10afa253143914ad
+
+=== status ===
+ M CLAUDE.md
+ M TASKS.md
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run28_2026-04-13T05-23/git.txt
+?? omlx/bench/ttt_bench.py
+?? research/2402.02750_kivi.pdf
+?? research/2404.06654_ruler.pdf
+?? research/2405.14734_simpo.pdf
+?? research/2406.10774_quest.pdf
+?? research/2406.12045_tau_bench.pdf
+?? research/2406.16858_eagle2.pdf
+?? research/2407.02490_minference.pdf
+?? research/2410.10819_duoattention.pdf
+?? research/2506.06105_text_to_lora.pdf
+?? research/LIT_REVIEW.md
+
+=== diff stat ===
+ CLAUDE.md                   | 39 ++++++++++++++++++-
+ TASKS.md                    | 94 +++++++++++++++++++++++++++++++++++++++++++++
+ omlx/bench/agentic_bench.py |  2 +-
+ omlx/ttt.py                 | 30 ++++++++++++---
+ 4 files changed, 158 insertions(+), 7 deletions(-)
+
+=== log -5 ===
+c3a60c1 bench: Run 27 — N=5 confirms per-task bimodal distribution; 2 tasks drafted
+49114c7 bench: Run 26 — N=4 reveals per-task bimodal timing; 1303s slowest run yet
+a6db011 bench: Run 25 — N=3 variance baseline; allocation cliff byte-deterministic across all runs
+43f383f bench: Run 24 — reproducibility probe; deterministic memory, chaotic timing
+b49d2fc bench: Run 23 — Metal ceiling breach at 64K RULER, harness KeyError masks it

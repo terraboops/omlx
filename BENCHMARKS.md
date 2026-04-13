@@ -1607,6 +1607,124 @@ All five Run-23 findings (#7-11) are still blocking, reproduced for
 the 5th consecutive time.
 ```
 
+### Run 28: N=6 — Fast-N + Slow-k5 Combo Replicates Run 24 Within 3%
+```
+Date: 2026-04-13
+SHA:  c3a60c1 (no commits since Run 27)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run28_2026-04-13T05-23/
+
+Sixth reproducibility data point. Same crash, same cliff, same Metal
+peak (6/6 byte-identical). Total 999.1s — fast-NIAH + slow-16K-k5
+combo, replicating Run 24 (967s) within 3%. N=6 narrows runtime CV
+21% → 19% and refines the bimodal clusters. Pure confirmation run;
+no new analytical findings; no new tasks filed or drafted.
+
+Commits since Run 27: (none — HEAD unchanged at c3a60c1)
+
+Benchmark results (--full, total 999.1s):
+  Phase 0  Smoke              PASS   ~9s
+  Phase 1  Coherence          PASS   2.4s
+  Phase 2  Code Intel 5/5     PASS   5.3s
+  Phase 3  NIAH 4K+16K        PASS  72.7s ← FAST cluster
+  Phase 3b RULER 4/15         CRASH (5/15 breach same as always)
+  Phase 4  HumanEval          NEVER RAN
+
+RULER task draws this run:
+  [1] 4K k=2   PASS 2/2   11s        (stable)
+  [2] 4K k=4   PASS 4/4    9s        (stable)
+  [3] 16K k=3  PASS 3/3  230s        (stable ±7%)
+  [4] 16K k=5  PASS 4/5  241s        ← SLOW cluster
+  [5] 64K k=3  BREACH      —
+
+Combination this run: fast-NIAH + slow-16K-k5 = "mixed-worst"
+Same as Run 24 (967s). Delta to Run 24: +32s (+3.3%).
+
+Six-run bimodal cluster refinement:
+
+  Phase NIAH — sorted: 68, 69, 73, 208, 232, 243
+    Fast cluster:  [68, 69, 73]         mean  70.0s  std  2.6s  (N=3)
+    Slow cluster:  [208, 232, 243]      mean 227.7s  std 14.7s  (N=3)
+    Gap 135s, ratio 3.25x. Balance 3/3 exactly even.
+
+  Phase RULER 16K keys=5 — sorted: 61, 85, 221, 236, 241, 259
+    Fast cluster:  [61, 85]             mean  73.0s  std 12.0s  (N=2)
+    Slow cluster:  [221, 236, 241, 259] mean 239.3s  std 13.8s  (N=4)
+    Gap 136s, ratio 3.28x. Balance 2/4 leaning slow.
+
+Combination matrix (N=6):
+                  fast k5       slow k5
+  fast NIAH       Run 25        Runs 24, 28
+  slow NIAH       Run 23        Runs 26, 27
+
+All 4 cells populated; 3 have replicates. Max cell count is 2.
+
+Six-run aggregate statistics:
+
+                       mean    std    CV     min     max
+  Runtime (s)           996    189   19%    732    1303
+  Swap I/O (GB)         435    125   29%    271     609
+  Sustained (MB/s)      433     36    8%    369     467  ← hardware constant
+  Metal peak (GB)     41.45   0.00    0%  41.45   41.45  ← 6/6 byte-identical
+  Compressions (M)     38.2    6.1   16%   30.7    48.3
+
+  Runtime CV trajectory: N=3 14% → N=4 22% → N=5 21% → N=6 19%.
+  Slow convergence, expected to stabilize near 17-18% at N≥10.
+
+Memory profile & allocation cliff: 6/6 byte-identical to all prior
+runs. 40.13-40.27 GB pre-cliff → 33.00 GB free → 41.27 GB cliff →
+41.45 GB peak. Structurally deterministic.
+
+System memory I/O (Run 28 vm_stat deltas):
+  Pageins     35.7 GB   (within 1σ of 6-run mean 35.9 GB)
+  Swap I/O   446.2 GB   (mid-range for the 6 runs)
+  Sustained  447 MB/s   (within 1σ of hardware constant 433 MB/s)
+  Compress   40.9M      (slightly above mean 38.2M)
+  Duration   999.1s     (near the 6-run mean 996s)
+
+Analysis notes (snapshot: bench/snapshots/run28_2026-04-13T05-23/):
+
+- **Pure confirmation run.** Run 28 adds no new analytical signal.
+  It confirms Run 27's bimodal cluster characterization, it falls
+  within the expected runtime range (996 ± 189s), and it replicates
+  Run 24's combo cell within 3%. First run since Run 23 that was
+  NOT worth filing a task over.
+
+- **Combo-cell additivity confirmed**: runs 24 and 28 (same combo)
+  produced totals within 3% of each other (967s vs 999s). This is
+  direct evidence that TOTAL runtime is well-predicted by the
+  combination of per-task draws — you can estimate a Run N runtime
+  just from knowing which combo cell the random per-task draws land
+  in. Previously we only knew individual phases were bimodal; now we
+  know the combination is additively composable.
+
+- **Bimodal balance at N=6**: NIAH 3/3 (perfectly even), k5 2/4
+  (leaning slow). Observed combo counts 1/2/1/2 match the 50/50
+  independent hypothesis within sampling noise.
+
+- **CPU metric: 0% in all samples.** 6-run cumulative: 5954 broken
+  samples, 0 non-zero. Task #8 is now the longest-standing data
+  quality defect in the project.
+
+- **Sustained swap rate 433 ± 36 MB/s (CV 8%) is the tightest
+  metric observed.** This is a candidate for a first-class constant
+  in CLAUDE.md Goal 5 — "M4 Pro page compressor sustains ~430 MB/s;
+  prefill workloads that push beyond the wired working set are
+  bandwidth-limited by this."
+
+- **Environment clean across all 6 runs.** Max pre-run load 2.94,
+  min 2.33. Never above the 4.0 threshold. The Run 26 post-run
+  spike (6.38) remains the sole anomaly and was compressor tail,
+  not live contamination.
+
+New TASKS.md entries: **NONE.** (No changes since Run 27's
+proposed_tasks.md at bench/snapshots/run27_2026-04-13T04-23/proposed_tasks.md —
+Tasks #16 and #17 still pending engineer review and merge.)
+
+All five Run-23 findings (#7-11) still blocking, reproduced 6/6.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

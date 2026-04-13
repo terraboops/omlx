@@ -1,0 +1,213 @@
+05:23:29 omlx.bench.hypercar INFO KV mode: native, bits: 3
+05:23:29 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+05:23:29 omlx.bench.hypercar INFO System memory: 51.5 GB
+05:23:29 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+05:23:29 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+05:23:29 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+05:23:29 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+05:23:29 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 23526.79it/s]
+05:23:39 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+05:23:39 omlx.bench.hypercar INFO Model loaded in 10.2s (lazy — first forward will materialize)
+05:23:39 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+05:23:39 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+05:23:48 omlx.bench.hypercar INFO   Smoke output: " This is my first post. I'm excited to"
+05:23:48 omlx.bench.hypercar INFO   Prefill: 0 tok/s  Decode: 19.6 tok/s
+05:23:48 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+05:23:49 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+05:23:51 omlx.bench.hypercar INFO   Code check: PASS — ' ```python\nprint("Hello, World!")\n```<|endoftext|>Human: Wha'
+05:23:51 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+05:23:52 omlx.bench.hypercar INFO   PASS: factorial
+05:23:53 omlx.bench.hypercar INFO   PASS: reverse_string
+05:23:53 omlx.bench.hypercar INFO   PASS: is_palindrome
+05:23:55 omlx.bench.hypercar INFO   PASS: fibonacci
+05:23:56 omlx.bench.hypercar INFO   PASS: flatten_list
+05:23:56 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+05:23:56 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+05:23:56 omlx.bench.hypercar INFO   NIAH @ 4K context...
+05:24:04 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+05:24:04 omlx.bench.hypercar INFO   NIAH @ 16K context...
+05:25:08 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Based on the code a'
+05:25:09 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+05:25:09 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+05:25:09 omlx.bench.hypercar INFO   [1/15] multi_key_niah@4K keys=2
+05:25:20 omlx.bench.hypercar INFO     PASS: 2/2 (acc=100%) — 'Looking through the text for the specified keys, I can find:'
+05:25:20 omlx.bench.hypercar INFO   [2/15] multi_key_niah@4K keys=4
+05:25:29 omlx.bench.hypercar INFO     PASS: 4/4 (acc=100%) — '```\nkey_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4'
+05:25:29 omlx.bench.hypercar INFO   [3/15] multi_key_niah@16K keys=3
+05:29:19 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'Looking through the provided code, I can identify the follow'
+05:29:19 omlx.bench.hypercar INFO   [4/15] multi_key_niah@16K keys=5
+05:33:20 omlx.bench.hypercar INFO     PASS: 4/5 (acc=80%) — 'Looking at the provided text, I can identify the values for '
+05:33:20 omlx.bench.hypercar INFO   [5/15] multi_key_niah@64K keys=3
+python(92068) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92104) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92126) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92161) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92205) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92224) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92261) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92299) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92319) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92361) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92388) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92427) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92448) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92483) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92525) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92544) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92582) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92605) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92647) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92689) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92714) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92751) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92771) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92807) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92832) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92877) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92914) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92933) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(92970) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+05:38:21 omlx.bench.hypercar ERROR MEMORY BREACH: Metal peak 41.3GB > 41.2GB limit
+python(92994) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93031) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93066) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93093) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93130) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93154) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93191) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93229) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93263) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93292) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93324) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93343) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93386) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93405) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93442) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93468) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93503) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93522) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93559) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93578) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93603) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93640) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93660) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93702) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93731) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93763) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93784) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93819) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93856) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93877) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93918) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93955) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(93974) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94017) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94036) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94078) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94110) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94134) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94171) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94200) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94224) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94233) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94271) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94292) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94333) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94375) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94412) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94431) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94452) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94469) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94494) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94531) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94569) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94588) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94625) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94655) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94674) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94711) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94748) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94770) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94809) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94846) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94865) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94894) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94921) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94963) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(94990) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95035) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95080) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95099) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95123) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95143) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95179) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95216) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95235) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95277) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95297) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95323) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95343) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95362) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95404) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95441) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95460) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95497) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95508) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95532) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95559) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95602) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95621) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95641) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95678) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95706) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95709) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95745) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95764) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95806) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95843) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95862) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95887) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95907) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95948) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(95967) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(96004) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(96041) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+python(96078) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+05:40:08 omlx.bench.hypercar ERROR Benchmark crashed: 'found'
+Traceback (most recent call last):
+  File "/Users/terra/Developer/omlx-mamba3/omlx/bench/hypercar_bench.py", line 1396, in main
+    p3b = phase3b_ruler(model, tokenizer, watchdog, full=args.full)
+  File "/Users/terra/Developer/omlx-mamba3/omlx/bench/hypercar_bench.py", line 852, in phase3b_ruler
+    logger.info(f"    {status}: {result['found']}/{result['total']} "
+                                 ~~~~~~^^^^^^^^^
+KeyError: 'found'
+05:40:08 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+05:40:08 omlx.bench.hypercar INFO   Metal peak: 41.4 GB (limit 41.2GB) FAIL
+05:40:08 omlx.bench.hypercar INFO   Swap peak:  8.3 GB (limit 12.9GB) PASS
+05:40:08 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+python(96079) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+05:40:08 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+05:40:08 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (9.5s)
+     [PASS] Phase 1: Coherence                       (2.4s)
+     [PASS] Phase 2: Code Intelligence               (5.3s)
+     [PASS] Phase 3: Needle in Haystack              (72.7s)
+  >> [FAIL] CRASH                                    (0.0s)
+  >> [FAIL] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+  >> [GATE FAILURE]  Total: 999.1s
+============================================================
+
