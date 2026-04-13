@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 22**: Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify
 
 ## Completed
 
