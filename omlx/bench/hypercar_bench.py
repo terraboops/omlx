@@ -1260,6 +1260,8 @@ def main():
                         help="All phases including HumanEval (~15min)")
     parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16"], default="native",
                         help="KV cache: native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
+    parser.add_argument("--kv-bits", type=int, default=3, choices=[2, 3, 4],
+                        help="KV cache quantization bits (default: 3). 2-bit saves ~33%% memory.")
     parser.add_argument("--max-metal-pct", type=float, default=80.0,
                         help="Metal peak limit as %% of system memory (default: 80)")
     parser.add_argument("--max-swap-pct", type=float, default=25.0,
@@ -1285,12 +1287,13 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Set KV mode and model
-    global _KV_MODE, MODEL_ID
+    # Set KV mode, bits, and model
+    global _KV_MODE, KV_BITS, MODEL_ID
     _KV_MODE = args.kv_mode
+    KV_BITS = args.kv_bits
     if args.model:
         MODEL_ID = args.model
-    logger.info(f"KV mode: {_KV_MODE}")
+    logger.info(f"KV mode: {_KV_MODE}, bits: {KV_BITS}")
     logger.info(f"Model: {MODEL_ID}")
 
     # Detect system memory and compute limits

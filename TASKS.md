@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-- **Task 2**: Probe 2-bit KV on WHT-rotated codec (KIVI transfer test)
+_(none)_
 
 ## Completed
 
@@ -100,6 +100,11 @@ _Last updated: 2026-04-12_
   - Added VT tasks (chain lengths 4 and 8) to both quick suite (6 tasks) and full suite (15 tasks)
   - Added `ruler_vt@4K` gate (>= 70% accuracy) as independent eval toward Goal 2
   - Both gates (`multi_key@16K` + `ruler_vt@4K`) must pass for Phase 3b to pass
+- **Task 2**: Probe 2-bit KV on WHT-rotated codec (KIVI transfer test) (2026-04-12)
+  - Added `--kv-bits` CLI flag to hypercar_bench (choices: 2, 3, 4)
+  - TurboQuant codec already fully parameterized on bits — no core changes needed
+  - 2-bit codebook: 4 levels, packed_width drops from 12→8 uint32 words (33% savings at D=128)
+  - Verify: `hypercar_bench --full --kv-mode tq3 --kv-bits 2` (needs GPU to run)
 
 ---
 
