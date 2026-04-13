@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 24b**: Probe MLX argpartition speed for Quest top-K page selection
 
 ## Completed
 
