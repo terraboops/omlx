@@ -1238,11 +1238,12 @@ class TurboQuantKVCache(_BaseCache):
     """
 
     def __init__(self, bits: int = 4, seed: int = 0, dequant_chunk_size: int = 2048,
-                 min_quant_tokens: int = 512):
+                 min_quant_tokens: int = 512, quest_topk: int = 0):
         self.bits = bits
         self.seed = seed
         self._dequant_chunk_size = dequant_chunk_size  # Tokens per dequant chunk
         self._min_quant_tokens = min_quant_tokens  # Stay fp16 below this threshold
+        self.quest_topk = quest_topk  # 0 = disabled, >0 = select this many pages during decode
         # Safety: mlx-lm's base.py SDPA checks hasattr(cache, "bits") and then
         # accesses cache.group_size for affine quantized caches.  Prevents
         # AttributeError if our attention patch doesn't intercept.
@@ -1252,6 +1253,7 @@ class TurboQuantKVCache(_BaseCache):
         self._k_packed = None
         self._v_norms = None
         self._v_packed = None
+        self._k_page_bounds = None  # (B, H_kv, num_pages, 16) — Quest page bounds
         self._fp16_keys = None
         self._fp16_values = None
         self._quantized = False
@@ -1286,6 +1288,24 @@ class TurboQuantKVCache(_BaseCache):
         self._quantized = True
         self._fp16_keys = None
         self._fp16_values = None
+        # Compute Quest page bounds if enabled
+        if self.quest_topk > 0:
+            self._update_page_bounds(k_norms[:, :, :T], T)
+
+    def _update_page_bounds(self, k_norms: mx.array, total_tokens: int):
+        """Compute or refresh Quest page bounds from key norms.
+
+        Per-page bounds (16 floats):
+          [0:8]  max |k_rot| per 16-dim group ≈ max_norm * max|codebook|
+          [8]    max norm in page
+          [9]    mean norm in page
+          [10:16] reserved
+        """
+        from omlx.patches.quest_attention import compute_page_bounds
+        self._k_page_bounds = compute_page_bounds(
+            k_norms, self._k_packed[:, :, :total_tokens],
+            self._codec.codebook, self.bits, self._codec.dim,
+        )
 
     def update_and_fetch(self, keys: mx.array, values: mx.array):
         """Store new K,V with streaming quantization during prefill.
@@ -1478,7 +1498,11 @@ class TurboQuantKVCache(_BaseCache):
         scale: float = 1.0,
         mask=None,
     ) -> mx.array:
-        """Fused 2-pass Flash Attention from quantized KV. No dequantize."""
+        """Fused 2-pass Flash Attention from quantized KV. No dequantize.
+
+        When quest_topk > 0, uses query-aware page selection (Quest) to attend
+        only to the top-K pages instead of all tokens.
+        """
         if keys_state is None:
             keys_state, values_state = self.state
         k_norms, k_packed = keys_state
@@ -1502,13 +1526,41 @@ class TurboQuantKVCache(_BaseCache):
             q_grouped = q_flat.reshape(B * H_q, D // self._codec.dim, self._codec.dim)
             q_rot = (q_grouped.astype(mx.float32) @ R).reshape(B * H_q, D).astype(mx.float16)
 
-        # Fused 2-pass SDPA
-        out = _fused_tq_sdpa(
-            q_rot, k_packed, k_norms, self._codec.codebook,
-            v_packed, v_norms, self._codec.codebook,
-            scale=1.0,  # already applied to queries
-            B=B, H_q=H_q, H_kv=H_kv, D=D, bits=self.bits,
-        )
+        # Quest page selection: attend to top-K pages only
+        if self.quest_topk > 0 and self.offset > self.quest_topk * 128:
+            from omlx.patches.quest_attention import (
+                QUEST_PAGE_SIZE, select_topk_pages, gather_pages,
+            )
+            T = k_norms.shape[2]
+            # Lazy recompute page bounds if stale (new tokens since last compute)
+            num_pages_needed = (self.offset + QUEST_PAGE_SIZE - 1) // QUEST_PAGE_SIZE
+            if (self._k_page_bounds is None or
+                    self._k_page_bounds.shape[2] < num_pages_needed):
+                self._update_page_bounds(k_norms[:, :, :self.offset], self.offset)
+
+            page_indices = select_topk_pages(
+                q_rot.astype(mx.float32), self._k_page_bounds,
+                topk=self.quest_topk,
+            )
+            k_norms_sel, k_packed_sel, v_norms_sel, v_packed_sel, sel_T = gather_pages(
+                k_norms, k_packed, v_norms, v_packed,
+                page_indices, self.offset,
+            )
+            # Run fused SDPA on selected pages only
+            out = _fused_tq_sdpa(
+                q_rot, k_packed_sel, k_norms_sel, self._codec.codebook,
+                v_packed_sel, v_norms_sel, self._codec.codebook,
+                scale=1.0,
+                B=B, H_q=H_q, H_kv=H_kv, D=D, bits=self.bits,
+            )
+        else:
+            # Full attention (no Quest or context too short for page selection)
+            out = _fused_tq_sdpa(
+                q_rot, k_packed, k_norms, self._codec.codebook,
+                v_packed, v_norms, self._codec.codebook,
+                scale=1.0,  # already applied to queries
+                B=B, H_q=H_q, H_kv=H_kv, D=D, bits=self.bits,
+            )
 
         # Inverse rotate output (values were in rotated space)
         if self._codec.use_givens:

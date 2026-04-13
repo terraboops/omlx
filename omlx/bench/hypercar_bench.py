@@ -206,6 +206,7 @@ def _peak_metal_gb() -> float:
 # Module-level KV mode and model ref (set from CLI in main())
 _KV_MODE = "native"
 _MODEL_REF = None  # Set after model loads, used by _make_cache for hybrid models
+_QUEST_TOPK = 0  # Quest page selection (0=off)
 
 
 def _load_model():
@@ -256,7 +257,7 @@ def _make_cache(n_layers: int, model=None):
         if isinstance(c, KVCache):
             if _KV_MODE == "tq3":
                 from omlx.turboquant_kv import TurboQuantKVCache
-                result.append(TurboQuantKVCache(bits=KV_BITS))
+                result.append(TurboQuantKVCache(bits=KV_BITS, quest_topk=_QUEST_TOPK))
             else:  # native
                 result.append(QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS))
         else:
@@ -1272,6 +1273,8 @@ def main():
                         help="Override model path (e.g. /tmp/granite-4.0-h-small-TQ3.5-wht)")
     parser.add_argument("--niah-500k", action="store_true",
                         help="Add 500K token NIAH test (requires hybrid model with low KV overhead)")
+    parser.add_argument("--quest-topk", type=int, default=0,
+                        help="Quest page selection: attend to top-K pages during decode (0=off)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
@@ -1287,13 +1290,16 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Set KV mode, bits, and model
-    global _KV_MODE, KV_BITS, MODEL_ID
+    # Set KV mode, bits, quest, and model
+    global _KV_MODE, KV_BITS, _QUEST_TOPK, MODEL_ID
     _KV_MODE = args.kv_mode
     KV_BITS = args.kv_bits
+    _QUEST_TOPK = args.quest_topk
     if args.model:
         MODEL_ID = args.model
     logger.info(f"KV mode: {_KV_MODE}, bits: {KV_BITS}")
+    if _QUEST_TOPK > 0:
+        logger.info(f"Quest page selection: top-{_QUEST_TOPK} pages")
     logger.info(f"Model: {MODEL_ID}")
 
     # Detect system memory and compute limits

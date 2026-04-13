@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-- **Task 3**: Prototype Quest query-aware page selection for TQ3 decode
+_(none)_
 
 ## Completed
 
@@ -105,6 +105,12 @@ _Last updated: 2026-04-12_
   - TurboQuant codec already fully parameterized on bits — no core changes needed
   - 2-bit codebook: 4 levels, packed_width drops from 12→8 uint32 words (33% savings at D=128)
   - Verify: `hypercar_bench --full --kv-mode tq3 --kv-bits 2` (needs GPU to run)
+- **Task 3**: Prototype Quest query-aware page selection for TQ3 decode (2026-04-12)
+  - New `omlx/patches/quest_attention.py` with `select_topk_pages()` and `gather_pages()` primitives
+  - Per-page K bounds: 16 floats (8 group-max + norm stats), 128 tokens/page, ~4MB overhead at 1M context
+  - Wired into `TurboQuantKVCache.decode_attention()` behind `quest_topk` param
+  - `--quest-topk` flag on both bench and server (default off)
+  - Verify: `hypercar_bench --quick --kv-mode tq3 --quest-topk 32` (needs TQ3 GPU run)
 
 ---
 

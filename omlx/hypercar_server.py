@@ -132,7 +132,8 @@ def apply_progress_logging(log_every: int = 8, max_think_tokens: int = 4096) -> 
 def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
                            group_size: int = 64, kv_mode: str = "native",
                            dequant_chunk_size: int = 2048,
-                           min_quant_tokens: int = 512) -> None:
+                           min_quant_tokens: int = 512,
+                           quest_topk: int = 0) -> None:
     """Apply all hypercar optimizations to mlx_lm runtime.
 
     kv_mode controls the KV cache strategy:
@@ -175,6 +176,7 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
                         bits=bits,
                         dequant_chunk_size=dequant_chunk_size,
                         min_quant_tokens=min_quant_tokens,
+                        quest_topk=quest_topk,
                     ))
                 else:  # native
                     result.append(QuantizedKVCache(group_size=group_size, bits=bits))
@@ -239,6 +241,8 @@ def main():
                         help="Dequant chunk size for TQ3 streaming")
     parser.add_argument("--min-quant-tokens", type=int, default=512,
                         help="TQ3: stay fp16 below this threshold per layer")
+    parser.add_argument("--quest-topk", type=int, default=0,
+                        help="Quest page selection: attend to top-K pages during decode (0=off)")
     parser.add_argument("--prefill-step-size", type=int, default=8192,
                         help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
     parser.add_argument("--max-tokens", type=int, default=4096)
@@ -272,6 +276,8 @@ def main():
     elif args.kv_mode == "tq3":
         logger.info(f"Dequant chunk:    {args.dequant_chunk}")
         logger.info(f"Min quant tokens: {args.min_quant_tokens}")
+        if args.quest_topk > 0:
+            logger.info(f"Quest decode:     top-{args.quest_topk} pages (128 tok/page)")
         logger.info(f"Features:         save/load, rewind, fork (WHT rotation)")
     logger.info(f"Prefill step:     {args.prefill_step_size}")
     logger.info(f"Host:Port:        {args.host}:{args.port}")
@@ -288,6 +294,7 @@ def main():
         kv_mode=args.kv_mode,
         dequant_chunk_size=args.dequant_chunk,
         min_quant_tokens=args.min_quant_tokens,
+        quest_topk=args.quest_topk,
     )
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
@@ -459,6 +466,23 @@ def main():
             import threading as _thr
             _request_session = _thr.local()
             _inference_lock = _thr.Lock()
+
+            # TTT engine — lazily initialized on first /v1/ttt/* request
+            _ttt_engine = [None]  # Using list for mutable closure capture
+            _ttt_logger = logging.getLogger("hypercar.ttt")
+
+            def _get_ttt_engine(handler_self):
+                """Lazy initialize the TTT engine."""
+                if _ttt_engine[0] is None:
+                    mp = handler_self.response_generator.model_provider
+                    if mp.model is None:
+                        mp.load("default_model")
+                    from omlx.ttt import TTTEngine
+                    _ttt_engine[0] = TTTEngine(
+                        mp.model, mp.tokenizer, rank=16, lr=1e-4,
+                    )
+                    _ttt_logger.info("🧠 TTT engine initialized")
+                return _ttt_engine[0]
 
             _prev_fetch = _srv.LRUPromptCache.fetch_nearest_cache
             def _session_fetch(self, model, tokens):
@@ -664,6 +688,97 @@ def main():
                     _send_json(handler_self, {"session_id": new_id, "tokens": tokens,
                                               "layers": loaded})
 
+                # ----- TTT endpoints -----
+
+                elif handler_self.path == "/v1/ttt/generate":
+                    # POST /v1/ttt/generate — generate N candidates for TTT
+                    body = _read_json_body(handler_self)
+                    prompt = body.get("prompt", "")
+                    n = body.get("n", 4)
+                    max_tokens = body.get("max_tokens", 64)
+                    temperature = body.get("temperature", 0.8)
+                    if not prompt:
+                        _send_json(handler_self, {"error": "prompt required"}, 400)
+                        return
+                    engine = _get_ttt_engine(handler_self)
+                    candidates = engine.generate_candidates(
+                        prompt, n=n, max_tokens=max_tokens, temperature=temperature,
+                    )
+                    _ttt_logger.info(f"🧠 Generated {len(candidates)} candidates")
+                    _send_json(handler_self, {
+                        "candidates": [
+                            {"id": c.id, "completion": c.completion}
+                            for c in candidates
+                        ],
+                    })
+
+                elif handler_self.path == "/v1/ttt/feedback":
+                    # POST /v1/ttt/feedback — submit reward for a candidate
+                    body = _read_json_body(handler_self)
+                    cid = body.get("candidate_id")
+                    reward = body.get("reward", 0.0)
+                    signal = body.get("signal", "harness")
+                    metadata = body.get("metadata", {})
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    _ttt_engine[0].feedback(cid, reward, signal, metadata)
+                    _send_json(handler_self, {"status": "recorded",
+                                              "candidate_id": cid, "reward": reward})
+
+                elif handler_self.path == "/v1/ttt/feedback_exec":
+                    # POST /v1/ttt/feedback_exec — auto-verify by executing code
+                    body = _read_json_body(handler_self)
+                    cid = body.get("candidate_id")
+                    test = body.get("test", "")
+                    if _ttt_engine[0] is None or cid not in _ttt_engine[0].candidates:
+                        _send_json(handler_self, {"error": "candidate not found"}, 404)
+                        return
+                    _ttt_engine[0].feedback_from_execution(cid, test=test)
+                    c = _ttt_engine[0].candidates[cid]
+                    _send_json(handler_self, {
+                        "candidate_id": cid,
+                        "passed": c.metadata.get("passed", False),
+                        "reward": c.reward,
+                        "error": c.metadata.get("error", "")[:200],
+                    })
+
+                elif handler_self.path == "/v1/ttt/train":
+                    # POST /v1/ttt/train — train on accumulated positive feedback
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    with _inference_lock:
+                        stats = _ttt_engine[0].train_step()
+                    _send_json(handler_self, {
+                        "loss": round(stats.loss, 4),
+                        "num_positive": stats.num_positive,
+                        "num_negative": stats.num_negative,
+                        "adapter_norm": round(stats.adapter_norm, 4),
+                        "elapsed_s": round(stats.elapsed_s, 3),
+                    })
+
+                elif handler_self.path == "/v1/ttt/checkpoint":
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    _ttt_engine[0].save_checkpoint()
+                    _send_json(handler_self, {"status": "checkpoint saved"})
+
+                elif handler_self.path == "/v1/ttt/rewind":
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    _ttt_engine[0].rewind()
+                    _send_json(handler_self, {"status": "rewound to last checkpoint"})
+
+                elif handler_self.path == "/v1/ttt/reset":
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    _ttt_engine[0].reset()
+                    _send_json(handler_self, {"status": "adapters reset to zero"})
+
                 else:
                     orig_do_post(handler_self)
 
@@ -682,7 +797,14 @@ def main():
                         "sessions": len(_sessions),
                         "kv_mode": kv_mode,
                         "model": args.model,
+                        "ttt_active": _ttt_engine[0] is not None,
                     })
+
+                elif handler_self.path == "/v1/ttt/stats":
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"status": "not initialized"})
+                    else:
+                        _send_json(handler_self, _ttt_engine[0].stats())
 
                 elif handler_self.path.startswith("/v1/sessions/"):
                     sid = handler_self.path.split("/")[-1]
@@ -700,7 +822,8 @@ def main():
 
             _srv.APIHandler.do_POST = agentic_do_post
             _srv.APIHandler.do_GET = agentic_do_get
-            logger.info("Agentic endpoints enabled: /v1/sessions/{fork,rewind,save,load}, /v1/stats")
+            logger.info("Agentic endpoints: /v1/sessions/{create,fork,rewind,save,load}, /v1/stats")
+            logger.info("TTT endpoints: /v1/ttt/{generate,feedback,feedback_exec,train,checkpoint,rewind,reset,stats}")
         except Exception as e:
             logger.warning(f"Could not patch agentic endpoints: {e}")
 
