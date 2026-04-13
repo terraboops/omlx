@@ -1,0 +1,10 @@
+=== HEAD ===
+0a40d06f350f8855aa2c02ca98670f2ebd5c034b
+
+=== log -6 ===
+0a40d06 bench: Run 38 aborted by pre-flight check — validates commit 97df157
+655c22b fix: Phase 3b quality-gate failure no longer blocks Phase 4 HumanEval
+5b2426c tasks: Resume Task 22 — try Option (c) loosened watchdog for full bench
+10725df bench: Run 37 — Phase 3b 15/15 reproduced; slow-cluster Goal 5 FAIL confirms Task 22 need
+b6ea75a research: pass 6 — SnapKV + Lookahead/XGrammar/vAttention + 4 tasks
+e16ccb3 tasks: Mark Task 26 done — block-sparse dispatch already in Task 5
