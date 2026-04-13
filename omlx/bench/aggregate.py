@@ -269,6 +269,96 @@ def print_report(sha_spec: str, groups: dict[str, list[dict]]):
     print(f"\n{'=' * 72}")
 
 
+def print_comparison(
+    sha_spec: str,
+    baseline_spec: str,
+    groups: dict[str, list[dict]],
+):
+    """Compare two SHAs side-by-side with 2-sigma regression detection."""
+    sha = _resolve_sha(sha_spec, groups)
+    baseline = _resolve_sha(baseline_spec, groups)
+
+    if sha is None:
+        print(f"SHA '{sha_spec}' not found in snapshots", file=sys.stderr)
+        return
+    if baseline is None:
+        print(f"Baseline SHA '{baseline_spec}' not found in snapshots", file=sys.stderr)
+        return
+
+    agg_cur = aggregate_group(groups[sha])
+    agg_base = aggregate_group(groups[baseline])
+
+    print(f"\n{'=' * 80}")
+    print(f"REGRESSION REPORT: {sha} (N={agg_cur['N']}) vs {baseline} (N={agg_base['N']})")
+    print(f"{'=' * 80}")
+
+    # Overall elapsed
+    tc = agg_cur["total_elapsed"]
+    tb = agg_base["total_elapsed"]
+    if tc["N"] > 0 and tb["N"] > 0:
+        delta = tc["median"] - tb["median"]
+        pct = delta / tb["median"] * 100 if tb["median"] > 0 else 0
+        print(f"\nTotal elapsed:  {tb['median']:.1f}s → {tc['median']:.1f}s  "
+              f"({delta:+.1f}s, {pct:+.0f}%)")
+
+    # Per-phase comparison
+    all_phases = sorted(set(list(agg_cur.get("phases", {}).keys()) +
+                            list(agg_base.get("phases", {}).keys())))
+
+    print(f"\n{'Phase':<40} {'Base':>8} {'Curr':>8} {'Delta':>8} {'Flag':>12}")
+    print("-" * 80)
+
+    for phase_name in all_phases:
+        cur_phase = agg_cur.get("phases", {}).get(phase_name, {})
+        base_phase = agg_base.get("phases", {}).get(phase_name, {})
+
+        cur_e = cur_phase.get("elapsed", {})
+        base_e = base_phase.get("elapsed", {})
+
+        if cur_e.get("N", 0) == 0 and base_e.get("N", 0) == 0:
+            continue
+
+        cur_med = cur_e.get("median", 0)
+        base_med = base_e.get("median", 0)
+        cur_std = cur_e.get("std", 0)
+        base_std = base_e.get("std", 0)
+
+        if base_e.get("N", 0) == 0:
+            print(f"  {phase_name:<38} {'—':>8} {cur_med:>7.1f}s {'':>8} {'NEW':>12}")
+            continue
+        if cur_e.get("N", 0) == 0:
+            print(f"  {phase_name:<38} {base_med:>7.1f}s {'—':>8} {'':>8} {'REMOVED':>12}")
+            continue
+
+        delta = cur_med - base_med
+        # Combined std: sqrt(s1^2/n1 + s2^2/n2) for Welch's approximation
+        n_cur = max(1, cur_e.get("N", 1))
+        n_base = max(1, base_e.get("N", 1))
+        combined_se = math.sqrt(cur_std**2 / n_cur + base_std**2 / n_base) if (cur_std + base_std) > 0 else 0
+
+        # Flag: |delta| > 2 * combined standard error
+        flag = ""
+        if combined_se > 0 and abs(delta) > 2 * combined_se:
+            if delta > 0:
+                flag = "REGRESSION"
+            else:
+                flag = "IMPROVEMENT"
+
+        pct = delta / base_med * 100 if base_med > 0 else 0
+        print(f"  {phase_name:<38} {base_med:>7.1f}s {cur_med:>7.1f}s {delta:>+7.1f}s {flag:>12}")
+
+        # Decode/prefill tok/s comparison
+        for metric in ("decode_toks", "prefill_toks"):
+            cur_m = cur_phase.get(metric, {})
+            base_m = base_phase.get(metric, {})
+            if cur_m.get("N", 0) > 0 and base_m.get("N", 0) > 0:
+                label = "decode" if "decode" in metric else "prefill"
+                d = cur_m["median"] - base_m["median"]
+                print(f"    {label} tok/s: {base_m['median']:.1f} → {cur_m['median']:.1f} ({d:+.1f})")
+
+    print(f"\n{'=' * 80}")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -279,6 +369,8 @@ def main():
     )
     parser.add_argument("--report", type=str, default=None,
                         help="Print report for SHA (or HEAD)")
+    parser.add_argument("--baseline", type=str, default=None,
+                        help="Baseline SHA for regression comparison (use with --report)")
     parser.add_argument("--snapshots-dir", type=str, default=str(SNAPSHOTS_DIR),
                         help="Snapshots directory")
     args = parser.parse_args()
@@ -294,7 +386,10 @@ def main():
     print(f"Loaded {len(snapshots)} runs across {len(groups)} SHA(s)")
 
     if args.report:
-        print_report(args.report, groups)
+        if args.baseline:
+            print_comparison(args.report, args.baseline, groups)
+        else:
+            print_report(args.report, groups)
         return
 
     # Build aggregate files

@@ -477,7 +477,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 24**: Add 2-SHA regression detector to aggregate.py + fix minference layer counter
+_(none)_
 
 ## Completed
 
@@ -545,6 +545,12 @@ all in `## In Progress`.
   - Status updated to reflect N=8 measurement: p90 ~460 MB/s (FAIL, 4.6x over target)
   - Swap depth kept as secondary observability metric, not a gate
   - References aggregate.py as source of truth
+- **Task 24**: Add 2-SHA regression detector to aggregate.py (2026-04-13)
+  - Added `--baseline <sha>` flag to aggregate.py for side-by-side comparison
+  - Per-phase median delta with 2-sigma regression/improvement flags (Welch's t-test approximation)
+  - Decode/prefill tok/s deltas shown inline per phase
+  - NEW/REMOVED detection for phases that exist in only one SHA
+  - Minference layer counter already correct via `% num_layers` wrapping — `reset_layer_counter()` kept as defense-in-depth API
 
 ---
 
