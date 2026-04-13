@@ -1489,9 +1489,12 @@ def main():
                 sys.exit(1)
 
         # 3. Check swap — if swap is already elevated, model load will thrash
-        swap = psutil.swap_memory()
-        swap_used_gb = swap.used / 1e9
-        MAX_PREEXISTING_SWAP_GB = 5.0
+        try:
+            swap = psutil.swap_memory()
+            swap_used_gb = swap.used / 1e9
+        except OSError:
+            swap_used_gb = 0.0  # Can't read swap (sandbox) — skip check
+        MAX_PREEXISTING_SWAP_GB = 12.0  # macOS reports compressed memory as swap; 12GB is real pressure
         if swap_used_gb > MAX_PREEXISTING_SWAP_GB:
             print(f"WARNING: {swap_used_gb:.1f} GB swap already in use "
                   f"(threshold {MAX_PREEXISTING_SWAP_GB:.0f} GB).",
