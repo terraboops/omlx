@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-_(none)_
+- **Task 4**: Build per-head sparse-attention pattern calibration for Qwen3-Coder (MInference offline search)
 
 ## Completed
 
