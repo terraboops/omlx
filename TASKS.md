@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 30**: Survey mx.fast.scaled_dot_product_attention source for AMX binding
 
 ## Completed
 
