@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 24b**: Probe MLX argpartition speed for Quest top-K page selection
+_(none)_
 
 ## Completed
 
@@ -591,6 +591,11 @@ all in `## In Progress`.
   - Bimodality from system-level Metal shader cache hit/miss (process-scoped, cache in ~/Library/Caches/com.apple.metal/)
   - Writeup at `docs/bimodal_timing_root_cause.md` with reproduction recipes for fast/slow modes
   - Recommendation: always use `--warmup` for benchmarking; add warmup to server startup
+- **Task 24b**: Probe MLX argpartition speed for Quest top-K page selection (2026-04-13)
+  - VERDICT: PASS — all configs under 200µs/head budget
+  - 1M context (8192 pages): 60-76 µs/head; 8M stress (64K pages): 100-141 µs/head
+  - argpartition available in MLX 0.31.1, competitive with argsort
+  - Quest page selection is viable at all tested context lengths
 
 ---
 
