@@ -1438,6 +1438,175 @@ That's a TASKS.md entry I am NOT filing because it's a meta-process
 issue not a benchmark-derived bug.
 ```
 
+### Run 27: N=5 Confirms Per-Task Bimodal Distribution — Two Tasks Drafted
+```
+Date: 2026-04-13
+SHA:  49114c7 (no commits since Run 26; working tree identical)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run27_2026-04-13T04-23/
+
+Fifth reproducibility data point. Same crash, same cliff, same Metal
+peak (5/5 byte-identical at 41.45 GB). Runtime 1122.8s — second-slowest
+of five. Phase 3 NIAH 243s and RULER 16K keys=5 221s — both in slow
+mode (second slow-slow combination). With N=5 the bimodal hypothesis
+from Run 26 is confirmed: each phase has a clean fast cluster (~70s)
+and a slow cluster (~230s) with a 136-139s gap between them — a real
+distribution, not measurement noise. Two new tasks drafted (#16, #17)
+but written to bench/snapshots/run27_*/proposed_tasks.md NOT to
+TASKS.md proper, because TASKS.md still has uncommitted user WIP
+(Tasks 12-15) that the analyst should not sweep into a benchmark
+commit. Engineers should review the drafts and merge them in band.
+
+Commits since Run 26: (none — HEAD unchanged at 49114c7)
+
+Benchmark results (--full, total 1122.8s, crashed at task 5/15 Phase 3b):
+
+  Phase                  | Result                      | Time
+  -----------------------|-----------------------------|--------
+  0: Smoke               | decode TBD                  |   ~9s
+  1: Coherence           | 2/2                         |   2.4s
+  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
+  3: NIAH                | 4K + 16K PASS (slow mode)   | 243.4s
+  3b: RULER              | 4/15 PASSED then CRASH      | 766s
+  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
+  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
+  4: HumanEval           | NEVER RAN                   |   —
+
+Five-run per-phase table:
+
+  Phase                       R23   R24   R25   R26   R27   median   class
+  ----------------------     ----  ----  ----  ----  ----   ------   -----
+  Smoke (s)                  10.3   9.2   8.8   8.4  ~9.0    ~9.0    drift-down
+  Coherence (s)               2.4   2.4   2.4   2.4   2.4     2.4    stable
+  Code Intel (s)              5.3   5.3   5.4   5.3   5.3     5.3    stable
+  NIAH 4K+16K (s)             208    69    68   232   243     208    BIMODAL
+  RULER 4K k=2 (s)             11    11    11    12    12      11    stable
+  RULER 4K k=4 (s)              9     9     9     9     9       9    stable
+  RULER 16K k=3 (s)           231   236   222   257   223     231    stable ±7%
+  RULER 16K k=5 (s)            61   236    85   259   221     221    BIMODAL
+  RULER 64K k=3 (breach)      205   283   218   412   291     283    wide
+  TOTAL (s)                   851   967   732  1303  1123     967    21% CV
+
+Bimodal cluster analysis (N=5):
+
+  Phase NIAH (Phase 3):
+    Sorted: 68, 69, 208, 232, 243
+    Fast cluster:  [68, 69]            mean= 68.5  std= 0.5  N=2
+    Slow cluster:  [208, 232, 243]     mean=227.7  std=14.7  N=3
+    Inter-cluster gap: 139s
+    Slow/fast ratio: 3.32x
+
+  Phase RULER 16K keys=5:
+    Sorted: 61, 85, 221, 236, 259
+    Fast cluster:  [61, 85]            mean= 73.0  std=12.0  N=2
+    Slow cluster:  [221, 236, 259]     mean=238.7  std=15.6  N=3
+    Inter-cluster gap: 136s
+    Slow/fast ratio: 3.27x
+
+  Both phases:
+    - 2 of 5 runs in fast cluster, 3 of 5 in slow cluster
+    - Inter-cluster gap is 4-5x larger than within-cluster std
+    - Ratio between modes is ~3.3x in BOTH phases (consistent)
+    - Fast/slow draw is INDEPENDENT per phase (Run 23 was slow-NIAH +
+      fast-k5; Run 24 was fast-NIAH + slow-k5)
+    - Slow cluster appears slightly more often (3/5) but N too small
+
+  Combination matrix coverage (N=5):
+    NIAH/k5    fast      slow
+    fast       Run 25    Run 24
+    slow       Run 23    Run 26, Run 27
+
+  All 4 cells observed. Slow-slow has hit twice now (Runs 26, 27).
+  Fast-fast hit only once (Run 25). Mixed cells once each.
+
+Memory profile (5-run consistency):
+
+                              R23     R24     R25     R26     R27     spread
+  Metal active max (GB)      41.44   41.43   41.44   41.38   41.43   ±0.06
+  Metal peak (GB)            41.45   41.45   41.45   41.45   41.45   ±0.00 ← byte-identical 5/5
+  Swap peak depth (GB)        8.63    6.93    6.73    7.76    7.80   ±10%
+
+Allocation cliff at breach (5/5 byte-identical pattern):
+
+  pre-cliff metal_active        40.13–40.27 GB (all 5 runs)
+  free metal_active             33.00 GB         (all 5 runs)
+  cliff metal_active            41.27/41.36 GB   (all 5 runs)
+  post-cliff metal_peak         41.45 GB         (all 5 runs)
+
+System memory I/O (5-run):
+
+                              R23     R24     R25     R26     R27     mean ± σ
+  Pageins (GB)                36.4    35.7    34.0    37.4    36.0    35.9 ± 1.2
+  Total swap I/O (GB)         337.8   422.7   270.5   608.7   521.1   432 ± 130 (30%)
+  Sustained swap (MB/s)       406     448     369     467     464     431 ± 38 (9%)
+  Compressions (M pages)      30.7    34.5    34.1    48.3    39.5    37.4 ± 6.7 (18%)
+  Run duration (s)            851     967     732    1303    1123     995 ± 211 (21%)
+
+  KEY INSIGHT (now solid at N=5): sustained swap rate is far more
+  stable (CV 9%) than total swap I/O (CV 30%) or runtime (CV 21%).
+  The macOS page compressor's sustained throughput on this hardware
+  is ~430 ± 40 MB/s — that's a hardware constant. Slower runs spend
+  more SECONDS in this throughput regime, not faster MB/s. So when
+  the per-task allocation pattern triggers more compressor work
+  (Run 26: 48M ops), the runtime balloons proportionally.
+
+Analysis notes (snapshot: bench/snapshots/run27_2026-04-13T04-23/):
+
+- **Bimodal distribution is confirmed**: N=5 gives clean clusters with
+  a 4-5x signal-to-noise ratio (gap 136-139s vs within-cluster std
+  12-15s). Both NIAH and RULER 16K keys=5 show the same ~3.3x slow/fast
+  ratio. The hypothesis at this point: SOME cost (Metal kernel compile?
+  initial page faulting? command buffer warm-up?) is paid once per
+  ~run-instance for these specific tensor shapes, but the COST itself
+  is variable and bimodal — not "first time vs subsequent" because
+  these tasks run in fresh subprocesses each time. Needs Metal-buffer-
+  level instrumentation to localize. Drafted as proposed task #16.
+
+- **Sustained swap rate is a hardware constant.** ~430 ± 40 MB/s across
+  5 runs. This is the M4 Pro page compressor's real bandwidth limit.
+  Implication: any benchmark that pushes more memory than the working
+  set fits will be bottlenecked by this exact rate. Goal 5 should be
+  re-stated as "compressor-saturated workloads run at 430 MB/s, plan
+  prefill chunk sizes to stay under that."
+
+- **Runtime distribution is widening with N**: CV 14% (N=3) → 22%
+  (N=4) → 21% (N=5). The N=4 spike from Run 26 was the long-tail edge,
+  Run 27 brings it back slightly. With N=10 we should see CV converge.
+  Statistical detection floor is still in the 10-15% region — single-run
+  numbers cannot be trusted for regression detection at < 30%.
+
+- **CPU metric: 0.0 in all 1096 samples**. 5-run cumulative: 4858
+  samples broken, 0 non-zero. Task #8 profiler bug is now the
+  longest-running data quality issue in the project.
+
+- **Allocation cliff is byte-deterministic for the 5th time.** Five
+  independent runs across ~3 hours of wall clock all hit the exact
+  same pre-cliff/free/cliff metal_active values. The 64K multi-key
+  RULER prefill memory peak is structurally deterministic. Task #9
+  (projected headroom gate) is the right fix.
+
+- **Pre-run load avg 2.35 — clean.** Post-run 3.20, also clean. The
+  Run 26 contamination concern (post-load 6.38) was a one-off
+  compressor catch-up.
+
+New TASKS.md entries filed in TASKS.md: **NONE.**
+But TWO new tasks drafted in bench/snapshots/run27_2026-04-13T04-23/proposed_tasks.md:
+  #16  Add Metal command buffer instrumentation to identify per-task
+       bimodal timing root cause [M-L]
+  #17  Add multi-run aggregation tooling to bench/scoring.py for
+       median/p95 metric tracking [M]
+
+These are NOT yet in TASKS.md because TASKS.md has uncommitted user
+WIP (Tasks 12-15 from research pass 2) that the analyst should not
+sweep into a benchmark commit. Engineers: review the proposed_tasks.md
+file and merge into TASKS.md in-band along with your Tasks 12-15
+edits.
+
+All five Run-23 findings (#7-11) are still blocking, reproduced for
+the 5th consecutive time.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
