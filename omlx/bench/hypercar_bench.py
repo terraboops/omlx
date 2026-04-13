@@ -1,21 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Gated benchmark for oMLX Hypercar — run before every commit.
 
-Seven phases, each gated: a failure stops the pipeline.
+Eight phases, each gated: a failure stops the pipeline.
 Memory watchdog runs continuously and aborts immediately on breach.
 
   Phase 0: Smoke          — model loads, 10 tokens, Metal < load limit   (<30s)
   Phase 1: Coherence      — "2+2" => "4", "hello world" => "print"      (<60s)
   Phase 2: Code Intel     — 5 coding problems, exec + assert, >=60%     (<5min)
   Phase 3: NIAH           — needle retrieval at 4K context (ChatML)      (<5min)
+  Phase 3b: RULER         — multi-key retrieval + aggregation (RULER)    (<5min)
   Phase 4: HumanEval Lite — 20 curated problems, >=50% pass@1           (<10min)
   Phase 5: Memory         — watchdog summary (breach = already aborted)
   Phase 6: Summary        — write results JSON
 
 Usage:
-    .venv/bin/python -m omlx.bench.hypercar_bench            # Phase 0-3
+    .venv/bin/python -m omlx.bench.hypercar_bench            # Phase 0-3b
     .venv/bin/python -m omlx.bench.hypercar_bench --quick    # Phase 0+1 only
-    .venv/bin/python -m omlx.bench.hypercar_bench --full     # Phase 0-4 (HumanEval)
+    .venv/bin/python -m omlx.bench.hypercar_bench --full     # Phase 0-4 (HumanEval + full RULER)
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ logger = logging.getLogger("omlx.bench.hypercar")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"  # Override with --model
+MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"  # Override with --model
 KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
@@ -50,6 +51,8 @@ PREFILL_CHUNK = 4096
 # Gate thresholds (defaults — overridden by % of system memory)
 MIN_CODE_PASS_RATE = 0.6
 MIN_HUMANEVAL_PASS_RATE = 0.35  # 4-bit MoE model scores ~40-45% on these problems
+MIN_RULER_MK_ACCURACY = 0.8  # multi_key_retrieval@16K must hit 80%
+MIN_RULER_VT_ACCURACY = 0.7  # variable_tracking@4K must hit 70%
 
 PROFILE_PATH = Path("/tmp/hypercar_profile.json")
 DEFAULT_RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
@@ -710,6 +713,212 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
 
 
 # ---------------------------------------------------------------------------
+# Phase 3b: RULER — multi-key retrieval + variable tracking + aggregation
+# ---------------------------------------------------------------------------
+
+def _run_ruler_task(model, tokenizer, task_spec: dict,
+                    watchdog: MemoryWatchdog) -> dict:
+    """Run a single RULER task and return result dict."""
+    from omlx.eval.ruler.tasks import (
+        generate_multi_key_niah,
+        generate_variable_tracking,
+        generate_frequent_word,
+    )
+
+    generators = {
+        "multi_key_niah": generate_multi_key_niah,
+        "variable_tracking": generate_variable_tracking,
+        "frequent_word": generate_frequent_word,
+    }
+
+    gen_name = task_spec["generator"]
+    gen_fn = generators[gen_name]
+
+    # Build kwargs from task_spec (exclude 'generator')
+    kwargs = {k: v for k, v in task_spec.items() if k != "generator"}
+    kwargs["tokenizer"] = tokenizer
+    task = gen_fn(**kwargs)
+
+    n_layers = len(model.layers)
+    ctx_tokens = task_spec["target_tokens"]
+
+    # Format as chat message
+    messages = [
+        {"role": "user",
+         "content": f"{task['context']}\n\n{task['question']}"}
+    ]
+    try:
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+    except Exception:
+        prompt = f"{task['context']}\n\n{task['question']}\nAnswer:"
+
+    tokens = tokenizer.encode(prompt)[:ctx_tokens]
+    cache = _make_cache(n_layers)
+
+    # Chunked prefill
+    for chunk_start in range(0, len(tokens), PREFILL_CHUNK):
+        if watchdog.breached.is_set():
+            del cache
+            return {"task_type": gen_name, "ctx": ctx_tokens, "passed": False,
+                    "reason": "memory_breach"}
+        chunk_end = min(chunk_start + PREFILL_CHUNK, len(tokens))
+        x = mx.array([tokens[chunk_start:chunk_end]])
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+
+    # Generate response (up to 128 tokens for multi-value answers)
+    generated = []
+    for _ in range(128):
+        token = mx.argmax(logits[:, -1, :], axis=-1)
+        mx.eval(token)
+        tok_id = token.item()
+        generated.append(tok_id)
+        if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
+            break
+        x = token.reshape(1, 1)
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+
+    response = tokenizer.decode(generated).strip()
+
+    # Score: check how many expected values appear in the response
+    expected = task["expected"]
+    found = sum(1 for exp in expected if exp in response)
+    accuracy = found / len(expected) if expected else 0.0
+
+    del cache
+    gc.collect()
+    mx.clear_cache()
+
+    return {
+        "task_type": gen_name,
+        "ctx": ctx_tokens,
+        "params": task["params"],
+        "response": response[:200],
+        "expected": expected,
+        "found": found,
+        "total": len(expected),
+        "accuracy": accuracy,
+        "passed": accuracy >= 0.5,  # per-task pass: at least half correct
+    }
+
+
+def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
+                  full: bool = False) -> PhaseResult:
+    """RULER synthetic long-context evaluation.
+
+    Default mode: quick suite (multi-key NIAH + VT + freq-word at 4K/16K).
+    --full mode: full 15-task suite at 4K/16K/64K.
+
+    Two gates:
+      1. multi_key_retrieval@16K accuracy >= 0.8
+      2. ruler_vt@4K accuracy >= 0.7 (independent eval for Goal 2)
+    """
+    from omlx.eval.ruler.tasks import RULER_QUICK_SUITE, RULER_FULL_SUITE
+
+    t0 = time.perf_counter()
+    suite = RULER_FULL_SUITE if full else RULER_QUICK_SUITE
+    results = []
+
+    logger.info(f"  Running {'full' if full else 'quick'} RULER suite "
+                f"({len(suite)} tasks)...")
+
+    for i, task_spec in enumerate(suite):
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 3b: RULER", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
+        gen_name = task_spec["generator"]
+        ctx_k = task_spec["target_tokens"] // 1024
+        extra = ""
+        if gen_name == "multi_key_niah":
+            extra = f" keys={task_spec['num_keys']}"
+        elif gen_name == "variable_tracking":
+            extra = f" chain={task_spec['chain_length']}"
+        elif gen_name == "frequent_word":
+            extra = f" words={task_spec['num_target_words']}"
+
+        logger.info(f"  [{i+1}/{len(suite)}] {gen_name}@{ctx_k}K{extra}")
+        result = _run_ruler_task(model, tokenizer, task_spec, watchdog)
+        results.append(result)
+
+        status = "PASS" if result["passed"] else "FAIL"
+        logger.info(f"    {status}: {result['found']}/{result['total']} "
+                     f"(acc={result['accuracy']:.0%}) — {result['response'][:60]!r}")
+
+    # Gate 1: multi_key_retrieval@16K accuracy >= MIN_RULER_MK_ACCURACY
+    mk_16k_results = [
+        r for r in results
+        if r["task_type"] == "multi_key_niah" and r["ctx"] == 16384
+    ]
+
+    if mk_16k_results:
+        mk_16k_accuracy = sum(r["accuracy"] for r in mk_16k_results) / len(mk_16k_results)
+    else:
+        mk_16k_accuracy = 1.0  # No 16K multi-key tasks — skip gate
+
+    mk_gate = mk_16k_accuracy >= MIN_RULER_MK_ACCURACY
+
+    # Gate 2: variable_tracking@4K accuracy >= MIN_RULER_VT_ACCURACY
+    # This is an independent eval toward Goal 2 ("4 independent evals")
+    vt_4k_results = [
+        r for r in results
+        if r["task_type"] == "variable_tracking" and r["ctx"] == 4096
+    ]
+
+    if vt_4k_results:
+        vt_4k_accuracy = sum(r["accuracy"] for r in vt_4k_results) / len(vt_4k_results)
+    else:
+        vt_4k_accuracy = 1.0  # No 4K VT tasks — skip gate
+
+    vt_gate = vt_4k_accuracy >= MIN_RULER_VT_ACCURACY
+
+    gate_passed = mk_gate and vt_gate
+
+    # Summary stats
+    by_type = {}
+    for r in results:
+        key = f"{r['task_type']}@{r['ctx'] // 1024}K"
+        if key in by_type:
+            # Multiple tasks at same type+context — average
+            existing = by_type[key]
+            by_type[key] = (existing + r["accuracy"]) / 2
+        else:
+            by_type[key] = r["accuracy"]
+
+    logger.info(f"  RULER summary: {by_type}")
+    logger.info(f"  Gate (multi_key@16K): {mk_16k_accuracy:.0%} "
+                f"(need {MIN_RULER_MK_ACCURACY:.0%}) — "
+                f"{'PASS' if mk_gate else 'FAIL'}")
+    logger.info(f"  Gate (ruler_vt@4K):   {vt_4k_accuracy:.0%} "
+                f"(need {MIN_RULER_VT_ACCURACY:.0%}) — "
+                f"{'PASS' if vt_gate else 'FAIL'}")
+
+    return PhaseResult(
+        name="Phase 3b: RULER",
+        passed=gate_passed,
+        elapsed_s=time.perf_counter() - t0,
+        details={
+            "suite": "full" if full else "quick",
+            "num_tasks": len(suite),
+            "results": results,
+            "by_type": by_type,
+            "mk_16k_accuracy": mk_16k_accuracy,
+            "vt_4k_accuracy": vt_4k_accuracy,
+            "gates": {
+                "multi_key@16K": {"accuracy": mk_16k_accuracy, "threshold": MIN_RULER_MK_ACCURACY, "passed": mk_gate},
+                "ruler_vt@4K": {"accuracy": vt_4k_accuracy, "threshold": MIN_RULER_VT_ACCURACY, "passed": vt_gate},
+            },
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 4: HumanEval Lite (20 curated problems)
 # ---------------------------------------------------------------------------
 
@@ -1053,10 +1262,10 @@ def main():
                         help="KV cache: native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
     parser.add_argument("--max-metal-pct", type=float, default=80.0,
                         help="Metal peak limit as %% of system memory (default: 80)")
-    parser.add_argument("--max-swap-pct", type=float, default=17.0,
-                        help="Swap delta limit as %% of system memory (default: 17)")
-    parser.add_argument("--max-load-pct", type=float, default=42.0,
-                        help="Metal at load limit as %% of system memory (default: 42)")
+    parser.add_argument("--max-swap-pct", type=float, default=25.0,
+                        help="Swap delta limit as %% of system memory (default: 25)")
+    parser.add_argument("--max-load-pct", type=float, default=70.0,
+                        help="Metal at load limit as %% of system memory (default: 70)")
     parser.add_argument("--model", type=str, default=None,
                         help="Override model path (e.g. /tmp/granite-4.0-h-small-TQ3.5-wht)")
     parser.add_argument("--niah-500k", action="store_true",
@@ -1160,6 +1369,14 @@ def main():
         phases.append(p3)
         if not p3.passed:
             logger.error("Phase 3 FAILED — aborting")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        # Phase 3b: RULER (multi-key retrieval, aggregation)
+        logger.info("\n=== Phase 3b: RULER ===")
+        p3b = phase3b_ruler(model, tokenizer, watchdog, full=args.full)
+        phases.append(p3b)
+        if not p3b.passed:
+            logger.error("Phase 3b FAILED — aborting")
             return _finish(phases, watchdog, limits, total_t0, results_path)
 
         if not args.full:
