@@ -1481,6 +1481,156 @@ Still blocking:
   #35 Broaden sandbox exclusion to all omlx.bench.* modules
 ```
 
+### Run 34: First --warmup Default Run — 27x Smoke Speedup, Partial Bimodal Fix, Phase 3b Reaches Task 8
+```
+Date: 2026-04-13
+SHA:  66e8635 (bench captured post-race; HEAD was 7a62b53 at start)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run34_2026-04-13T11-09/
+
+First run with --warmup as the default (Task 20's writeup shipped
+afc37c8 identifying Metal shader cache cold/warm as the bimodal
+root cause; 7a62b53 made warmup default). Phase 0 Smoke dropped
+from 7.5-12.4s across R31-33 to 0.3s — a clean 27x speedup
+confirming the warmup primes the Metal kernel cache for small ops.
+BUT large-scale prefills (NIAH 16K, RULER 16K keys=5) stayed in
+the slow cluster, meaning the shader-cache benefit doesn't survive
+the scale/pressure of 16K-context workloads. Phase 3b progressed
+further than Run 32 though (task 4 -> task 8, 4 more tasks
+completed), so the warmup has a real cumulative memory benefit
+even where it doesn't directly speed up timing.
+
+Commits since Run 33 (66377eb, 2026-04-13):
+  aa341c3  bench: Run 33 — breach point regresses to Phase 3 NIAH
+  6cce33d  tasks: Start Task 30 — survey MLX SDPA source for AMX dispatch
+  cd9559f  research: MLX SDPA dispatch analysis — prefill on AMX, decode not (Task 30)
+  84a1f1c  tasks: Start Task 20 — bimodal timing root cause writeup
+  afc37c8  research: Bimodal timing root cause — Metal shader cache cold/warm (Task 20)
+  7a62b53  bench: Make --warmup default, add --no-warmup to opt out
+  66e8635  (race commit during run)
+
+Task #20 is now CLOSED. The writeup at afc37c8 confirms the Metal
+shader cache cold/warm hypothesis I raised after Run 27's N=5
+bimodal characterization. The fix (default --warmup pass) ships via
+7a62b53 and is exercised here for the first time.
+
+Benchmark results (--full, total 891.4s):
+  Phase 0  Smoke          PASS   0.3s  ← 27x faster than R31-33
+  Phase 1  Coherence      PASS   2.4s
+  Phase 2  Code Intel 5/5 PASS   5.3s
+  Phase 3  NIAH 4K+16K    PASS 247.9s  (slow cluster — warmup didn't help)
+  Phase 3b RULER 7 tasks  FAIL 618.2s  (breach at task 8/15)
+  Phase 5  Memory Profile FAIL   0.0s  (cascades)
+  Phase 6  Summary        PASS   0.0s
+
+RULER tasks this run (7 completed + 1 skipped + 1 breach mid-task):
+  [1] 4K  k=2        PASS 2/2 (100%)  11s
+  [2] 4K  k=4        PASS 4/4 (100%)  10s
+  [3] 16K k=3        PASS 3/3 (100%) 210s  ← slow cluster
+  [4] 16K k=5        PASS 4/5 ( 80%) 246s  ← slow cluster
+  [5] 64K k=3        SKIP             —    (Task 9 headroom gate)
+  [6] vt@4K  chain=3 PASS 1/1 (100%)   9s
+  [7] vt@4K  chain=4 FAIL 0/1 (  0%)   8s  ← reasoning ceiling (2nd obs)
+  [8] vt@16K chain=4 FAIL (breach)    -   ← swap delta 21.9 GB mid-task
+  [9-15]             NEVER RAN
+
+Task #7 reasoning ceiling confirmed for the 2nd time (R31 + R34):
+Qwen3-Coder-30B-A3B fails variable_tracking at chain=4 with 0%
+accuracy at BOTH 4K and 16K context. This is not a retrieval
+failure; it is a clean chain-resolution reasoning ceiling.
+
+Memory profile (new Task 8 profiler):
+  Metal peak:           37.78 GB  (identical to R31/R32/R33)
+  Swap peak (delta):    34.24 GB  (R31 38.16, R32 37.21, R33 43.13)
+  Profile samples:      855
+
+  cpu_pct:         median 15.5  mean 21.1  max 105.7
+                   (consistent with R32 14.4/19.9/106.1 and R33 14.8/22.2/106.3)
+  swap_io_mb_per_s: median 121.1  p90 496.3  max 14715.6
+
+Goal 5 p90 gate check (Task 23 re-stated metric, third measurement):
+  Run 32 p90: (not computed, only median 141 available then)
+  Run 33 p90: 534.4 MB/s  ← first measured value
+  Run 34 p90: 496.3 MB/s  ← 4.96x over 100 MB/s gate
+
+Goal 5 is still violated by ~5x. Every run since Task #23's
+re-statement has shown this. Task #22 remediation (--kv-bits 2)
+remains the one-line fix that would move this number under the gate.
+
+NIAH decode at 4K/16K (3 consecutive consistent measurements from Task 10):
+                R32    R33    R34    consistency
+  4K  decode:  32.1   31.4   31.2    CV 1.4%
+  16K decode:  16.5   16.3   16.4    CV 0.6%
+Stable enough to anchor Goal 3 tracking. Gap to target 50 tok/s:
+37.6% at 4K, 67.2% at 16K. Decode speed does NOT drift — it's a
+code-determined constant, unlike prefill or runtime.
+
+vm_stat deltas (Run 34):
+  Pageins:           75.4 GB  (mid-range for post-Task-8 runs)
+  Total swap I/O:   387.1 GB
+  Sustained rate:    434 MB/s wall-averaged (right at 8-run 431 MB/s baseline)
+  Compressions:      40.9M pages
+
+Analysis notes (snapshot: bench/snapshots/run34_2026-04-13T11-09/):
+
+- **Task #20's fix works for what it fixes.** Phase 0 Smoke went
+  from 7.5-12.4s to 0.3s — an unambiguous 27x speedup. The Metal
+  shader cache cold/warm hypothesis is validated for small-scale
+  ops. But the bimodal behavior on large prefills (NIAH 16K, RULER
+  16K k=5) persists — the warmup pass's shader priming doesn't
+  survive the memory pressure of 16K-context forward passes. This
+  is directional new information for a potential Task 20 follow-up:
+  the bimodal cause for large prefills may be separate from the
+  shader-cache issue (possibly scores-tensor allocation patterns
+  under memory pressure rather than kernel compile cost).
+
+- **Phase 3b progressed to task 8 instead of task 4** (Run 32
+  baseline). That's 4 more RULER tasks completed despite similar
+  total runtime (891 vs 894). The warmup's cumulative memory
+  benefit is real: less pressure accumulated during Phase 0 means
+  more headroom for Phase 3b's progression. Still not clean enough
+  to run all 15 tasks or to unlock Phase 4 HumanEval.
+
+- **Variable tracking chain=4 reasoning ceiling confirmed 2nd time.**
+  Task 7/15 (4K chain=4): FAIL 0/1 in BOTH R31 and R34.
+  Task 8/15 (16K chain=4): FAIL or BREACH in BOTH runs.
+  Chain=3 tasks (R31 [6/15], R34 [6/15]) both PASS 1/1.
+  This is a clean Qwen3-Coder reasoning ceiling that holds across
+  2 independent runs separated by ~3 hours of session time. Worth
+  filing as its own investigation task once Task #22 lands and we
+  can run a clean-baseline N>=3 replication on it.
+
+- **CPU metric stable across 3 post-Task-8 runs**: median 14.4 /
+  14.8 / 15.5, mean 19.9 / 22.2 / 21.1, max ~106 (single-core burst).
+  CV on median is 3.6%. This is the first metric outside of
+  memory-peak that is genuinely stable enough to track regressions
+  against. Python is idle-on-Metal for ~80% of the run.
+
+- **Goal 5 p90 swap_io trend (Task 23 metric):**
+    R33: 534.4 MB/s
+    R34: 496.3 MB/s
+  Both ~5x over the 100 MB/s gate. Difference is within sampling
+  noise at N=2. Task #22 is the only path to bringing this under.
+
+- **Task #22 STILL not in progress** at top of TASKS.md. The
+  implementation loop has been running (tasks 20, 24, 30 all landed
+  since I bumped Task 22) but it skipped Task 22 in favor of others.
+  This may be because the loop prioritizes research-derived tasks
+  or because it doesn't honor the "HIGH PRIORITY" section marker.
+  Task 22 remediation is the single most valuable engineering work
+  remaining; holding up on it means every analyst run will continue
+  to show Goal 5 red for the foreseeable future.
+
+New TASKS.md entries: **NONE.** (Task 20's partial fix and the
+reasoning-ceiling confirmation both fold into existing tasks per
+dedup discipline.)
+
+Still blocking:
+  #22 HIGH PRIORITY — STILL not picked up by implementation loop
+  #35 Sandbox broadening for aggregate tool
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

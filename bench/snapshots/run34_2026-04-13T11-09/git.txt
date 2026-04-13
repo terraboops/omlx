@@ -1,0 +1,21 @@
+=== HEAD ===
+7a62b53bdc7610d4fe9964727658a97eceb5f361
+
+=== status ===
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run34_2026-04-13T11-09/git.txt
+?? omlx/bench/ttt_bench.py
+
+=== log -10 ===
+7a62b53 bench: Make --warmup default, add --no-warmup to opt out
+afc37c8 research: Bimodal timing root cause — Metal shader cache cold/warm (Task 20)
+84a1f1c tasks: Start Task 20 — bimodal timing root cause writeup
+cd9559f research: MLX SDPA dispatch analysis — prefill on AMX, decode not (Task 30)
+6cce33d tasks: Start Task 30 — survey MLX SDPA source for AMX dispatch
+65bbb9e feat: Benchmark lock + Task 22 TQ3 2-bit probe results
+5516798 tasks: Start Task 22 — fix Goal 5 via --kv-bits 2 probe
+4509430 feat: --warmup flag primes Metal kernel cache, 2.25x decode speedup (Task 25)
+b61cdb3 tasks: Add Task 25 — --warmup flag for Metal kernel cache priming
+aa341c3 bench: Run 33 — breach point regresses to Phase 3 NIAH; first p90 measurement vs new Goal 5
