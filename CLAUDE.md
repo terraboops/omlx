@@ -31,15 +31,16 @@ any of these — even to improve another — needs explicit justification.
 |---|------|---------|-----|
 | 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), validated to 64K in practice | Need NIAH validation at 128K, 256K, 512K, 1M |
 | 2 | 4 independent evals beating GPT-4 | HumanEval 90% (18/20), Code Intel 5/5, NIAH 4K+16K — **3 evals, GPT-4 parity on coding only** | Need: MMLU-style reasoning, long-context retrieval, agentic tool use |
-| 3 | 50 tok/s decode constant | ~20 tok/s at 2K (8bit) — **40% of target** | Profile MoE router + 8-bit dequant hot path |
-| 4 | 500 tok/s prefill constant | ~300 tok/s at 2K, drops at 16K — **~60% of target, not constant** | Fused dequant+attention kernel, Metal graph fusion |
+| 3 | 50 tok/s decode constant | ~45 tok/s at 2K with warmup (8bit native) — **90% of target**. Without warmup: ~20 tok/s (Metal JIT cold-start, see docs/bimodal_timing_root_cause.md) | TQ3 2-bit hits 49.4 tok/s. Gap is Metal kernel overhead, not model. |
+| 4 | 500 tok/s prefill constant | ~80 tok/s at 2K with warmup, drops at 16K — **16% of target, not constant** | Steel AMX kernel active (Task 30). Prefill bottleneck is MoE expert dispatch, not attention. |
 | 5 | Swap p90 < 100 MB/s | N=8 measured p90 ~460 MB/s sustained — **4.6x over target, FAIL**. Swap depth (secondary): 50% of runs exceed 8GB. | Reduce KV memory (--kv-bits 2) or streaming heads (DuoAttention) to cut sustained pressure. Measured via `omlx/bench/aggregate.py --report HEAD`. |
 | 6 | 48GB M4 Pro fit | Load 32.4GB, peak 37.7GB — **PASS** | Maintain as optimizations land |
 
-**Interpretation**: We have quality (coding) but need breadth (non-coding evals). We have context
-capacity but need validated *performance* across that capacity. Decode and prefill speed are the
-biggest gaps — and the hardest to close, because "constant throughout context" means beating the
-KV cache access cost at 1M tokens, not just at 2K.
+**Interpretation**: Decode speed is near target (90% with warmup). The bimodal timing mystery
+(Task 20) was Metal JIT cold-start, not a model issue — `--warmup` (now default) eliminates it.
+Prefill is the biggest remaining gap (16% of target). Quality breadth needs 1 more independent
+eval (MMLU-Pro, tau-bench, or LiveCodeBench). Swap pressure (Goal 5) requires either 2-bit KV
+(works but regresses NIAH) or DuoAttention (Tasks 12-13).
 
 ## Before Every Commit
 
