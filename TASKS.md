@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-12_
+_Last updated: 2026-04-13_
 
 ## Research-derived tasks (from LIT_REVIEW.md, 2026-04-12)
 
@@ -248,7 +248,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-_(none)_
+- **Task 7**: Fix RULER memory-breach early-return KeyError in phase3b_ruler
 
 ## Completed
 
@@ -298,3 +298,211 @@ _(none)_
 - **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --quick` shows
   a `ruler_vt@4` gate row; gate passes at accuracy >= 0.7.
 - **Effort**: S (depends on Task 1)
+
+## Research-derived tasks (from LIT_REVIEW.md pass 2, 2026-04-13)
+
+### 12. DuoAttention retrieval/streaming head calibration for Qwen3-Coder
+- **Goal**: 3 (decode), 4 (prefill), 5 (swap headroom), 1 (longer context per byte)
+- **Derived from**: DuoAttention (2410.10819)
+- **Change**:
+  - New `scripts/duoattention_calibrate.py` that runs Qwen3-Coder-30B-A3B
+    over a synthetic passkey-retrieval corpus and gradient-descents a
+    per-(layer, head) gate alpha in [0,1]; alpha near 1 = retrieval head
+    (needs full KV), alpha near 0 = streaming head (needs only sink+window).
+  - L1 penalty on alpha to push the streaming fraction up, calibrated so
+    NIAH@16K accuracy stays >= 0.95 of fp16 baseline.
+  - Output: `omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json`
+    listing per-head policy {full, stream(window=N, sink=4)}.
+  - This task ONLY emits the calibration table — runtime cache split is
+    Task 13 so this stays atomic.
+- **Verify**: `scripts/duoattention_calibrate.py --model <qwen3-coder>`
+  writes the JSON; assertion checks streaming fraction >= 0.50 across all
+  layers AND validation NIAH@16K >= 0.95 of fp16 baseline. No runtime
+  changes yet.
+- **Effort**: M
+
+### 13. Two-storage-class KV cache (DuoAttention runtime)
+- **Goal**: 3 (decode), 4 (prefill), 5 (swap headroom)
+- **Derived from**: DuoAttention (2410.10819)
+- **Change**:
+  - Extend `omlx/turboquant_kv.py` so each head has one of two storage
+    classes selected from the Task 12 policy table:
+    - `full`: existing TQ3 paged 3-bit cache (no change).
+    - `stream`: ring buffer of size `window + sink` in fp16 (no quant —
+      the cache is small enough that the quant cost is not worth it, and
+      retrieval-head misclassification compounds at the streaming heads).
+  - Decode and prefill paths read both classes and concatenate per-head
+    attention outputs.
+  - New `--kv-mode duo` switch on `omlx/hypercar_server.py` and on
+    `hypercar_bench.py`. Composes with TQ3 (full heads use TQ3 storage)
+    and orthogonal to Quest top-K page selection (top-K applies only to
+    full heads).
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full --kv-mode duo`
+  shows decode tok/s at 16K >= 1.3x baseline AND prefill tok/s at 16K >= 1.2x
+  baseline AND HumanEval >= 85% AND `ruler_multi_key@16K` within 2% of
+  baseline AND KV cache memory at 64K drops by >= 35% vs `tq3` baseline.
+  All conditions required. Depends on Task 12.
+- **Effort**: M-L
+
+### 14. tau-bench agentic gate in hypercar_bench
+- **Goal**: 2 (intelligence breadth — agentic tool use, the missing 4th eval)
+- **Derived from**: tau-bench (2406.12045)
+- **Change**:
+  - New `omlx/eval/tau_bench/` shim that vendors a pinned tau-bench commit
+    or wraps the pip package, configured to point at our local
+    `hypercar_server` `/v1/chat/completions` endpoint.
+  - User-side simulator runs against a small local model
+    (`gemma2-2b-it` or `qwen2.5-3b-instruct`) loaded via mlx-lm to keep
+    eval fully offline.
+  - Add `phase_tau()` to `omlx/bench/hypercar_bench.py`: 5 retail tasks
+    in `--quick`, 20 retail + 10 airline tasks in `--full`. Report
+    pass^1 and pass^4.
+  - Gate: `tau_retail_pass@1 >= 0.30` (well below GPT-4o ceiling, but a
+    real signal that tool use works at all).
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --quick`
+  prints a `tau_retail` gate row; gate passes at pass^1 >= 0.30. Wall
+  clock for the quick variant must stay under 5 minutes (cap turns
+  per task).
+- **Effort**: M
+
+### 15. SimPO contrast step in TTT engine
+- **Goal**: 2 (intelligence — agentic quality, complement to existing TTT)
+- **Derived from**: SimPO (2405.14734)
+- **Change**:
+  - Add `simpo_step(winner_traj, loser_traj, gamma, beta, lr)` in
+    `omlx/ttt.py` next to the existing `ttt_step()`. Reuse the existing
+    forward path to get per-token logprobs for both trajectories under
+    the current down_proj LoRA.
+  - Loss: `-log sigmoid(beta * (avg_logp(winner) - avg_logp(loser)) - gamma)`,
+    length-normalised.
+  - Cap per-step LoRA delta-norm at the same bound the existing TTT
+    loop uses (no new memory pressure, no runaway updates).
+  - New endpoint `POST /v1/ttt/simpo` on `omlx/hypercar_server.py`
+    accepting `{winner: [...], loser: [...], task_id}`; persists the
+    pair into the same TTT trajectory store the existing endpoints use.
+  - Pull pairs automatically from tau-bench (Task 14) runs: any task where
+    one rollout passes and another rollout of the same task fails becomes
+    a (winner, loser) pair fed back into SimPO.
+- **Verify**: New unit test `tests/test_simpo_step.py` constructs a tiny
+  synthetic (winner, loser) pair, runs one `simpo_step`, asserts (a)
+  winner avg-logp went up, (b) loser avg-logp went down, (c) LoRA
+  delta-norm within bound. Then `.venv/bin/python -m omlx.bench.hypercar_bench --full`
+  passes (no regression on existing gates). Stretch: after 50 SimPO
+  steps fed from a single tau-bench run, `tau_retail_pass@1` improves
+  by >= 5 percentage points on a held-out task subset.
+- **Effort**: S-M (depends on Task 14 for the pair source, but the
+  core implementation can land before Task 14 against a synthetic pair set)
+
+## Research-derived tasks (from LIT_REVIEW.md pass 3, 2026-04-13)
+
+### 16. ProMoE lazy-load probe for Qwen3-Coder expert weights
+- **Goal**: 6 (M4 Pro 48GB fit), 5 (swap headroom under load), 3 (decode)
+- **Derived from**: ProMoE (2410.22134)
+- **Change**:
+  - One-day de-risking spike before committing to the full project.
+  - New `scripts/moe_lazyload_probe.py` that loads Qwen3-Coder-30B-A3B
+    with only a subset of expert MLPs materialised (e.g., experts 0-63
+    in each layer; the remaining 64 are zero-masked at the router so
+    they are never dispatched to). Measure: Metal memory at load,
+    Metal memory at steady-state on a short prefill, and whether any
+    MLX weight-load-time assertion blocks the partial load.
+  - If the probe succeeds, the full ProMoE implementation follows as a
+    Task 16b: (a) a lazy-weight `MoEMLP` wrapper in a new
+    `omlx/patches/lazy_moe.py` that mmap's expert weights from disk
+    and unpacks on first touch, (b) a tiny linear-probe predictor on
+    prior-layer router logits that runs one layer ahead and prefetches,
+    (c) hot/cold tracking that evicts experts by LRU under a
+    configurable `--moe-resident-fraction` budget.
+  - This task ONLY does the probe — the full system is 16b so this
+    stays atomic and low-risk.
+- **Verify**: `.venv/bin/python scripts/moe_lazyload_probe.py
+  --resident-fraction 0.5` runs to completion, reports Metal at load
+  dropping from ~32GB to ~20GB (scales with resident fraction), AND
+  `.venv/bin/python -m omlx.bench.hypercar_bench --quick` with the
+  probe's lazy-load hook applied still passes smoke + coherence
+  gates (quality hold is the blocker — if zero-masked experts hurt
+  quality, pivot to a 4-bit re-quant on the cold experts instead
+  of zero-masking).
+- **Effort**: S for the probe, L for the full 16b follow-up
+
+### 17. LLMLingua-2 prompt-compression middleware with RULER gate
+- **Goal**: 1 (effective 1M context), 4 (prefill speed)
+- **Derived from**: LLMLingua-2 (2403.12968)
+- **Change**:
+  - New `omlx/eval/llmlingua2/` module that loads the official
+    XLM-RoBERTa-large compressor checkpoint via mlx-lm (or a ported
+    MLX version if no native checkpoint exists) and exposes a
+    `compress(text: str, ratio: float) -> str` function.
+  - New middleware hook in `omlx/hypercar_server.py` on
+    `/v1/chat/completions`: if the request carries
+    `X-Hypercar-Compress: <ratio>` header (or if the server was
+    launched with `--compress-prompts llmlingua2:3x`), the user+tool
+    message content is run through the compressor *before* tokenisation.
+    System prompts and the most recent user turn are always exempt.
+  - Extend `phase3b_ruler()` in `omlx/bench/hypercar_bench.py` with a
+    *compressed* variant: run the existing multi_key_niah@16K tasks
+    once with no compression and once with LLMLingua-2 at 3x, and
+    gate that the compressed accuracy stays within 10 percentage
+    points of the uncompressed baseline. This is the honest gate
+    that prevents us from shipping a silent quality regression.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full
+  --compress-prompts llmlingua2:3x` shows (a) prefill tok/s at 16K
+  >= 1.8x the uncompressed baseline, (b) HumanEval >= 85%, (c) the
+  new `ruler_multi_key@16K_compressed` gate passes at accuracy
+  within 10 points of the baseline. All three conditions required.
+- **Effort**: M
+
+### 18. LiveCodeBench contamination-free coding gate
+- **Goal**: 2 (intelligence breadth — honest coding eval, replacing
+  the contaminated HumanEval signal)
+- **Derived from**: LiveCodeBench (2403.07974)
+- **Change**:
+  - New `omlx/eval/livecodebench/` module that loads a pinned
+    post-cutoff release of LiveCodeBench from HuggingFace (e.g.
+    `release_v4` containing only problems dated after 2024-07, which
+    is after the known Qwen3-Coder training cutoff).
+  - Reuse the existing sandboxed Python executor from
+    `omlx/ttt.py`'s code verifier to run the per-problem unit tests
+    — do NOT shell out to Docker.
+  - Add `phase_lcb()` to `omlx/bench/hypercar_bench.py`: 20 sampled
+    problems in `--quick` (capped at 60 seconds wall), 100 sampled
+    problems in `--full`. Report pass@1 and per-scenario scores
+    (generation, self-repair, execution, test-output).
+  - Add `lcb_gen@post_cutoff >= 0.30` as a new Goal-2 gate. The
+    existing HumanEval gate (>= 35%) stays for now but is demoted to
+    a "legacy/contamination-monitored" row in the gate table.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full`
+  prints an `lcb_gen` gate row and a per-scenario breakdown; gate
+  passes at pass@1 >= 0.30 on the post-cutoff release. Wall clock
+  for the `--quick` LiveCodeBench variant stays under 60 seconds.
+- **Effort**: S
+
+### 19. BigCodeBench library-usage gate
+- **Goal**: 2 (intelligence breadth — tool-using code generation, the
+  realistic OpenCode workload)
+- **Derived from**: BigCodeBench (2406.15877)
+- **Change**:
+  - Vendor or pip-install BigCodeBench under `omlx/eval/bigcodebench/`
+    and ship a `macos_compatible.json` allowlist that filters out any
+    task requiring Docker-only dependencies. Target: at least 300
+    macOS-runnable tasks survive the filter.
+  - Reuse the same sandboxed Python executor from Task 18 / TTT code
+    verifier. Install BigCodeBench's Python dependencies into a
+    dedicated venv under `.venv-bcb/` so the main server venv stays
+    clean.
+  - Add `phase_bcb()` to `omlx/bench/hypercar_bench.py`: 10 sampled
+    tasks in `--quick`, 100 sampled tasks in `--full`. Evaluate both
+    `BigCodeBench-Full` (with docstring) and `BigCodeBench-Instruct`
+    (stripped to natural-language instruction) on the full run.
+  - Add `bcb_full_pass@1 >= 0.30` as a new Goal-2 gate. This is the
+    fourth independent eval that Goal 2 has been missing.
+  - As a stretch target, wire passing/failing task pairs from the
+    same problem into the SimPO trajectory store (Task 15) so the
+    bench run doubles as a training-signal source for the TTT loop.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full`
+  prints a `bcb_full` and `bcb_instruct` gate row; `bcb_full` gate
+  passes at pass@1 >= 0.30. The bench summary now shows four
+  independent eval families (HumanEval/LCB, RULER, tau-bench, and
+  BigCodeBench) all passing — that is the full Goal-2 "4 independent
+  evals" claim from the CLAUDE.md status table.
+- **Effort**: S-M
