@@ -819,6 +819,48 @@ def _run_ruler_task(model, tokenizer, task_spec: dict,
     }
 
 
+def _project_prefill_memory_gb(ctx_tokens: int, model) -> float:
+    """Rough upper bound on additional Metal memory for a prefill at ctx_tokens.
+
+    During prefill, the main memory consumers beyond the model itself are:
+      - KV cache: ctx_tokens × n_layers × 2 (K+V) × head_dim × n_kv_heads × dtype
+      - Attention scores: ctx_tokens × ctx_tokens × n_heads × dtype (per chunk)
+      - Intermediates: MoE router, RMS norm, etc.
+
+    We use a conservative safety_factor to account for intermediates.
+    """
+    n_layers = len(model.layers)
+    # Detect head dimensions from model config
+    first_attn = getattr(model.layers[0], 'self_attn', None)
+    if first_attn and hasattr(first_attn, 'n_heads'):
+        n_heads = first_attn.n_heads
+    else:
+        n_heads = 32  # Qwen3-Coder default
+    if first_attn and hasattr(first_attn, 'n_kv_heads'):
+        n_kv_heads = first_attn.n_kv_heads
+    else:
+        n_kv_heads = 4
+
+    hidden_size = getattr(model, 'hidden_size', None)
+    if hidden_size is None and hasattr(model, 'args'):
+        hidden_size = getattr(model.args, 'hidden_size', 2048)
+    else:
+        hidden_size = hidden_size or 2048
+    head_dim = hidden_size // n_heads
+
+    bytes_per_elem = 2  # fp16
+
+    # KV cache memory (both K and V, all layers)
+    kv_gb = (ctx_tokens * n_layers * 2 * n_kv_heads * head_dim * bytes_per_elem) / 1e9
+
+    # Attention scores per chunk (chunked prefill uses PREFILL_CHUNK)
+    chunk = min(ctx_tokens, PREFILL_CHUNK)
+    attn_gb = (chunk * ctx_tokens * n_heads * bytes_per_elem) / 1e9
+
+    safety_factor = 1.5  # MoE router, RMS norm, residuals
+    return (kv_gb + attn_gb) * safety_factor
+
+
 def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
                   full: bool = False) -> PhaseResult:
     """RULER synthetic long-context evaluation.
@@ -835,6 +877,7 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
     t0 = time.perf_counter()
     suite = RULER_FULL_SUITE if full else RULER_QUICK_SUITE
     results = []
+    skipped = []
 
     logger.info(f"  Running {'full' if full else 'quick'} RULER suite "
                 f"({len(suite)} tasks)...")
@@ -848,7 +891,8 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
             )
 
         gen_name = task_spec["generator"]
-        ctx_k = task_spec["target_tokens"] // 1024
+        ctx_tokens = task_spec["target_tokens"]
+        ctx_k = ctx_tokens // 1024
         extra = ""
         if gen_name == "multi_key_niah":
             extra = f" keys={task_spec['num_keys']}"
@@ -856,6 +900,25 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
             extra = f" chain={task_spec['chain_length']}"
         elif gen_name == "frequent_word":
             extra = f" words={task_spec['num_target_words']}"
+
+        # Memory headroom check: skip tasks that would breach Metal limit
+        projected_gb = _project_prefill_memory_gb(ctx_tokens, model)
+        current_metal = _metal_gb()
+        headroom_gb = watchdog.metal_limit_gb - current_metal - 1.0  # 1GB soft buffer
+
+        if projected_gb > headroom_gb:
+            skip_reason = (
+                f"projected {projected_gb:.1f}GB > {headroom_gb:.1f}GB headroom "
+                f"(Metal {current_metal:.1f}GB + limit {watchdog.metal_limit_gb:.1f}GB)"
+            )
+            logger.info(f"  [{i+1}/{len(suite)}] {gen_name}@{ctx_k}K{extra} — SKIP: {skip_reason}")
+            skipped.append({
+                "task_type": gen_name,
+                "ctx": ctx_tokens,
+                "reason": f"skip_memory: {skip_reason}",
+                "projected_gb": round(projected_gb, 1),
+            })
+            continue
 
         logger.info(f"  [{i+1}/{len(suite)}] {gen_name}@{ctx_k}K{extra}")
         result = _run_ruler_task(model, tokenizer, task_spec, watchdog)
@@ -912,6 +975,9 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
         else:
             by_type[key] = r["accuracy"]
 
+    if skipped:
+        logger.info(f"  Skipped {len(skipped)} tasks due to memory headroom")
+
     logger.info(f"  RULER summary: {by_type}")
     logger.info(f"  Gate (multi_key@16K): {mk_16k_accuracy:.0%} "
                 f"(need {MIN_RULER_MK_ACCURACY:.0%}) — "
@@ -927,7 +993,10 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
         details={
             "suite": "full" if full else "quick",
             "num_tasks": len(suite),
+            "num_ran": len(results),
+            "num_skipped": len(skipped),
             "results": results,
+            "skipped": skipped,
             "by_type": by_type,
             "mk_16k_accuracy": mk_16k_accuracy,
             "vt_4k_accuracy": vt_4k_accuracy,

@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 9**: Gate Phase 3b RULER tasks by projected memory headroom
+_(none)_
 
 ## Completed
 
@@ -455,6 +455,11 @@ _Last updated: 2026-04-13_
   - Decode speed is now measured on 128 tokens (amortizes MLX graph compilation + kernel warmup)
   - NIAH retrieval check unchanged — answer is still from the first 32 tokens
   - New `decode_stress_tokens` field in results for auditability
+- **Task 9**: Gate Phase 3b RULER tasks by projected memory headroom (2026-04-13)
+  - Added `_project_prefill_memory_gb()` helper estimating KV cache + attention scores + safety factor
+  - Each RULER task checks projected memory vs Metal headroom (limit - current - 1GB buffer) before dispatch
+  - Tasks exceeding headroom are logged as SKIP with projected/limit details and excluded from gate evaluation
+  - Phase details now include `num_ran`, `num_skipped`, and `skipped` list for auditability
 
 ---
 
