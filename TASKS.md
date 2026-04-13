@@ -457,9 +457,27 @@ all in `## In Progress`.
 - **Effort**: S (CLAUDE.md edit + one aggregate script run; depends
   on Task #21 for the measurement tooling)
 
+### 24. Add 2-SHA regression detector to aggregate.py + fix minference layer counter
+- **Goal**: 3, 4 (regression detection) and 4 (minference correctness)
+- **Derived from**: Task 21 spec gap — `--report` only shows one SHA, no
+  baseline comparison or 2-sigma flagging. Also: `minference_prefill.py`
+  defines `reset_layer_counter()` but never calls it — layer indices
+  drift across forward passes in multi-turn/batch scenarios.
+- **Change**:
+  - Extend `aggregate.py --report <sha> --baseline <sha>` to compare two
+    SHAs side-by-side, compute per-phase median delta, flag phases where
+    `|delta| > 2 * combined_std` as REGRESSION or IMPROVEMENT.
+  - Wire `reset_layer_counter()` into the bench (`phase3b_ruler`,
+    `phase3_niah`) and server (`hypercar_load`) so the counter resets
+    before each independent forward pass.
+- **Verify**: `python omlx/bench/aggregate.py --report HEAD --baseline <prev_sha>`
+  prints a side-by-side table with delta and significance flags.
+  `grep -r reset_layer_counter` shows call sites in bench and server.
+- **Effort**: S
+
 ## In Progress
 
-_(none)_
+- **Task 24**: Add 2-SHA regression detector to aggregate.py + fix minference layer counter
 
 ## Completed
 
