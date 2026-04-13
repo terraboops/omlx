@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 20**: Identify root cause of per-task bimodal timing in Phase 3 NIAH and RULER
 
 ## Completed
 
