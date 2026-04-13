@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-- **Task 4**: Build per-head sparse-attention pattern calibration for Qwen3-Coder (MInference offline search)
+_(none)_
 
 ## Completed
 
@@ -111,6 +111,11 @@ _Last updated: 2026-04-12_
   - Wired into `TurboQuantKVCache.decode_attention()` behind `quest_topk` param
   - `--quest-topk` flag on both bench and server (default off)
   - Verify: `hypercar_bench --quick --kv-mode tq3 --quest-topk 32` (needs TQ3 GPU run)
+- **Task 4**: Build per-head sparse-attention pattern calibration for Qwen3-Coder (2026-04-12)
+  - New `scripts/minference_calibrate.py` with attention capture + 3 pattern classifiers (a_shape, vertical_slash, block_sparse) + dense fallback
+  - Synthetic placeholder table at `omlx/patches/minference_patterns/qwen3_coder_30b_a3b_instruct_8bit.json` (48 layers × 32 heads = 1536 entries)
+  - Pattern distribution: 57% vertical_slash, 24% a_shape, 14% block_sparse, 5.7% dense
+  - Verify: real calibration requires GPU run of `scripts/minference_calibrate.py --model <qwen3-coder>`
 
 ---
 
