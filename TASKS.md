@@ -88,7 +88,7 @@ _Last updated: 2026-04-12_
 
 ## In Progress
 
-_(none)_
+- **Task 5**: Implement MInference vertical-slash prefill kernel behind a flag
 
 ## Completed
 
