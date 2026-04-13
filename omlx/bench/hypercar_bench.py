@@ -1636,8 +1636,13 @@ def main():
         p3b = phase3b_ruler(model, tokenizer, watchdog, full=args.full)
         phases.append(p3b)
         if not p3b.passed:
-            logger.error("Phase 3b FAILED — aborting")
-            return _finish(phases, watchdog, limits, total_t0, results_path)
+            if watchdog.breached.is_set():
+                logger.error("Phase 3b FAILED (memory breach) — aborting")
+                return _finish(phases, watchdog, limits, total_t0, results_path)
+            logger.warning(
+                "Phase 3b FAILED (quality gate) — memory clean, "
+                "continuing to Phase 4 HumanEval for independent eval coverage"
+            )
 
         if not args.full:
             logger.info("\nDefault mode: skipping Phase 4 (HumanEval). Use --full to include.")
