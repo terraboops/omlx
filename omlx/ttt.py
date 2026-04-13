@@ -272,17 +272,23 @@ class TTTEngine:
     def feedback_from_execution(self, candidate_id: str, test: str = ""):
         """Auto-feedback by executing the candidate's code.
 
-        Only rewards VERIFIABLY correct code (compiles + tests pass).
+        Runs prompt + completion[:first_stop] and tests it.
+        Only rewards VERIFIABLY correct code.
         """
         c = self.candidates.get(candidate_id)
         if not c:
             return
 
-        passed, error = verify_code(c.completion, test=test)
+        # Build executable code: prompt + completion up to first stop boundary
+        completion = c.completion.split("\n\n")[0].split("\ndef ")[0]
+        code = c.prompt + completion
+
+        passed, error = verify_code(code, test=test)
         c.reward = 1.0 if passed else -1.0
         c.signal = "solution" if test else "tool_call"
         c.metadata["passed"] = passed
         c.metadata["error"] = error
+        c.metadata["executed_code"] = code
 
         logger.info(f"TTT exec: {candidate_id} {'PASS' if passed else 'FAIL'} {error[:50]}")
 
@@ -305,16 +311,25 @@ class TTTEngine:
             return TrainStats(num_negative=len(negative))
 
         total_loss = 0.0
+        trained_count = 0
 
         for c in positive:
             full_text = c.prompt + c.completion.split("\n\n")[0]
             tokens = mx.array([self.tokenizer.encode(full_text)])
 
             prompt_len = len(self.tokenizer.encode(c.prompt))
-            if prompt_len >= tokens.shape[1] - 1:
+            # Need at least 2 completion tokens to compute loss
+            if prompt_len >= tokens.shape[1] - 2:
+                logger.warning(f"TTT: skipping candidate {c.id} — too short "
+                              f"(prompt={prompt_len}, total={tokens.shape[1]})")
                 continue
+            trained_count += 1
 
-            # Build loss function that closes over tokens
+            # Build loss function that closes over tokens.
+            # NOTE: bypass model.__call__ because prefill_last_logit_patch slices
+            # hidden states to the last position (for 40GB memory savings during
+            # inference), leaving us with 1 logit instead of per-token logits.
+            # Training needs ALL positions, so we call the backbone + lm_head directly.
             def loss_fn(adapter_params):
                 # Set adapter parameters from the flat list
                 idx = 0
@@ -323,7 +338,12 @@ class TTTEngine:
                     adapter.B = adapter_params[idx + 1]
                     idx += 2
 
-                logits = self.model(tokens)
+                hidden = self.model.model(tokens)
+                if (hasattr(self.model, 'args')
+                        and getattr(self.model.args, 'tie_word_embeddings', False)):
+                    logits = self.model.model.embed_tokens.as_linear(hidden)
+                else:
+                    logits = self.model.lm_head(hidden)
                 shift_logits = logits[:, prompt_len:-1, :].reshape(-1, logits.shape[-1])
                 shift_labels = tokens[:, prompt_len+1:].reshape(-1)
                 return nn.losses.cross_entropy(shift_logits, shift_labels, reduction="mean")
@@ -376,6 +396,134 @@ class TTTEngine:
 
         # Clear processed candidates
         self.candidates.clear()
+
+        return stats
+
+    def simpo_step(
+        self,
+        winner_text: str,
+        loser_text: str,
+        prompt: str,
+        beta: float = 2.0,
+        gamma: float = 0.5,
+    ) -> TrainStats:
+        """SimPO contrastive preference step (arXiv:2405.14734).
+
+        Trains adapters to prefer winner over loser using length-normalized
+        average log-probability margin:
+          loss = -log sigmoid(beta * (avg_logp(winner) - avg_logp(loser)) - gamma)
+
+        This is reference-free — no frozen reference model needed, which
+        makes it ideal for test-time training where we can't afford to keep
+        two copies of the model.
+
+        Args:
+            winner_text: Full text (prompt + winning completion)
+            loser_text: Full text (prompt + losing completion)
+            prompt: The shared prompt prefix
+            beta: Scaling factor for the preference margin
+            gamma: Target reward margin (higher = more conservative)
+
+        Returns:
+            TrainStats with loss and adapter norm
+        """
+        t0 = time.perf_counter()
+
+        winner_tokens = mx.array([self.tokenizer.encode(winner_text)])
+        loser_tokens = mx.array([self.tokenizer.encode(loser_text)])
+        prompt_len = len(self.tokenizer.encode(prompt))
+
+        # Need at least 2 completion tokens per trajectory
+        if prompt_len >= winner_tokens.shape[1] - 2 or prompt_len >= loser_tokens.shape[1] - 2:
+            logger.warning("SimPO: trajectories too short for training")
+            return TrainStats()
+
+        def _avg_logprob(tokens: mx.array, prompt_len: int) -> mx.array:
+            """Compute length-normalized average log-probability of completion."""
+            hidden = self.model.model(tokens)
+            if (hasattr(self.model, 'args')
+                    and getattr(self.model.args, 'tie_word_embeddings', False)):
+                logits = self.model.model.embed_tokens.as_linear(hidden)
+            else:
+                logits = self.model.lm_head(hidden)
+
+            # Shift: predict next token from each position
+            shift_logits = logits[:, prompt_len:-1, :]  # (1, comp_len, vocab)
+            shift_labels = tokens[:, prompt_len + 1:]    # (1, comp_len)
+
+            # Per-token log-probabilities
+            log_probs = mx.log_softmax(shift_logits, axis=-1)
+            token_logps = mx.take_along_axis(
+                log_probs, shift_labels[:, :, None], axis=-1,
+            ).squeeze(-1)  # (1, comp_len)
+
+            # Length-normalized average
+            return mx.mean(token_logps)
+
+        def simpo_loss(adapter_params):
+            """SimPO loss: -log sigmoid(beta * (avg_logp_w - avg_logp_l) - gamma)."""
+            # Set adapter parameters
+            idx = 0
+            for adapter in self.adapters.values():
+                adapter.A = adapter_params[idx]
+                adapter.B = adapter_params[idx + 1]
+                idx += 2
+
+            avg_w = _avg_logprob(winner_tokens, prompt_len)
+            avg_l = _avg_logprob(loser_tokens, prompt_len)
+
+            margin = beta * (avg_w - avg_l) - gamma
+            return -mx.log(mx.sigmoid(margin))
+
+        # Collect adapter parameters
+        params = []
+        for adapter in self.adapters.values():
+            params.extend([adapter.A, adapter.B])
+
+        # Compute loss and gradients
+        loss_and_grad = mx.value_and_grad(simpo_loss)
+        loss_val, grads = loss_and_grad(params)
+
+        # SGD update with delta-norm cap (same bound as train_step)
+        lr = self.optimizer.learning_rate
+        # Cap gradient norm to prevent runaway updates
+        grad_norm_sq = sum(float(mx.sum(g ** 2).item()) for g in grads)
+        grad_norm = grad_norm_sq ** 0.5
+        max_grad_norm = 1.0
+        scale = min(1.0, max_grad_norm / max(grad_norm, 1e-8))
+
+        idx = 0
+        for adapter in self.adapters.values():
+            adapter.A = adapter.A - lr * scale * grads[idx]
+            adapter.B = adapter.B - lr * scale * grads[idx + 1]
+            idx += 2
+
+        # Eval immediately to prevent graph hoarding
+        mx.eval(loss_val)
+        for adapter in self.adapters.values():
+            mx.eval(adapter.A, adapter.B)
+
+        adapter_norm = sum(
+            float(mx.sum(a.A ** 2).item()) + float(mx.sum(a.B ** 2).item())
+            for a in self.adapters.values()
+        ) ** 0.5
+
+        elapsed = time.perf_counter() - t0
+        stats = TrainStats(
+            loss=float(loss_val.item()),
+            grad_norm=grad_norm,
+            num_positive=1,
+            num_negative=1,
+            elapsed_s=elapsed,
+            adapter_norm=adapter_norm,
+        )
+        self.history.append(stats)
+
+        logger.info(
+            f"SimPO step: loss={stats.loss:.4f} "
+            f"grad_norm={stats.grad_norm:.4f} "
+            f"adapter_norm={stats.adapter_norm:.4f} ({stats.elapsed_s:.2f}s)"
+        )
 
         return stats
 

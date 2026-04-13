@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 15**: SimPO contrast step in TTT engine
+_(none)_
 
 ## Completed
 
@@ -596,6 +596,12 @@ all in `## In Progress`.
   - 1M context (8192 pages): 60-76 µs/head; 8M stress (64K pages): 100-141 µs/head
   - argpartition available in MLX 0.31.1, competitive with argsort
   - Quest page selection is viable at all tested context lengths
+- **Task 15**: SimPO contrast step in TTT engine (2026-04-13)
+  - Added `simpo_step(winner_text, loser_text, prompt, beta, gamma)` to TTTEngine
+  - Loss: -log sigmoid(beta * (avg_logp(winner) - avg_logp(loser)) - gamma), length-normalized
+  - Reference-free (no frozen reference model — ideal for test-time training)
+  - Gradient norm capped at 1.0 to prevent runaway adapter updates
+  - Reuses existing adapter infrastructure, forward path, and eval discipline
 
 ---
 
