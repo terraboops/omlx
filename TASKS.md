@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-_(none)_
+- **Task 23**: Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
 
 ## Completed
 
