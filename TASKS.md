@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 30**: Survey mx.fast.scaled_dot_product_attention source for AMX binding
+_(none)_
 
 ## Completed
 
@@ -579,6 +579,12 @@ all in `## In Progress`.
   - Native 2-bit: total quality collapse ("2+2=2+2=2+2=") — only TQ3 WHT viable at 2-bit
   - Conclusion: 2-bit fixes Goal 5 but regresses Goal 2 (NIAH). Trade-off documented.
   - Also fixed: warmup uses native KVCache (TQ3 crashes on short warmup), added fcntl benchmark lock (prevents concurrent instances from swamping 48GB)
+- **Task 30**: Survey mx.fast.scaled_dot_product_attention source for AMX binding (2026-04-13)
+  - Written to `research/MLX_ATTN_DISPATCH.md` with line-level citations from MLX v0.31.1
+  - Key findings: prefill (L>8) uses `steel_attention` with AMX (`simdgroup_matrix`); decode (L=1) uses `sdpa_vector` (scalar, no AMX)
+  - Qwen3 D=64 gets BQ=32, BK=32 tile sizes (favorable: 2x more K/tile than D=128 models)
+  - No quantized KV support inside any SDPA kernel — dequant must happen upstream (confirms TQ3 design)
+  - MInference risk: per-head additive masks work but may prevent efficient head batching
 
 ---
 
