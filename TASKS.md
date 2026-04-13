@@ -602,6 +602,10 @@ _(none)_
   - Reference-free (no frozen reference model — ideal for test-time training)
   - Gradient norm capped at 1.0 to prevent runaway adapter updates
   - Reuses existing adapter infrastructure, forward path, and eval discipline
+- **Task 26**: MInference block-sparse prefill kernel dispatch (2026-04-13)
+  - Already implemented in Task 5 — `_build_block_sparse_mask()` at line 296-297 of minference_prefill.py
+  - Block-sparse heads go through the same additive-mask SDPA path as vertical-slash
+  - No additional code needed; marking as completed (was included in Task 5 scope)
 
 ---
 
