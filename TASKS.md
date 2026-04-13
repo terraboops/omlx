@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-_(none)_
+- **Task 9**: Gate Phase 3b RULER tasks by projected memory headroom
 
 ## Completed
 
