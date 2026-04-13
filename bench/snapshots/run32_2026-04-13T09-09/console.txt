@@ -1,0 +1,70 @@
+09:09:33 omlx.bench.hypercar INFO KV mode: native, bits: 3
+09:09:33 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+09:09:33 omlx.bench.hypercar INFO System memory: 51.5 GB
+09:09:33 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+09:09:33 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+09:09:33 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+09:09:33 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+09:09:34 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 18329.08it/s]
+09:09:42 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+09:09:42 omlx.bench.hypercar INFO Model loaded in 8.9s (lazy — first forward will materialize)
+09:09:42 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+09:09:42 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+09:09:50 omlx.bench.hypercar INFO   Smoke output: " This is my first post. I'm excited to"
+09:09:50 omlx.bench.hypercar INFO   Prefill: 1 tok/s  Decode: 21.2 tok/s
+09:09:50 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+09:09:51 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+09:09:52 omlx.bench.hypercar INFO   Code check: PASS — ' ```python\nprint("Hello, World!")\n```<|endoftext|>Human: Wha'
+09:09:52 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+09:09:54 omlx.bench.hypercar INFO   PASS: factorial
+09:09:54 omlx.bench.hypercar INFO   PASS: reverse_string
+09:09:55 omlx.bench.hypercar INFO   PASS: is_palindrome
+09:09:57 omlx.bench.hypercar INFO   PASS: fibonacci
+09:09:58 omlx.bench.hypercar INFO   PASS: flatten_list
+09:09:58 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+09:09:58 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+09:09:58 omlx.bench.hypercar INFO   NIAH @ 4K context...
+09:10:10 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+09:10:10 omlx.bench.hypercar INFO   NIAH @ 16K context...
+09:14:31 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Based on the code a'
+09:14:31 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+09:14:31 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+09:14:31 omlx.bench.hypercar INFO   [1/15] multi_key_niah@4K keys=2
+09:14:43 omlx.bench.hypercar INFO     PASS: 2/2 (acc=100%) — 'Looking through the text for the specified keys, I can find:'
+09:14:43 omlx.bench.hypercar INFO   [2/15] multi_key_niah@4K keys=4
+09:14:52 omlx.bench.hypercar INFO     PASS: 4/4 (acc=100%) — '```\nkey_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4'
+09:14:52 omlx.bench.hypercar INFO   [3/15] multi_key_niah@16K keys=3
+09:18:43 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'Looking through the provided code, I can identify the follow'
+09:18:43 omlx.bench.hypercar INFO   [4/15] multi_key_niah@16K keys=5
+09:21:14 omlx.bench.hypercar ERROR MEMORY BREACH: Swap delta 24.7GB > 12.9GB limit
+09:24:28 omlx.bench.hypercar INFO     PASS: 4/5 (acc=80%) — 'Looking at the provided text, I can identify the values for '
+09:24:28 omlx.bench.hypercar ERROR Phase 3b FAILED — aborting
+09:24:28 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+09:24:28 omlx.bench.hypercar INFO   Metal peak: 37.8 GB (limit 41.2GB) PASS
+09:24:28 omlx.bench.hypercar INFO   Swap peak:  37.2 GB (limit 12.9GB) FAIL
+09:24:28 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+09:24:28 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+09:24:28 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (7.5s)
+     [PASS] Phase 1: Coherence                       (2.4s)
+     [PASS] Phase 2: Code Intelligence               (5.3s)
+     [PASS] Phase 3: Needle in Haystack              (273.0s)
+  >> [FAIL] Phase 3b: RULER                          (597.0s)
+  >> [FAIL] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+  >> [GATE FAILURE]  Total: 894.2s
+============================================================
+

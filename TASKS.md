@@ -977,3 +977,52 @@ _(none)_
   >= 85%.
 - **Effort**: M-L
 - **Depends on**: 17
+
+### 35. Broaden sandbox exclusion to all omlx.bench.* modules
+- **Goal**: Observability infrastructure — unblocks Task #21's
+  multi-run aggregation tool from running in the analyst cron path
+- **Derived from**: Hypercar benchmark run 32 (2026-04-13),
+  bench/snapshots/run32_2026-04-13T09-09/env.json
+  `aggregate_tool_sandbox_issue`. Running
+  `.venv/bin/python -m omlx.bench.aggregate` inside the Claude Code
+  Bash sandbox crashes with `NSRangeException` at
+  `mlx::core::metal::Device::Device()` — the same Metal-device-empty
+  failure we debugged on Day 1 when first setting up the bench
+  sandbox exclusion. The root cause: `.claude/settings.local.json`
+  currently excludes only `.venv/bin/python -m omlx.bench.hypercar_bench:*`
+  from the sandbox, so every OTHER omlx.bench.* module (aggregate,
+  profile_prefill, safe_bench, matrix, ttt_bench) still runs under
+  the default Bash sandbox profile. MLX's Metal device enumeration
+  fails under that profile because `sandbox-exec` denies the IOKit
+  service-matching path, and MLX's constructor does `devices[0]` on
+  an empty NSArray without length check.
+- **Change**:
+  - Edit `.claude/settings.local.json` to broaden the sandbox
+    exclusion pattern from
+    `.venv/bin/python -m omlx.bench.hypercar_bench:*`
+    to
+    `.venv/bin/python -m omlx.bench.*:*`
+    which covers hypercar_bench, aggregate, profile_prefill,
+    safe_bench, matrix, ttt_bench, and any future sibling modules.
+  - Alternative approach (if broadening the sandbox feels too
+    loose): refactor `omlx/bench/aggregate.py` to strictly not
+    import mlx — it only reads JSON files from disk and computes
+    statistics, so there is no legitimate need for Metal. The
+    transitive import probably comes from `omlx/__init__.py` or
+    one of the helper modules it pulls in. Grep for `import mlx`
+    in the aggregate call chain and add conditional imports guarded
+    by `if __name__ != "__main__"` or move mlx imports behind a
+    function-level lazy import.
+  - Recommend the sandbox-broadening approach first (option 1)
+    because it unblocks ALL bench modules with a one-line config
+    change, and the bench directory is narrow enough in scope that
+    running it unsandboxed is low risk.
+- **Verify**: `.venv/bin/python -m omlx.bench.aggregate` runs to
+  completion without the NSRangeException, and the analyst cron
+  loop's Step 4 analysis can successfully read aggregate output for
+  multi-run statistical comparison. Concrete pass criterion: the
+  cron's next run (Run 33 or whatever comes after Task #35 lands)
+  successfully invokes aggregate and includes median/p90 comparison
+  numbers in its final report.
+- **Effort**: S (one-line config change) to M (if refactor path is
+  chosen instead)

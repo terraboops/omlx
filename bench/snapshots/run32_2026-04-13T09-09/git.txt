@@ -1,0 +1,37 @@
+=== HEAD ===
+d1e4ea7cd77d33bcb3b1843488fd1cbe1f3fa738
+
+=== short ===
+d1e4ea7
+
+=== status ===
+ M CLAUDE.md
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run32_2026-04-13T09-09/git.txt
+?? omlx/bench/ttt_bench.py
+?? research/2402.02750_kivi.pdf
+?? research/2403.07974_livecodebench.pdf
+?? research/2403.12968_llmlingua2.pdf
+?? research/2404.06654_ruler.pdf
+?? research/2405.14734_simpo.pdf
+?? research/2406.10774_quest.pdf
+?? research/2406.12045_tau_bench.pdf
+?? research/2406.15877_bigcodebench.pdf
+?? research/2406.16858_eagle2.pdf
+?? research/2407.02490_minference.pdf
+?? research/2410.10819_duoattention.pdf
+?? research/2410.22134_promoe.pdf
+?? research/2506.06105_text_to_lora.pdf
+?? research/LIT_REVIEW.md
+
+=== log -8 ===
+d1e4ea7 feat: Multi-run statistical aggregation for benchmarks (Task 21)
+b8ee474 tasks: Start Task 21 — multi-run statistical aggregation
+bbcf3f3 feat: Sandbox-safe baseline diagnostic module (Task 11)
+801946a tasks: Start Task 11 — benchmark baseline diagnostic module
+aa93832 bench: Run 31 + dedup Runs 24-30 — Tasks 7/9/10 validated, new reasoning ceiling
+cca03b7 fix: Rebuild profiler for macOS unified memory, zero-fork sampling (Task 8)
+c71dddd tasks: Start Task 8 — rebuild profiler.py observability for macOS unified memory
+26224af feat: Gate RULER tasks by projected memory headroom (Task 9)
