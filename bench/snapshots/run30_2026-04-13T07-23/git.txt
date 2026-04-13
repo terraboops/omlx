@@ -1,0 +1,32 @@
+=== HEAD ===
+88b0a67b18e32e31fe7218e22e09f81b5ff08bda
+
+=== status ===
+ M CLAUDE.md
+ M TASKS.md
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run30_2026-04-13T07-23/git.txt
+?? omlx/bench/ttt_bench.py
+?? research/2402.02750_kivi.pdf
+?? research/2403.07974_livecodebench.pdf
+?? research/2403.12968_llmlingua2.pdf
+?? research/2404.06654_ruler.pdf
+?? research/2405.14734_simpo.pdf
+?? research/2406.10774_quest.pdf
+?? research/2406.12045_tau_bench.pdf
+?? research/2406.15877_bigcodebench.pdf
+?? research/2406.16858_eagle2.pdf
+?? research/2407.02490_minference.pdf
+?? research/2410.10819_duoattention.pdf
+?? research/2410.22134_promoe.pdf
+?? research/2506.06105_text_to_lora.pdf
+?? research/LIT_REVIEW.md
+
+=== log -5 ===
+88b0a67 bench: Run 29 — swap peak monotonic drift upward; Goal 5 violated 3/7 runs
+8001e3a bench: Run 28 — N=6 confirmation; fast-N + slow-k5 replicates Run 24 within 3%
+c3a60c1 bench: Run 27 — N=5 confirms per-task bimodal distribution; 2 tasks drafted
+49114c7 bench: Run 26 — N=4 reveals per-task bimodal timing; 1303s slowest run yet
+a6db011 bench: Run 25 — N=3 variance baseline; allocation cliff byte-deterministic across all runs

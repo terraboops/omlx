@@ -1897,6 +1897,148 @@ All five Run-23 findings (#7-11) still blocking. Tasks #16, #17
 still in Run 27's proposed_tasks.md awaiting engineer merge.
 ```
 
+### Run 30: Drift Refuted — Swap Peak Dropped 9.7→8.5 GB; 50% Goal 5 Violation Rate
+```
+Date: 2026-04-13
+SHA:  88b0a67 (no commits since Run 29)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run30_2026-04-13T07-23/
+
+Eighth data point. Natural experiment: Run 29 hit swap peak 9.7 GB
+at elevated pre-load 3.13. Before Run 30, pre-load recovered to 2.16.
+Result: Run 30 swap peak 8.5 GB — LOWER than Run 29 but still above
+Goal 5 (8 GB). The strict "monotonic drift" hypothesis from Run 29
+is refuted; the drift is noisy, not monotonic. But the Goal 5
+violation rate is now 4 of 8 runs (50%). The threshold is not
+reliably met on this configuration.
+
+Commits since Run 29: (none — HEAD unchanged at 88b0a67)
+
+Benchmark results (--full, total 1030.9s, same crash mode):
+  Phase 0  Smoke          PASS   9.5s
+  Phase 1  Coherence      PASS   2.4s
+  Phase 2  Code Intel 5/5 PASS   5.3s
+  Phase 3  NIAH           PASS  81.6s ← FAST cluster
+  Phase 3b RULER 4/15     CRASH same as always
+  Phase 4  HumanEval      NEVER RAN
+  Phase 5  Memory         FAIL: Metal 41.4 > 41.2 limit
+
+RULER task draws:
+  [1] 4K k=2   11s   (stable)
+  [2] 4K k=4    9s   (stable)
+  [3] 16K k=3 250s   (back in normal range after R29's outlier 173s)
+  [4] 16K k=5 231s   ← SLOW cluster
+  [5] 64K k=3 421s   (high end, second slowest for this task)
+
+Combination cell: fast-NIAH + slow-16K-k5 (3rd replicate)
+  Runs in this cell:  R24 (967s), R28 (999s), R30 (1031s)
+  Drift within cell:  +32s per run, linear
+  3 data points is too few to confirm cell-level drift but the
+  pattern is suggestive. Holding as observation until N≥5 in-cell.
+
+Swap peak trajectory (8 runs, not monotonic):
+
+  Run  Swap peak   Pre-load   Goal 5 (<8 GB)
+  ---  ---------   --------   --------------
+  23    8.63 GB     2.51      VIOLATE
+  24    6.93 GB     2.94      pass
+  25    6.73 GB     2.89      pass  ← min
+  26    7.76 GB     2.52      pass (tight)
+  27    7.80 GB     2.35      pass (tight)
+  28    8.30 GB     2.33      VIOLATE
+  29    9.70 GB     3.13      VIOLATE  ← max
+  30    8.50 GB     2.16      VIOLATE
+
+  Goal 5 violation rate: 4/8 = 50%
+  Correlation pre-load ↔ swap peak: weak positive but noisy.
+  Run 29 (high pre-load, high swap) and Run 30 (low pre-load,
+  still high swap) show pre-load is not the sole driver.
+
+Eight-run aggregate statistics:
+
+                       mean    std    CV     min     max
+  Runtime (s)           992    173   17%    732    1303
+  Swap I/O (GB)         432    108   25%    271     609
+  Sustained (MB/s)      433     32    7%    369     467  ← hardware constant
+  Swap peak (GB)       7.92   0.98   12%   6.73    9.70
+  Pre-run load         2.61   0.30   12%   2.16    3.13
+  Metal peak (GB)     41.45   0.00    0%  41.45   41.45
+  Compressions (M)     38.2    5.4   14%   30.7    48.3
+
+  Runtime CV trajectory: 14% (N=3) → 22% (N=4) → 21% (N=5) → 19%
+  (N=6) → 19% (N=7) → 17% (N=8). Narrowing. Projected floor ~15%.
+
+Bimodal clusters (N=8):
+
+  Phase NIAH sorted: 68, 69, 73, 82, 208, 231, 232, 243
+    Fast cluster: [68, 69, 73, 82]          mean 73.0  std 5.4
+    Slow cluster: [208, 231, 232, 243]      mean 228.5 std 12.7
+    Gap 126s, ratio 3.13x. Balance 4/4 EVEN.
+
+  Phase RULER 16K k=5 sorted: 61, 85, 98, 221, 231, 236, 241, 259
+    Fast cluster: [61, 85, 98]              mean  81.3 std 18.5
+    Slow cluster: [221, 231, 236, 241, 259] mean 237.6 std 13.2
+    Gap 123s, ratio 2.92x. Balance 3/5 leaning slow.
+
+  Combination matrix (N=8):
+    NIAH/k5     fast         slow
+    fast        R25          R24, R28, R30
+    slow        R23, R29     R26, R27
+
+  fast-slow cell now has 3 samples.
+
+Analysis notes (snapshot: bench/snapshots/run30_2026-04-13T07-23/):
+
+- **"Monotonic drift" hypothesis from Run 29 is REFUTED.** Run 30's
+  swap peak 8.5 GB < Run 29's 9.7 GB. The drift is noisy, not
+  directional. Run 29 was a local peak, not a plateau. However:
+
+- **Goal 5 is violated 50% of the time** on this configuration.
+  8-run split: 4 pass (6.73-7.80 GB), 4 violate (8.30-9.70 GB).
+  The 8-bit model's swap profile is bimodal-at-the-threshold —
+  lucky runs hit ~7 GB, unlucky runs hit ~9 GB. Either the goal
+  needs re-stating (as argued since Run 23) or the model/config
+  needs a headroom fix (Task #2 2-bit KV, Task #3 Quest, or
+  Task #9 RULER gate).
+
+- **Fast-slow combo cell drift** (+32s per run within R24, R28, R30):
+  3 data points insufficient but the pattern is monotonic. Either
+  a real accumulation effect or a coincidence. Need 2 more data
+  points in this cell before claiming it's real.
+
+- **Pre-load is NOT a good predictor of swap peak.** Run 29
+  (pre-load 3.13) → 9.7 GB swap. Run 30 (pre-load 2.16) → 8.5 GB
+  swap. Run 25 (pre-load 2.89) → 6.73 GB swap (lowest). Pre-load
+  ranges 2.16-3.13, swap peaks range 6.73-9.70, correlation is
+  weak. Session state and per-run stochasticity both contribute.
+
+- **"Stable" 16K k=3 phase returned to normal**: R29 outlier 173s
+  was a one-off. R30 back to 250s (within the prior R23-28 range
+  of 222-257). The phase IS stable ±14% except for R29's outlier.
+
+- **CPU metric: 0% in all samples.** 8-run cumulative: ~7900 broken
+  samples, 0 non-zero. Task #8 still the longest-standing blocker.
+
+- **Runtime CV is slowly converging.** 17% at N=8, down from 22%
+  peak at N=4. Projected floor ~15% at N=16. Detection threshold
+  for real regressions is ~2σ = 30%, still too loose for Goal 3/4
+  fine-grained tracking.
+
+New TASKS.md entries: **NONE filed.**
+The Run 29 candidate "investigate swap drift" is now downgraded —
+the drift is not monotonic, just noisy. Goal 5 50% violation rate
+is already captured by Task #9 (RULER headroom gate) in spirit,
+though a more accurate task might be "re-state Goal 5 as an
+N-run p90 metric against the observed hardware constant 433 MB/s."
+Not filing because it's a CLAUDE.md editorial decision for the
+human, not a code-derived task.
+
+All five Run-23 findings (#7-11) still blocking, reproduced 8/8.
+Tasks #16, #17 still awaiting engineer merge from Run 27's
+proposed_tasks.md.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
