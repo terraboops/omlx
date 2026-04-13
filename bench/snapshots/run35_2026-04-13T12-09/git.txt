@@ -1,0 +1,11 @@
+=== HEAD ===
+1ce6e7767a56cefc6dcf6fd57af99e52541feb9a
+
+=== log -5 ===
+1ce6e77 bench: Run 34 — --warmup default gives 27x smoke speedup; Phase 3b reaches task 8/15
+66e8635 docs: Update CLAUDE.md Goal 3/4 status with warmup measurements
+7a62b53 bench: Make --warmup default, add --no-warmup to opt out
+afc37c8 research: Bimodal timing root cause — Metal shader cache cold/warm (Task 20)
+84a1f1c tasks: Start Task 20 — bimodal timing root cause writeup
+
+=== code diff to last recorded SHA (66e8635) ===
