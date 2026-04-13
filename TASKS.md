@@ -248,7 +248,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 7**: Fix RULER memory-breach early-return KeyError in phase3b_ruler
+_(none)_
 
 ## Completed
 
@@ -283,6 +283,10 @@ _Last updated: 2026-04-13_
   - `--prefill-sparse minference` flag on both bench and server (default off)
   - Composes with prefill_last_logit_patch and vertical_eval (orthogonal)
   - Verify: `hypercar_bench --full --prefill-sparse minference` (needs GPU for quality gate)
+- **Task 7**: Fix RULER memory-breach early-return KeyError in phase3b_ruler (2026-04-13)
+  - Guarded logger format string: breach results now log `BREACH: <reason>` instead of crashing on missing `found`/`total`/`accuracy` keys
+  - Gate aggregation (`mk_16k`, `vt_4k`) and `by_type` summary now skip breach results via `"accuracy" in r` filter
+  - Phase 3b completes with a failed PhaseResult on breach instead of an unhandled KeyError
 
 ---
 

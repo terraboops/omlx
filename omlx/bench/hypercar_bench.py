@@ -848,20 +848,25 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
         result = _run_ruler_task(model, tokenizer, task_spec, watchdog)
         results.append(result)
 
-        status = "PASS" if result["passed"] else "FAIL"
-        logger.info(f"    {status}: {result['found']}/{result['total']} "
-                     f"(acc={result['accuracy']:.0%}) — {result['response'][:60]!r}")
+        if "reason" in result:
+            logger.info(f"    BREACH: {result['reason']}")
+        else:
+            status = "PASS" if result["passed"] else "FAIL"
+            logger.info(f"    {status}: {result['found']}/{result['total']} "
+                         f"(acc={result['accuracy']:.0%}) — {result['response'][:60]!r}")
 
     # Gate 1: multi_key_retrieval@16K accuracy >= MIN_RULER_MK_ACCURACY
+    # Filter out breach results (they lack 'accuracy')
     mk_16k_results = [
         r for r in results
         if r["task_type"] == "multi_key_niah" and r["ctx"] == 16384
+        and "accuracy" in r
     ]
 
     if mk_16k_results:
         mk_16k_accuracy = sum(r["accuracy"] for r in mk_16k_results) / len(mk_16k_results)
     else:
-        mk_16k_accuracy = 1.0  # No 16K multi-key tasks — skip gate
+        mk_16k_accuracy = 1.0  # No 16K multi-key tasks ran — skip gate
 
     mk_gate = mk_16k_accuracy >= MIN_RULER_MK_ACCURACY
 
@@ -870,6 +875,7 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
     vt_4k_results = [
         r for r in results
         if r["task_type"] == "variable_tracking" and r["ctx"] == 4096
+        and "accuracy" in r
     ]
 
     if vt_4k_results:
@@ -881,12 +887,13 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
 
     gate_passed = mk_gate and vt_gate
 
-    # Summary stats
+    # Summary stats (skip breach results)
     by_type = {}
     for r in results:
+        if "accuracy" not in r:
+            continue
         key = f"{r['task_type']}@{r['ctx'] // 1024}K"
         if key in by_type:
-            # Multiple tasks at same type+context — average
             existing = by_type[key]
             by_type[key] = (existing + r["accuracy"]) / 2
         else:
