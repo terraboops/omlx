@@ -2,6 +2,100 @@
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
 _Last updated: 2026-04-13_
 
+## 🔴 HIGH PRIORITY — work on this next
+
+This section takes precedence over all others. If you are an implementation
+loop selecting a task to work on, pick from here FIRST. Only fall through
+to the regular sections below if this section is empty or its tasks are
+all in `## In Progress`.
+
+### 22. [HIGH PRIORITY] Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify
+- **Goal**: 5 (swap throughput headroom), 6 (M4 Pro 48 GB fit)
+- **Why this is highest priority**: Across 10 benchmark runs
+  (Runs 23-32, 2026-04-13), the 8-bit model STRUCTURALLY violates
+  CLAUDE.md Goal 5. Under the old swap-depth metric, 6 of 10 runs
+  exceeded 8 GB peak. Under the NEW p90-sustained-swap-rate metric
+  introduced by Task #23, Run 32's per-sample swap throughput had
+  median 141 MB/s and peaks to 3768 MB/s against the p90 < 100 MB/s
+  gate — a 5-8x violation. Every additional benchmark run on the
+  current config will show Goal 5 red. Until this is fixed, we
+  cannot get a clean green benchmark on 8-bit, which blocks
+  meaningful regression tracking for Goals 3 and 4.
+- **Derived from**: Hypercar benchmark runs 23-32 (2026-04-13),
+  bench/snapshots/run*/env.json swap metrics. Specifically:
+  - Old depth metric: Runs 23/28/29/30 violated 8 GB (4 of 8 in the
+    pre-dedup set).
+  - Run 31 (first run with Task 9 headroom gate): swap peak 38.16 GB
+    delta, phase 3b aborted at task 9/15 on breach
+  - Run 32 (first run with Task 8 profiler rebuild): swap peak
+    37.21 GB delta, phase 3b aborted at task 4/15 on breach
+    (earlier because the new profiler accurately catches the threshold
+    crossing; old profiler was under-reporting)
+  - New profiler shows median 141 MB/s sustained swap I/O per sample
+    with 3.7 GB/s burst peaks — the 8-bit model's compressor pressure
+    is severely over any reasonable p90 threshold.
+- **Change**: This is a STRUCTURAL headroom issue, not a harness bug.
+  Primary remediation path — **Option (a), apply `--kv-bits 2`**:
+  - Task #2 (KIVI 2-bit KV probe) already landed the `--kv-bits` CLI
+    flag on `hypercar_bench` via commit b8fa6d3. The TurboQuant codec
+    is already parameterized on bit-width. No new code is required to
+    *run* the 2-bit path; you just need to pass `--kv-bits 2` and
+    measure what happens.
+  - The mathematical expectation: 2-bit codebook has 4 levels vs 3-bit's
+    8, packed_width drops from 12 → 8 uint32 words at D=128, giving
+    ~33% KV memory savings. At 16K context this frees ~0.4 GB; at 64K
+    context (the cliff-producing workload) it frees ~1.6 GB. Combined
+    with Task #9's headroom gate, this should be enough to keep swap
+    delta under the 12.9 GB watchdog limit across all 15 RULER tasks.
+  - Run `.venv/bin/python -m omlx.bench.hypercar_bench --full --kv-bits 2`
+    and observe:
+    - Does Phase 3b complete all 15 RULER tasks (not just 4)?
+    - Does the new-profiler swap_io_mb_per_s median stay under 200?
+    - Does Phase 4 HumanEval finally run for the first time in 10 runs?
+    - Does HumanEval pass@1 stay within 10 points of 3-bit baseline (90%)?
+  - If 2-bit regresses HumanEval below 80%, back out and try
+    **Option (b), --quest-topk 32** (Task #3 already shipped via ac2491e).
+  - If both options fail, fall back to **Option (c)**: run hypercar_bench
+    with `--max-metal-pct 90 --max-swap-pct 40` to loosen the watchdog
+    and document that the 8-bit model cannot meet Goal 5 on M4 Pro 48 GB
+    without significant architectural changes (Tasks #12-13 DuoAttention,
+    Task #16 ProMoE, Task #33 full ProMoE runtime).
+- **Verify**: Run the following and commit the output to
+  `bench/snapshots/task22_kv_bits_2/` (or whichever slug the run uses):
+  ```
+  .venv/bin/python -m omlx.bench.hypercar_bench --full --kv-bits 2
+  ```
+  PASS criteria (all must hold):
+  1. Phase 3b completes all 15 RULER tasks (no abort/crash) OR Phase 3b
+     aborts cleanly only on tasks explicitly SKIPped by the headroom gate.
+  2. Phase 4 HumanEval runs to completion and reports pass@1 ≥ 80%
+     (acceptance: 10-point regression from 3-bit baseline 90%).
+  3. Phase 5 Memory Profile reports swap_peak_gb < 8.0 (old metric).
+  4. Profile.json median `swap_io_mb_per_s` across non-idle samples
+     < 200 MB/s (approach to Task #23's new p90 < 100 MB/s gate).
+  5. Metal peak_gb < 41.2 (no ceiling breach).
+  At least one of criteria (2-4) must be strictly better than the Run 32
+  baseline (Phase 4 never ran, swap peak 37.2 GB, swap_io median 141 MB/s).
+- **Effort**: S (this is mostly running the bench with a flag and
+  interpreting the result — the flag and codec are already in place).
+  Escalates to M if 2-bit regresses quality and you need to try Option (b)
+  or (c). Escalates to L only if ALL three options fail and you need to
+  investigate a structural fix (which would get filed as a new task
+  anyway, not done under this one).
+- **Do NOT**:
+  - Modify `omlx/bench/hypercar_bench.py` or `omlx/turboquant_kv.py` to
+    "patch around" the issue without running the --kv-bits 2 probe first.
+    The codec already supports 2-bit; your job is to validate it works.
+  - Change the watchdog memory limits to make the gate pass falsely.
+    Loosening limits is Option (c) only, and it's a last-resort
+    documentation move, not a fix.
+  - Skip the quick benchmark before committing. Per the implementation
+    loop prompt, run `.venv/bin/python -m omlx.bench.hypercar_bench --quick`
+    before committing code changes to validate the smoke + coherence
+    gates still pass at 2-bit KV.
+
+---
+
 ## Research-derived tasks (from LIT_REVIEW.md, 2026-04-12)
 
 ### 1. Add RULER retrieval + tracing tasks to hypercar_bench
@@ -325,52 +419,6 @@ _Last updated: 2026-04-13_
   REGRESSION/IMPROVEMENT. The script itself should fit in <300 lines
   and have no dependencies beyond stdlib + json.
 - **Effort**: M
-
-### 22. Fix 8-bit model Goal 5 violation rate (50% of runs exceed 8 GB swap)
-- **Goal**: 5 (swap headroom), 6 (M4 Pro fit)
-- **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8),
-  bench/snapshots/run*/env.json swap_peak_gb values. 4 of 8 runs
-  exceeded the CLAUDE.md Goal 5 threshold of 8 GB peak swap:
-    Run 23: 8.63 GB (VIOLATE)
-    Run 24: 6.93 GB (pass)
-    Run 25: 6.73 GB (pass) ← min
-    Run 26: 7.76 GB (pass, tight)
-    Run 27: 7.80 GB (pass, tight)
-    Run 28: 8.30 GB (VIOLATE)
-    Run 29: 9.70 GB (VIOLATE, max)
-    Run 30: 8.50 GB (VIOLATE)
-  This is not a one-off — it's a 50% violation rate that indicates the
-  8-bit model + native 3-bit KV + current chunk sizes produces a swap
-  profile that only barely fits the 48 GB machine. The underlying cause
-  is that the 8-bit model loads at 32.4 GB, leaving ~8.8 GB Metal
-  headroom at the 41.2 GB ceiling, and RULER 64K multi-key prefill
-  allocations sporadically push total wired+compressed memory past the
-  point where macOS has to spill to disk-backed swap.
-- **Change**: This is a STRUCTURAL headroom issue, not a harness bug.
-  The concrete change path is one of these three remediations, pick
-  whichever lands first:
-  - (a) Land Task #2 (--kv-bits 2) and verify Goal 5 on N=8 replication
-    with `--kv-bits 2`. 2-bit codebook drops KV memory by ~33% which
-    should give ~3 GB more Metal headroom per 64K context — enough to
-    keep swap peak under 8 GB on all runs.
-  - (b) Land Task #3 (--quest-topk) and verify Goal 5 on N=8
-    replication with `--quest-topk 32`. Query-aware page selection
-    reduces working-set K per decode step without changing the prefill
-    allocation pattern, so it should help the sustained swap rate but
-    may not help the allocation-cliff peak.
-  - (c) Land Task #9 (RULER projected-headroom gate). This prevents
-    the crash but does NOT fix Goal 5 — RULER@64K will still be
-    attempted up to the point of projected-memory exhaustion. Only a
-    partial fix.
-  - Recommend (a) first because it addresses the root cause (too much
-    KV for the available headroom) rather than working around it.
-- **Verify**: Run `.venv/bin/python -m omlx.bench.hypercar_bench --full
-  --kv-bits 2` eight times and compute swap peak per run. Goal 5 PASS
-  criterion: 8 of 8 runs have swap peak < 8 GB AND HumanEval pass@1
-  stays within 10 points of the 3-bit baseline (90%). If the 2-bit
-  path regresses HumanEval below 80%, back out and try option (c).
-- **Effort**: S (if Task #2 already landed) to M (if Task #2 still
-  needs integration)
 
 ### 23. Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
 - **Goal**: Meta — CLAUDE.md Goal 5 definition fit-for-purpose
