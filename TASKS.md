@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 22** (continued): Try Option (c) — run full bench with loosened watchdog, document structural gap
 
 ## Completed
 
