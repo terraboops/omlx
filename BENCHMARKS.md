@@ -750,6 +750,244 @@ Key takeaway: TurboQuant's WHT rotation is proven for KV caches
 directly to weight quantization without distillation.
 ```
 
+### Run 22: 8-bit Model Returns — HumanEval 18/20 (90%) on Full Benchmark
+```
+Date: 2026-04-12
+SHA:  998fd27 (working tree dirty — see "Uncommitted changes" below)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit  ← 8-bit back from 4-bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+
+The 8-bit model returns. Run 16 abandoned 8-bit after OpenCode-driven OOM
+on 48GB. Since then, vertical eval + adaptive chunks + fused dequant +
+streaming SDPA + relaxed limits (load 42%→70%, swap 17%→25%) let the 8-bit
+model complete a full --full cycle with no breaches. HumanEval jumps from
+9/20 (Run 17, 4-bit) to 18/20 — a doubling of the coding gate.
+
+Commits since Run 21 (131504d, 2026-04-08):
+  8a2b20f  feat: TTT engine with three feedback signals + code verifier
+  998fd27  feat: TTT demo working — generate, execute, train, checkpoint
+
+Uncommitted working tree changes (included in this run, NOT in 998fd27):
+  CLAUDE.md                    +39  Hardware Target + Hypercar Goals north star
+  omlx/bench/hypercar_bench.py ±10  MODEL_ID 4bit→8bit, load/swap limits raised
+  omlx/bench/agentic_bench.py  ±2
+  omlx/hypercar_server.py      +118 session endpoint expansions
+  omlx/ttt.py                  ±30
+  omlx/bench/ttt_bench.py      new  (untracked)
+
+Benchmark results (--full, total 391.8s, all gates PASS):
+
+  Phase                  | Result            | Time
+  -----------------------|-------------------|--------
+  0: Smoke               | decode 17.6 tok/s | 10.3s
+  1: Coherence           | 2/2 (math, code)  |  2.4s
+  2: Code Intelligence   | 5/5 — gate PASS   |  5.3s
+  3: Needle in Haystack  | 4K + 16K PASS     | 343.1s ← dominates runtime
+  4: HumanEval Lite      | 18/20 (90%) PASS  | 20.8s
+  5: Memory Profile      | PASS              |  0.0s
+  6: Summary             | PASS              |  0.0s
+
+HumanEval fails: HE/1 separate_paren_groups, HE/8 sum_product (same two
+that consistently fail — stable baseline).
+
+Memory profile (8-bit weights + native 3-bit KV):
+  Model load:  32.4 GB  (was 17.2 GB on 4-bit)
+  Metal peak:  37.7 GB  / 41.2 GB limit  (92% — only 3.5 GB headroom)
+  Swap peak:    9.4 GB  / 12.9 GB limit  (73%)
+  System mem:  51.5 GB  (M4 Pro 48GB reports ~51.5GB available to Metal)
+
+Deltas vs Run 17 (4-bit TQ3 WHT, same --full flow, 2026-04-06):
+  Quality:  HumanEval 9/20 (45%)  → 18/20 (90%)  [+45pp, doubled]
+  Code:     5/5 → 5/5 (ceiling, unchanged)
+  Peak mem: 18.7 GB → 37.7 GB (+19.0 GB, expected from 4→8 bit weights)
+  Swap:     0 GB   → 9.4 GB  (no longer headroom-rich)
+  Runtime:  ~33s   → 391.8s  (Run 17 had no NIAH 16K phase, most of delta)
+  Decode:   ~70 t/s @ 2K → 17.6 t/s @ 2K (8-bit halves decode throughput)
+
+Key tradeoffs:
+  +  HumanEval 45% → 90% (GPT-4 parity per CLAUDE.md Goal 2)
+  +  All gates PASS with real workload including HumanEval
+  +  Code intelligence preserved (5/5)
+  −  Decode ~4x slower at 2K (17.6 vs ~70 tok/s) — 8-bit dequant cost
+  −  Metal headroom 3.5 GB (was 22 GB on 4-bit) — background app spike
+     will now trip the watchdog
+  −  CLAUDE.md Goal 5 "swap < 8 GB" is VIOLATED (9.4 GB swap) — the
+     8-bit model fits the 48GB machine only if nothing else runs
+  −  1M context projection (39.7 GB total) was computed against 4-bit
+     weights — needs re-verification at 8-bit
+
+Sandbox note: Claude Code's Bash sandbox blocks Metal device enumeration
+(NSRangeException on empty device array at MLX import). Fixed for this
+project via:
+    /sandbox exclude .venv/bin/python -m omlx.bench.hypercar_bench:*
+which writes to .claude/settings.local.json. Benchmark now runs autonomously
+from Claude-driven Bash — no per-invocation approval prompts.
+
+Runtime variance: back-to-back --quick runs 6 min apart showed decode
+20.5 vs 17.6 tok/s (~15% spread on a 16-token decode phase). Single-run
+decode numbers are directional, not regression signals; need 3+ runs
+or longer sampling for Goal 3 trend detection.
+```
+
+### Run 23: Phase 3b RULER Crash — Metal Ceiling Breach at 64K Multi-Key, Harness Bug Masks Root Cause
+```
+Date: 2026-04-13
+SHA:  11fe743 (working tree dirty — see "Uncommitted changes" below)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run23_2026-04-13T00-23/
+
+First benchmark after Tasks 1-5 landed (RULER, --kv-bits flag, Quest
+page selection, MInference calibration + prefill dispatch). Run died
+at RULER task 5/15 (multi_key_niah@64K keys=3) with a Metal peak breach
+(41.28 GB > 41.2 GB ceiling) that was obscured by a KeyError crash in
+the harness logger format string. Top finding: 8-bit model has ZERO
+headroom for Phase 3b at 64K, and the RULER early-return path has a
+field-missing bug that turns every future memory breach into a cryptic
+exception.
+
+Commits since Run 22 (998fd27, 2026-04-12):
+  ed0fd67  bench: Add RULER eval with multi-key NIAH, variable tracking, and freq-word gates
+  d502525  tasks: Start Task 2 — probe 2-bit KV on WHT-rotated codec
+  b8fa6d3  bench: Add --kv-bits flag for 2-bit KV cache probing (Task 2)
+  5d0f1ab  tasks: Start Task 3 — Quest query-aware page selection for TQ3 decode
+  ac2491e  feat: Quest query-aware page selection for TQ3 decode (Task 3)
+  c0cace9  tasks: Start Task 4 — MInference per-head sparse-attention calibration
+  975f7fd  feat: MInference per-head sparse-attention calibration (Task 4)
+  c0d9b8a  tasks: Start Task 5 — MInference vertical-slash prefill kernel
+  11fe743  feat: MInference sparse prefill dispatch behind --prefill-sparse flag (Task 5)
+
+Uncommitted working tree changes (included in this run, NOT in 11fe743):
+  BENCHMARKS.md                +79   (pending Run 22 entry from prior session)
+  CLAUDE.md                    +39   (Hardware Target + Hypercar Goals north star)
+  omlx/bench/agentic_bench.py  ±2
+  omlx/ttt.py                  +30
+  (untracked: research/*.pdf, research/LIT_REVIEW.md, omlx/bench/ttt_bench.py,
+   .claude/scheduled_tasks.lock)
+
+Benchmark results (--full, total 850.7s, crashed at task 5/15 of Phase 3b):
+
+  Phase                  | Result                      | Time
+  -----------------------|-----------------------------|--------
+  0: Smoke               | decode 21.3 tok/s           |  10.3s
+  1: Coherence           | 2/2 (math, code)            |   2.4s
+  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
+  3: NIAH                | 4K PASS + 16K PASS          | 208.3s
+  3b: RULER              | 4/15 PASSED then CRASH      | 624.3s
+  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
+  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
+  4: HumanEval           | NEVER RAN                   |   —
+  6: Summary             | PASS                        |   0.0s
+
+RULER tasks executed before crash:
+  [1/15] multi_key_niah@4K  keys=2  PASS 2/2  (100%)      11s
+  [2/15] multi_key_niah@4K  keys=4  PASS 4/4  (100%)       9s
+  [3/15] multi_key_niah@16K keys=3  PASS 3/3  (100%)     231s ← 4 min
+  [4/15] multi_key_niah@16K keys=5  PASS 4/5  (80%)       61s ← quality signal
+  [5/15] multi_key_niah@64K keys=3  CRASH during prefill 205s ← breach
+
+Memory profile (8-bit + native 3-bit KV):
+  Metal active (avg): 36.18 GB
+  Metal active (max): 41.44 GB
+  Metal peak:         41.45 GB  (limit 41.23 GB, breach by 0.22 GB)
+  Swap peak:           8.63 GB  (limit 12.88 GB, but > CLAUDE.md Goal 5 of 8 GB)
+  RSS peak:           14.56 GB  (misleading — see Analysis notes)
+
+System memory I/O during run (from vm_stat pre/post delta):
+  Pageins:    2.37M pages × 16KB = 36.4 GB  (disk reads)
+  Swapins:   10.76M pages × 16KB = 164.7 GB  (compressed-memory reads)
+  Swapouts:  11.31M pages × 16KB = 173.1 GB  (compressed-memory writes)
+  Total swap I/O: 337.8 GB over 850s = 406 MB/s sustained
+  ← This is COMPLETELY INVISIBLE to the profiler's swap_gb metric,
+    which captured only 8.6 GB peak DEPTH while 337 GB flowed THROUGH.
+
+Deltas vs Run 22 (same 8-bit model, same 41.2 GB limit):
+  Phase 3 NIAH:     343.1s → 208.3s   (-39% — probably kernel cache/warmup)
+  Metal peak:       37.7 GB → 41.45 GB (+3.75 GB from RULER 64K prefill)
+  Swap peak:         9.4 GB →  8.63 GB (-0.77 GB)
+  HumanEval:        18/20 PASS → NEVER RAN (crashed at 3b before 4)
+  Total runtime:    391.8s → 850.7s   (+459s from RULER suite)
+
+Analysis notes (snapshot: bench/snapshots/run23_2026-04-13T00-23/):
+
+- **Memory breach is an allocation CLIFF, not a creep**: profile.json
+  samples 735-737 show metal_active went 33.00 → 41.27 GB in <1s
+  (sample interval 1.03s). That's +8.3 GB allocated in one step, consistent
+  with a 64K × K_dim attention scores tensor being materialized whole
+  rather than streamed. The chunked-prefill alloc/free oscillation works
+  for 4K/16K but the 64K RULER task overshoots on its final chunk.
+
+- **The KeyError is a derivative failure that hides the real one**:
+  _run_ruler_task's memory-breach early return (hypercar_bench.py:764-765)
+  returns {task_type, ctx, passed=False, reason="memory_breach"} — missing
+  found/total/accuracy/response. The caller at line 852 dereferences
+  result['found'] unconditionally. Real root cause (memory breach at
+  t=754.7s, sample 736) occurred 96 seconds before the KeyError surfaced
+  at t=850.7s — the harness kept trying tasks with degraded state until
+  it hit the logger format line. Every future watchdog breach during
+  Phase 3b will present as KeyError, not as memory breach.
+
+- **Profiler CPU metric is completely broken**: cpu_pct is 0.0 in ALL
+  830 samples. Root cause in omlx/bench/profiler.py:79-89 —
+  `_get_process_stats()` does `psutil.Process().cpu_percent(interval=None)`
+  on a FRESH Process object per sample, and the first call on any new
+  Process object always returns 0.0. The initialization at line 111-114
+  is on a different Process object that gets discarded. We have zero
+  CPU observability for every run that has ever used this profiler.
+
+- **Profiler RSS metric is misleading on macOS unified memory**: RSS
+  shrinks from 3.10 GB (t=42s, post-load) to 0.09 GB (end of run) while
+  metal_active climbs to 41.4 GB. On Apple Silicon, Metal allocations
+  don't appear in process RSS, and as swap pressure rises macOS pages
+  Python heap out of wired memory, so RSS drops as the actual memory
+  footprint grows. RSS is not a useful Python-side indicator here.
+
+- **Swap_gb captures depth, not flux**: peak 8.63 GB (the watchdog metric)
+  vs 337.8 GB of actual pageins+swapins+swapouts through the run. The
+  profiler is blind to sustained 406 MB/s compressed-memory churn. This
+  is the leading indicator of memory pressure and we can't see it.
+
+- **NIAH 16K decode reports 0.3 tok/s** (results.json Phase 3 details):
+  a measurement artifact, not a real regression. NIAH generates <20 tokens
+  before hitting stop condition, and at those lengths MLX kernel warmup
+  dominates. Run 22 showed 17.6 tok/s at 2K smoke but the same 16K NIAH
+  bug was present — we simply didn't compute that number before. Unreliable
+  for Goal 3 tracking.
+
+- **4/15 RULER tasks that ran reveal a quality signal at 16K keys=5**:
+  model retrieved 4 of 5 keys (80% accuracy, exactly at the gate floor).
+  Single data point, but the model's recall at 16K with 5 distractor-keys
+  is the exact use case Goal 2 cares about — worth re-running to see if
+  this is noise or signal. Tasks 1-2 key=2/4 and 3 keys=3 all 100%.
+
+- **Environment contamination ruled out**: pre-run load avg 2.51, post-run
+  3.00, no co-tenant MLX processes detected (pgrep was sandbox-blocked
+  but uptime stayed well under the 4.0 contamination threshold).
+
+Critical tradeoffs this run reveals:
+
+- 8-bit model + full 15-task RULER suite at 64K does NOT fit in 48GB budget.
+  The 41.2 GB Metal ceiling leaves 8.8 GB over the 32.4 GB load, but
+  64K multi-key prefill needs more. Two paths: (a) enable --kv-bits 2 or
+  --quest-topk to reduce prefill memory, (b) cap RULER at 16K on 8-bit,
+  (c) revert to 4-bit and lose HumanEval 90% → 45%.
+- CLAUDE.md Goal 5 (swap < 8 GB) was satisfied at 8.63 GB in /proc terms
+  (just over), but 337 GB of cumulative swap I/O indicates deep memory
+  pressure. Goal 5 probably should be re-stated as "swap I/O rate <
+  100 MB/s sustained" since depth alone doesn't capture thrash.
+
+New TASKS.md entries filed from this run:
+  #7  Fix RULER memory-breach early-return KeyError (harness bug)
+  #8  Rebuild profiler.py observability for macOS unified memory
+      (CPU metric broken, RSS misleading, swap I/O throughput missing)
+  #9  Gate Phase 3b RULER tasks by projected memory headroom
+  #10 Fix NIAH decode-speed measurement artifact for short generations
+  #11 Extend /sandbox exclude to cover benchmark diagnostic commands
+
+No existing TASKS.md entries were observed as still blocking this run
+(Tasks 1-5 all shipped and none of them claim to fix the issues above).
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

@@ -1,0 +1,40 @@
+=== git rev-parse HEAD ===
+11fe743dc171aece9100c94757ffe6e476adcc34
+
+=== git rev-parse --short HEAD ===
+11fe743
+
+=== git status --porcelain ===
+ M BENCHMARKS.md
+ M CLAUDE.md
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run23_2026-04-13T00-23/env.json
+?? bench/snapshots/run23_2026-04-13T00-23/git.txt
+?? omlx/bench/ttt_bench.py
+?? research/2402.02750_kivi.pdf
+?? research/2404.06654_ruler.pdf
+?? research/2406.10774_quest.pdf
+?? research/2407.02490_minference.pdf
+?? research/2506.06105_text_to_lora.pdf
+?? research/LIT_REVIEW.md
+
+=== git diff --stat HEAD ===
+ BENCHMARKS.md               | 79 +++++++++++++++++++++++++++++++++++++++++++++
+ CLAUDE.md                   | 39 +++++++++++++++++++++-
+ omlx/bench/agentic_bench.py |  2 +-
+ omlx/ttt.py                 | 30 ++++++++++++++---
+ 4 files changed, 143 insertions(+), 7 deletions(-)
+
+=== git log --oneline -10 ===
+11fe743 feat: MInference sparse prefill dispatch behind --prefill-sparse flag (Task 5)
+c0d9b8a tasks: Start Task 5 — MInference vertical-slash prefill kernel
+975f7fd feat: MInference per-head sparse-attention calibration (Task 4)
+c0cace9 tasks: Start Task 4 — MInference per-head sparse-attention calibration
+ac2491e feat: Quest query-aware page selection for TQ3 decode (Task 3)
+5d0f1ab tasks: Start Task 3 — Quest query-aware page selection for TQ3 decode
+b8fa6d3 bench: Add --kv-bits flag for 2-bit KV cache probing (Task 2)
+d502525 tasks: Start Task 2 — probe 2-bit KV on WHT-rotated codec
+ed0fd67 bench: Add RULER eval with multi-key NIAH, variable tracking, and freq-word gates
+998fd27 feat: TTT demo working — generate, execute, train, checkpoint
