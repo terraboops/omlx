@@ -1396,6 +1396,8 @@ def main():
                         help="Run a warmup pass before Phase 0 to prime Metal kernel cache (default: on)")
     parser.add_argument("--no-warmup", action="store_false", dest="warmup",
                         help="Skip warmup pass (exposes Metal JIT cold-start penalty)")
+    parser.add_argument("--force", action="store_true",
+                        help="Override pre-flight safety checks (GPU contention, low memory, swap)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Debug logging")
     parser.add_argument("--json", type=str,
@@ -1434,6 +1436,74 @@ def main():
     atexit.register(lambda: (lock_fd.close(), LOCK_PATH.unlink(missing_ok=True)))
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda s, f: (lock_fd.close(), LOCK_PATH.unlink(missing_ok=True), sys.exit(128 + s)))
+
+    # Pre-flight resource check: detect GPU-heavy processes and insufficient memory
+    # before loading a 32GB model into a system that can't handle it.
+    try:
+        import psutil
+
+        # 1. Check for other MLX/Metal-heavy processes
+        gpu_procs = []
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                info = proc.info
+                if info["pid"] == os.getpid():
+                    continue
+                cmdline = info.get("cmdline") or []
+                cmd = " ".join(cmdline)
+                # Only match actual Python processes running MLX workloads,
+                # not shells whose working directory happens to contain "omlx"
+                is_python = any(c.endswith(("python", "python3", "python3.13")) for c in cmdline[:1])
+                if is_python and any(kw in cmd for kw in [
+                    "hypercar_server", "mlx_lm.server", "omlx.bench.hypercar",
+                    "mlx_lm.generate", "minference_calibrate",
+                ]):
+                    gpu_procs.append(f"PID {info['pid']}: {cmd[:100]}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if gpu_procs:
+            print("WARNING: GPU-heavy processes detected:", file=sys.stderr)
+            for p in gpu_procs:
+                print(f"  {p}", file=sys.stderr)
+            print("Running the benchmark concurrently with these may cause "
+                  "catastrophic swap pressure on 48GB.", file=sys.stderr)
+            print("Aborting. Kill the above processes first, or pass "
+                  "--force to override.", file=sys.stderr)
+            if not getattr(args, 'force', False):
+                sys.exit(1)
+
+        # 2. Check available memory — need ~35GB for model + KV + overhead
+        vm = psutil.virtual_memory()
+        available_gb = vm.available / 1e9
+        MIN_AVAILABLE_GB = 30.0  # Model is 32GB but lazy-loads; need ~30 free
+        if available_gb < MIN_AVAILABLE_GB:
+            print(f"WARNING: Only {available_gb:.1f} GB available "
+                  f"(need {MIN_AVAILABLE_GB:.0f} GB for safe model load).",
+                  file=sys.stderr)
+            print(f"Current VM: {vm.used/1e9:.1f} GB used, "
+                  f"{vm.percent:.0f}% utilized.", file=sys.stderr)
+            print("Aborting. Free memory or pass --force to override.",
+                  file=sys.stderr)
+            if not getattr(args, 'force', False):
+                sys.exit(1)
+
+        # 3. Check swap — if swap is already elevated, model load will thrash
+        swap = psutil.swap_memory()
+        swap_used_gb = swap.used / 1e9
+        MAX_PREEXISTING_SWAP_GB = 5.0
+        if swap_used_gb > MAX_PREEXISTING_SWAP_GB:
+            print(f"WARNING: {swap_used_gb:.1f} GB swap already in use "
+                  f"(threshold {MAX_PREEXISTING_SWAP_GB:.0f} GB).",
+                  file=sys.stderr)
+            print("System is under memory pressure. Benchmark results "
+                  "will be unreliable.", file=sys.stderr)
+            if not getattr(args, 'force', False):
+                print("Aborting. Wait for swap to clear or pass --force.",
+                      file=sys.stderr)
+                sys.exit(1)
+    except ImportError:
+        pass  # psutil not available — skip preflight
 
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
