@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 20**: Identify root cause of per-task bimodal timing in Phase 3 NIAH and RULER
+_(none)_
 
 ## Completed
 
@@ -585,6 +585,12 @@ all in `## In Progress`.
   - Qwen3 D=64 gets BQ=32, BK=32 tile sizes (favorable: 2x more K/tile than D=128 models)
   - No quantized KV support inside any SDPA kernel — dequant must happen upstream (confirms TQ3 design)
   - MInference risk: per-head additive masks work but may prevent efficient head batching
+- **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
+  - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
+  - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
+  - Bimodality from system-level Metal shader cache hit/miss (process-scoped, cache in ~/Library/Caches/com.apple.metal/)
+  - Writeup at `docs/bimodal_timing_root_cause.md` with reproduction recipes for fast/slow modes
+  - Recommendation: always use `--warmup` for benchmarking; add warmup to server startup
 
 ---
 
