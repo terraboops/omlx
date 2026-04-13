@@ -1,0 +1,37 @@
+=== HEAD ===
+26224aff758741509a8ec8cfda4025dbc6b95cb7
+
+=== short ===
+26224af
+
+=== status ===
+ M CLAUDE.md
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run31_2026-04-13T08-23/git.txt
+?? omlx/bench/ttt_bench.py
+?? research/2402.02750_kivi.pdf
+?? research/2403.07974_livecodebench.pdf
+?? research/2403.12968_llmlingua2.pdf
+?? research/2404.06654_ruler.pdf
+?? research/2405.14734_simpo.pdf
+?? research/2406.10774_quest.pdf
+?? research/2406.12045_tau_bench.pdf
+?? research/2406.15877_bigcodebench.pdf
+?? research/2406.16858_eagle2.pdf
+?? research/2407.02490_minference.pdf
+?? research/2410.10819_duoattention.pdf
+?? research/2410.22134_promoe.pdf
+?? research/2506.06105_text_to_lora.pdf
+?? research/LIT_REVIEW.md
+
+=== log -8 ===
+26224af feat: Gate RULER tasks by projected memory headroom (Task 9)
+9aa9126 tasks: Start Task 9 — gate RULER tasks by projected memory headroom
+5f53005 fix: NIAH decode speed now measured on 128 tokens, not 32 (Task 10)
+15e7252 tasks: Start Task 10 — fix NIAH decode-speed measurement artifact
+cc2e805 tasks: Add Tasks 20-23 from N=8 benchmark analyst findings
+83f95f2 fix: RULER memory-breach early-return no longer causes KeyError (Task 7)
+e0e20d9 tasks: Start Task 7 — fix RULER memory-breach KeyError
+fec07d7 bench: Run 30 — drift hypothesis refuted; Goal 5 violation rate now 50%

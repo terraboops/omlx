@@ -988,1055 +988,204 @@ No existing TASKS.md entries were observed as still blocking this run
 (Tasks 1-5 all shipped and none of them claim to fix the issues above).
 ```
 
-### Run 24: Reproducibility Probe — Deterministic Memory, Chaotic Timing
+### Run 31: Tasks 7/9/10 Validated — Allocation Cliff Refuted, New Reasoning Ceiling Found, New Swap-Thrash Failure Mode
 ```
 Date: 2026-04-13
-SHA:  b49d2fc (same as Run 23; working tree dirty)
+SHA:  26224af (working tree dirty; HEAD advanced to c71dddd mid-run as
+      another engineer's Task 8 starter commit landed during execution)
 Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
 Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run24_2026-04-13T01-23/
+Snapshot: bench/snapshots/run31_2026-04-13T08-23/
 
-Second analyst pass on the same SHA as Run 23, 41 minutes later. Goal:
-probe reproducibility and variance. Result: failure mode is DETERMINISTIC
-to the byte (same allocation cliff, same Metal peak, same RULER task 5/15
-breach, same KeyError surface), but TIMING is wildly variable — Phase 3
-NIAH 3x faster, RULER task 4 4x slower, total runtime +14%. Zero new
-tasks filed — all observed issues already tracked.
+First benchmark run after three analyst-filed tasks shipped:
+  Task  #7: Fix RULER memory-breach early-return KeyError
+  Task  #9: Gate RULER tasks by projected memory headroom
+  Task #10: Fix NIAH decode-speed measurement artifact
+All three confirmed working end-to-end (see "Fix validation" below).
+Run refuted the 8-run byte-deterministic allocation cliff hypothesis
+from Runs 23-30: Metal peak dropped from 41.45 GB → 37.78 GB once the
+64K multi-key task was skipped, proving the cliff was specific to that
+task, not structural. Run produced ALL-TIME swap I/O of 945 GB (prior
+max 609 GB in Run 26, deduped) because Phase 3b now runs to completion
+of 9 of 15 tasks instead of crashing at task 5 — more tasks = more
+cumulative thrash. New quality finding: variable_tracking chain=4
+fails at 0% accuracy (both 4K and 16K), a clean reasoning ceiling
+distinct from retrieval failure. New failure mode: swap delta breach
+at 20.3 GB (watchdog) / 38.2 GB (profiler final) during variable_
+tracking@16K chain=8 task — the first non-Metal-peak breach across
+all runs. ⚠ Pre-run load average was 4.86 (above 4.0 threshold) so
+timing numbers are contaminated; memory-deterministic metrics are
+still valid.
 
-Commits since Run 23 (b49d2fc, 2026-04-13):
-  (none — HEAD unchanged from Run 23)
+Commits since Run 23 (b49d2fc, 2026-04-12):
+  e0e20d9  tasks: Start Task 7 — fix RULER memory-breach KeyError
+  83f95f2  fix: RULER memory-breach early-return no longer causes KeyError (Task 7)
+  cc2e805  tasks: Add Tasks 20-23 from N=8 benchmark analyst findings
+  15e7252  tasks: Start Task 10 — fix NIAH decode-speed measurement artifact
+  5f53005  fix: NIAH decode speed now measured on 128 tokens, not 32 (Task 10)
+  9aa9126  tasks: Start Task 9 — gate RULER tasks by projected memory headroom
+  26224af  feat: Gate RULER tasks by projected memory headroom (Task 9)
+  c71dddd  tasks: Start Task 8 — rebuild profiler.py observability (mid-run)
+  (Runs 24-30 were committed and then removed from BENCHMARKS.md as
+   same-code-state reproducibility duplicates. Their snapshot
+   directories are preserved on disk for variance analysis.)
 
-Uncommitted working tree changes (included in this run):
-  CLAUDE.md                    +39   (Hypercar Goals north star — same as Run 23)
-  TASKS.md                     +94   (NEW: research-pass-2 added Tasks 12-15:
-                                      DuoAttention calibration, DuoAttention
-                                      runtime cache, tau-bench gate, SimPO
-                                      contrast — NOT from this analyst run)
+Uncommitted working tree changes at run start:
+  CLAUDE.md                    +39   Hardware Target + Hypercar Goals
+  BENCHMARKS.md                (pending — Runs 24-30 removal)
   omlx/bench/agentic_bench.py  ±2
   omlx/ttt.py                  +30
-  (untracked: research/*.pdf pass 2, research/LIT_REVIEW.md,
-   omlx/bench/ttt_bench.py, .claude/scheduled_tasks.lock)
-
-Benchmark results (--full, total 966.7s, crashed at task 5/15 Phase 3b):
-
-  Phase                  | Result                      | Time
-  -----------------------|-----------------------------|--------
-  0: Smoke               | decode 22.4 tok/s           |   9.2s
-  1: Coherence           | 2/2 (math, code)            |   2.4s
-  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
-  3: NIAH                | 4K PASS + 16K PASS          |  69.0s ← 3x faster
-  3b: RULER              | 4/15 PASSED then CRASH      | 773s
-  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
-  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
-  4: HumanEval           | NEVER RAN                   |   —
-  6: Summary             | PASS                        |   0.0s
-
-RULER tasks (all 4 that ran, comparison to Run 23):
-                                          Run 23 time   Run 24 time   Delta
-  [1/15] multi_key_niah@4K  keys=2         11s           11s           0%
-  [2/15] multi_key_niah@4K  keys=4          9s            9s           0%
-  [3/15] multi_key_niah@16K keys=3        231s          236s          +2%
-  [4/15] multi_key_niah@16K keys=5         61s          236s         +287% ← !!!
-  [5/15] multi_key_niah@64K keys=3        205s          283s         +38%
-
-Quality outcomes (all 4 runs identical):
-  keys=2: PASS 2/2 (100%)    keys=4: PASS 4/4 (100%)
-  keys=3: PASS 3/3 (100%)    keys=5: PASS 4/5 (80%)
-
-Memory profile (comparison to Run 23):
-                                Run 23         Run 24         Delta
-  Metal active (max)            41.44 GB       41.43 GB       -0.01 GB
-  Metal peak                    41.45 GB       41.45 GB        0.00 GB ← byte-identical
-  Swap peak (depth, profiler)    8.63 GB        6.93 GB       -1.70 GB
-  RSS peak (misleading)         14.56 GB       17.17 GB       +2.61 GB
-  Samples captured                 830             943        +113
-
-Allocation cliff at breach (profile.json sample comparison):
-  Run 23 t=752.7s: metal_active 40.20 -> 33.00 (-7.20 GB chunked prefill free)
-  Run 23 t=754.7s: metal_active 33.00 -> 41.27 (+8.27 GB BREACH)
-  Run 24 t=870.8s: metal_active 40.20 -> 33.00 (-7.20 GB chunked prefill free)
-  Run 24 t=871.8s: metal_active 33.00 -> 41.27 (+8.27 GB BREACH)
-  ^^^^ identical to the byte — the allocation pattern is perfectly deterministic
-
-System memory I/O (vm_stat pre/post delta):
-                                Run 23          Run 24         Delta
-  Pageins (disk reads)          36.4 GB        35.7 GB        -0.7 GB
-  Swapins (compressor reads)   164.7 GB       206.3 GB       +41.6 GB
-  Swapouts (compressor writes) 173.1 GB       216.4 GB       +43.3 GB
-  Total swap I/O               337.8 GB       422.7 GB       +84.9 GB
-  Sustained rate               406 MB/s       448 MB/s        +10%
-  Run duration                 850.7s         966.7s          +14%
-
-THE INVERSE SIGNAL: Run 24 had LOWER profiler-reported swap peak (-20%)
-but HIGHER actual system swap I/O (+25%). macOS absorbed more memory
-pressure into page compression (resident RAM) rather than disk-backed
-swap this run, so swap_gb DROPPED while the real pressure INCREASED.
-The profiler's swap_gb metric is therefore not just blind to throughput
-(known from Run 23), it can be actively MISLEADING — it was inversely
-correlated with real memory pressure between these two identical runs.
-
-Analysis notes (snapshot: bench/snapshots/run24_2026-04-13T01-23/):
-
-- **Failure mode is deterministic**: allocation cliff (+8.27 GB in <1s)
-  at sample boundary happens at the same metal_active value (33.00 ->
-  41.27 GB) in both runs. The RULER 64K multi-key prefill's peak
-  allocation is effectively a fixed constant determined by code, not
-  by timing or cache state.
-
-- **Timing is wildly non-deterministic**: Phase 3 NIAH ran in 69s vs
-  208s (3x speedup, same code, same inputs). RULER task 4 (16K keys=5)
-  ran in 236s vs 61s (4x slowdown). Neither delta can be explained by
-  anything in the benchmark itself — these are OS/kernel/Metal/driver
-  state effects. Single-run timing numbers should NEVER be used for
-  regression detection; decode_toks and phase durations are high-
-  variance metrics that require ≥3 samples.
-
-- **Profiler swap_gb is inversely misleading**: Run 24 registered 6.93 GB
-  peak (lower than Run 23's 8.63) while the underlying memory pressure
-  was HIGHER (+25% swap I/O throughput). This argues strongly that Task
-  #8's `swap_io_mb_per_s` field is not a nice-to-have — it's needed to
-  DIFFERENTIATE reduced pressure from "compressor absorbed more of it."
-
-- **CPU metric still 0.0% in all 943 samples** — Task #8's psutil bug
-  is reproducible in every run. We still have zero CPU observability.
-
-- **No drift in Metal capacity**: the 41.2 GB ceiling is hit with
-  essentially zero slack. Every 64K multi-key RULER run will breach
-  regardless of timing variance. The 8-bit model on 48 GB hardware
-  cannot complete the current RULER full suite; the structural fix
-  is Task #9 (gate by projected headroom) or switching to --kv-bits 2
-  via Task #2.
-
-- **Environment contamination ruled out**: load avg 2.94 pre-run → 3.09
-  post-run, under 4.0 threshold. vm_stat between runs showed only
-  idle activity (1.3 GB of pageins during the 41-minute gap).
-
-New TASKS.md entries filed: **NONE**.
-All observed issues were filed as part of Run 23's analysis:
-  #7  RULER memory-breach early-return KeyError     — STILL BLOCKING (same crash)
-  #8  Profiler observability rebuild                — STILL BLOCKING (CPU=0 again)
-  #9  Gate RULER by projected memory headroom       — STILL BLOCKING (same breach)
-  #10 NIAH decode-speed measurement artifact        — STILL BLOCKING
-  #11 Sandbox exclude for diagnostic commands       — STILL BLOCKING
-
-Tasks 12-15 (DuoAttention, tau-bench, SimPO) from the user's pass-2
-research pass were added to TASKS.md between Run 23 and Run 24 but are
-NOT benchmark-derived and NOT related to the observed failures.
-
-Cadence implications: running the hourly /loop against an SHA with
-5 known-blocking issues produces one commit per hour that says
-"same failure, +14% more swap I/O noise." Recommend pausing the cron
-until at least Task #7 (one-line KeyError fix) lands, otherwise every
-run after this will be indistinguishable from Run 24 except for
-stochastic timing.
-```
-
-### Run 25: N=3 Variance Baseline — Allocation Cliff Confirmed Deterministic
-```
-Date: 2026-04-13
-SHA:  43f383f (working tree IDENTICAL to Run 24, no commits since)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run25_2026-04-13T02-23/
-
-Third reproducibility data point on the same SHA. Same crash, same
-phase, same task, same allocation cliff to the byte. Run 25 is the
-FASTEST of the three (732s vs 851/967), refuting the "Run 23 → 24
-trend" hypothesis: variance is bursty, not directional. With N=3 we
-can finally bound it: total runtime 850 ± 117s (14% σ), total swap
-I/O 344 ± 76 GB (22% σ).
-
-Commits since Run 24 (43f383f, 2026-04-13):
-  (none — HEAD unchanged)
-
-Uncommitted working tree changes (byte-identical to Run 24):
-  CLAUDE.md, TASKS.md (with user's pass-2 Tasks 12-15),
-  omlx/bench/agentic_bench.py, omlx/ttt.py, untracked research PDFs.
-
-Benchmark results (--full, total 732.4s, crashed at task 5/15 Phase 3b):
-
-  Phase                  | Result                      | Time
-  -----------------------|-----------------------------|--------
-  0: Smoke               | decode 21.4 tok/s           |   8.8s
-  1: Coherence           | 2/2                         |   2.4s
-  2: Code Intelligence   | 5/5 — gate PASS             |   5.4s
-  3: NIAH                | 4K + 16K PASS               |  68.2s
-  3b: RULER              | 4/15 PASSED then CRASH      | 545s
-  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
-  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
-  4: HumanEval           | NEVER RAN                   |   —
-
-Three-run reproducibility table:
-
-                              Run 23     Run 24     Run 25     mean ± σ
-  Phase 0 Smoke (s)          10.3        9.2        8.8        9.4 ± 0.8 (8%)
-  Phase 1 Coherence (s)       2.4        2.4        2.4        2.4 ± 0  (0%)
-  Phase 2 Code Intel (s)      5.3        5.3        5.4        5.3 ± 0  (1%)
-  Phase 3 NIAH (s)           208.3      69.0      68.2       115 ± 80 (70%) ← bursty
-  RULER 4K keys=2 (s)         11        11         11         11 ± 0   (0%)
-  RULER 4K keys=4 (s)          9         9          9          9 ± 0   (0%)
-  RULER 16K keys=3 (s)       231       236        222        230 ± 7   (3%)
-  RULER 16K keys=5 (s)        61       236         85        127 ± 95 (75%) ← bursty
-  RULER 64K keys=3 (s)       205       283        218        235 ± 42 (18%)
-  Total runtime (s)          851       967        732        850 ± 117 (14%)
-
-Memory profile (three-run consistency):
-
-                              Run 23     Run 24     Run 25     spread
-  Metal active max (GB)      41.44     41.43     41.44      0.01 GB ← deterministic
-  Metal peak (GB)            41.45     41.45     41.45      0.00 GB ← byte-identical
-  Swap peak depth (GB)        8.63      6.93      6.73      ±20% (decreasing)
-  RSS peak (misleading)      14.56     17.17     16.77      ±9%
-
-Allocation cliff at breach (sample-by-sample, all 3 runs):
-
-  Sample      Run 23 (t=754s)  Run 24 (t=872s)  Run 25 (t=639s)
-  --------    ---------------  ---------------  ---------------
-  pre-stable    40.13–40.27 GB    40.13–40.27 GB    40.13–40.27 GB
-  free-1        33.51             33.51             33.51
-  free-2        33.38             33.38             33.38
-  free-3        33.00             33.00             33.00
-  CLIFF -->     41.27 GB          41.27 GB          41.27 GB
-
-  ^^^^ The allocation cliff fires at IDENTICAL metal_active values to the
-       second decimal across all three runs. The 64K multi_key_niah prefill's
-       peak is a deterministic constant of the code, not of timing or state.
-
-System memory I/O (vm_stat pre/post deltas):
-
-                              Run 23     Run 24     Run 25     mean ± σ
-  Pageins (disk reads, GB)    36.4      35.7      34.0       35.4 ± 1.0 (3%)
-  Swap I/O total (GB)        337.8     422.7     270.5     344 ± 76  (22%)
-  Sustained swap rate (MB/s)  406       448       369       408 ± 33   (8%)
-  Compressions (M pages)      30.7      34.5      34.1      33.1 ± 1.7 (5%)
-
-  Key observation: faster runs swap less. Run 25 (fastest) had 36% less
-  total swap I/O than Run 24 (slowest). The ~117s timing spread is
-  largely explained by ~150 GB of swap I/O variance — slower runs spent
-  the extra time waiting on compressed-memory pages to decompress.
-  Goal 5 needs to be re-stated as a throughput metric, not depth.
-
-Analysis notes (snapshot: bench/snapshots/run25_2026-04-13T02-23/):
-
-- **Allocation cliff is byte-deterministic across 3 runs**: profile.json
-  samples show identical metal_active values pre-cliff (40.20 GB),
-  during free (33.00 GB), and post-cliff (41.27 GB). Three independent
-  runs at three different timestamps all hit the same memory pattern.
-  This is the strongest possible evidence the 64K RULER prefill peak is
-  a structural constant, not noise.
-
-- **Timing variance is bursty, not uniform**: most phases are stable
-  (Coherence 0%, Code Intel 1%, RULER 16K keys=3 3%) but two phases
-  show large outliers — Phase 3 NIAH (70% σ, Run 23 outlier) and RULER
-  16K keys=5 (75% σ, Run 24 outlier). With N=3 we don't yet know
-  whether those are independent flukes or whether specific phases are
-  intrinsically noisier. Suggests the true Goal 3 decode variance is
-  NOT uniform across context lengths and needs per-phase replication.
-
-- **Run 25 is the cleanest data point so far**: lowest swap I/O,
-  fastest total runtime, no anomaly tasks. Use Run 25 numbers (NOT
-  Run 23 or 24) as the current baseline for "8-bit native 3-bit KV
-  on Qwen3-Coder-30B-A3B" until N grows or the harness improves.
-
-- **CPU metric reproducibly broken**: cpu_pct=0.0 in ALL 713 samples
-  (Run 25), 943 samples (Run 24), 830 samples (Run 23). Profiler
-  defect from Task #8 has now produced 2,486 broken samples total.
-
-- **Swap-pressure ↔ runtime correlation is now visible at N=3**:
-  Run 24 (slowest, 967s) had highest swap I/O (423 GB).
-  Run 25 (fastest, 732s) had lowest swap I/O (270 GB).
-  Run 23 in between on both axes. ~150 GB of swap I/O variance
-  explains ~117s of runtime variance (~5 ms/MB if you treat the
-  compressor decompression as the bottleneck — plausible for the
-  Apple Silicon page compressor).
-
-- **Environment baseline clean across all 3 runs**: load avgs were
-  2.51 / 2.94 / 2.89 pre-run, never above 3.20. No co-tenancy.
-  The variance is intrinsic to the workload + OS interaction,
-  not contamination.
-
-New TASKS.md entries filed: **NONE**.
-All observed issues are still tracked from Run 23:
-  #7  RULER KeyError (3/3 reproducible)        — STILL BLOCKING
-  #8  Profiler observability (3/3 reproducible) — STILL BLOCKING
-  #9  RULER headroom gate (3/3 reproducible)    — STILL BLOCKING
-  #10 NIAH decode artifact                      — STILL BLOCKING
-  #11 Sandbox diagnostic commands               — STILL BLOCKING
-
-Cadence recommendation, restated and stronger: **the hourly cron has
-now produced 3 commits totaling ~22,000 lines of snapshot data with
-zero new actionable findings.** Run 25's value is purely statistical
-(N=3 baseline) and that value plateaus quickly. Without a code change
-on the hypercar branch, Runs 26-30 will add ~36,000 more lines of
-indistinguishable failure data.
-
-Recommend either:
-  (a) Pause the cron until Task #7 lands (one-line fix).
-  (b) Change the cron's command to vary between configs each fire
-      (`--full` / `--quick` / `--full --kv-bits 2` / `--full --kv-bits 4`)
-      so we get cross-config signal instead of same-config replication.
-  (c) Cap the analyst at "no new findings → no commit" — skip the
-      BENCHMARKS.md/snapshot push when the run reproduces an already-
-      committed failure pattern.
-
-I cannot apply any of these — they require a code change to either
-the cron prompt or the hypercar_bench harness, which are outside
-the analyst's allow-list. Filing this as a meta-observation, not a
-TASKS.md entry, since none of (a)/(b)/(c) is a benchmark-derived
-issue — they're operations decisions for the human.
-```
-
-### Run 26: N=4 Reveals Per-Task Bimodal Timing — Slowest Run Yet (1303s)
-```
-Date: 2026-04-13
-SHA:  a6db011 (no commits since Run 25; working tree identical)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run26_2026-04-13T03-23/
-
-Fourth reproducibility data point. Same crash, same cliff, but THIS
-run is the slowest of all four (1303s vs prior max 967s) and reveals
-that the timing variance from Run 25 was hiding a per-task bimodal
-distribution: each task can independently land in "fast mode" or
-"slow mode," and Run 26 drew slow on both Phase 3 NIAH and RULER
-16K keys=5 simultaneously — the worst-case combination.
-
-Commits since Run 25: (none — HEAD unchanged at a6db011)
-Uncommitted working tree: byte-identical to Runs 24 and 25.
-
-Benchmark results (--full, total 1303.5s, crashed at task 5/15 Phase 3b):
-
-  Phase                  | Result                      | Time
-  -----------------------|-----------------------------|--------
-  0: Smoke               | decode TBD tok/s            |   8.4s ← fastest
-  1: Coherence           | 2/2                         |   2.4s
-  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
-  3: NIAH                | 4K + 16K PASS (slow mode)   | 231.9s
-  3b: RULER              | 4/15 PASSED then CRASH      | 949s
-  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
-  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
-  4: HumanEval           | NEVER RAN                   |   —
-
-Per-task bimodal timing across 4 runs (the headline finding):
-
-  Phase                       Run 23   Run 24   Run 25   Run 26   Pattern
-  -----------------------     ------   ------   ------   ------   -------
-  Phase 3 NIAH                208      69       68       232      BIMODAL
-                              SLOW     fast     fast     SLOW     ~70 vs ~220
-  RULER 16K keys=5            61       236      85       259      BIMODAL
-                              fast     SLOW     fast     SLOW     ~73 vs ~248
-  RULER 64K keys=3 (breach)   205      283      218      412      monotonic-ish
-  RULER 16K keys=3            231      236      222      257      stable ±7%
-  RULER 4K keys=2 / keys=4    11/9     11/9     11/9     12/9     stable
-  Phase 0/1/2                 ~18      ~17      ~17      ~16      drift down
-  TOTAL RUNTIME               851      967      732      1303     UNSTABLE
-
-  Run combination matrix (per-task fast=F / slow=S):
-                              NIAH     16K-k5   Total       Combo class
-  Run 23                      S        F        851         mixed-best
-  Run 24                      F        S        967         mixed-worst
-  Run 25                      F        F        732         all-fast
-  Run 26                      S        S        1303        all-slow
-
-  Two tasks × {F,S} = 4 cells, all 4 observed across 4 runs. Suggests
-  the slow vs fast outcome of each task is independent (not correlated
-  to system state), and total runtime tracks the SUM of per-task draws.
-
-Memory profile (4-run consistency):
-
-                              Run 23   Run 24   Run 25   Run 26   spread
-  Metal active max (GB)       41.44    41.43    41.44    41.38    ±0.06
-  Metal peak (GB)             41.45    41.45    41.45    41.45    ±0.00 ←byte-identical
-  Swap peak depth (GB)         8.63     6.93     6.73     7.76    ±9%
-
-Allocation cliff at breach (sample boundary, all 4 runs):
-
-  Sample          Run 23      Run 24      Run 25      Run 26
-                  (t=754s)    (t=872s)    (t=639s)    (t=1206s)
-  --------        --------    --------    --------    --------
-  pre-stable      40.13–.27   40.13–.27   40.13–.27   40.13–.27
-  free            33.00 GB    33.00 GB    33.00 GB    33.x GB
-  CLIFF           41.27 GB    41.27 GB    41.27 GB    41.36 GB
-  post peak       41.45 GB    41.45 GB    41.45 GB    41.45 GB
-
-  Note: Run 26's cliff landed at 41.36 GB instead of 41.27 — a +0.09 GB
-  shift attributable to slightly higher concurrent allocation state.
-  The post-cliff peak of 41.45 GB is identical across all 4 runs.
-
-System memory I/O across all 4 runs:
-
-                              Run 23   Run 24   Run 25   Run 26   mean ± σ
-  Pageins (disk reads, GB)    36.4     35.7     34.0     37.4     35.9 ± 1.4
-  Total swap I/O (GB)         337.8    422.7    270.5    608.7    410 ± 145 (35% CV)
-  Sustained swap rate (MB/s)  406      448      369      467      423 ± 44 (10%)
-  Compressions (M pages)      30.7     34.5     34.1     48.3     36.9 ± 7.7 (21%)
-  Run duration (s)            850.7    966.7    732.4    1303.5   963 ± 213 (22% CV)
-
-  Strongest correlation: Run 26 had +40% compressions vs Run 25 and is
-  +78% slower. The page compressor's CPU work scales linearly with
-  decompressions/compressions, and that work blocks Metal allocations
-  via the unified-memory contention path.
-
-Analysis notes (snapshot: bench/snapshots/run26_2026-04-13T03-23/):
-
-- **Per-task bimodality is the headline finding.** N=3 looked like
-  uniform high variance; N=4 reveals two tasks (Phase 3 NIAH and
-  RULER 16K keys=5) are each independently bimodal with a ~3.3x ratio
-  between modes. The total runtime is the sum of independent per-task
-  outcomes, so the worst case (Run 26) is ~1.8x the best case (Run 25)
-  with no system-level explanation. Hypothesis: the bimodality is
-  driven by Metal driver state at task entry — first allocation of
-  a particular tensor shape pays a kernel-compile / page-fault cost
-  that the second allocation skips. NEEDS more N to confirm.
-
-- **Allocation cliff is structurally deterministic for the 4th time.**
-  Pre-cliff metal_active 40.20 GB → free to 33 GB → cliff to 41.27/41.36
-  in all four runs. Post-cliff peak is 41.45 GB across all four. The
-  64K multi_key_niah prefill peak is a code constant.
-
-- **Compressor work explains runtime variance.** Run 26: 48.3M
-  compressions vs Run 25's 34.1M (+42%). Runtime: 1303s vs 732s (+78%).
-  The page compressor consumes CPU and stalls Metal allocations via
-  the unified-memory shared-page mechanism. This is mechanistically
-  consistent with the swap-pressure → slowdown chain we've been
-  seeing — Run 26 just hit a much higher pressure level.
-
-- **CPU metric still 0.0 in all 1276 samples.** Cumulative across 4
-  runs: 3,762 broken samples, 0 non-zero. Task #8 profiler bug
-  has now produced more broken telemetry than most projects produce
-  total telemetry.
-
-- **First load-avg contamination signal**: pre-Run-26 load was 2.52
-  (clean), post-run was 6.38 (over the 4.0 threshold). The post-run
-  spike includes the benchmark itself winding down + the macOS
-  compressor catching up on its 48M pending compressions. The PRE
-  load was clean so the run is not contaminated, but the ONLY way
-  to be sure is to compare swap I/O rate (467 MB/s) against prior
-  baselines (369-448 MB/s) — Run 26 is in the high end of the
-  observed band but not anomalously so per second. The slowdown
-  came from MORE seconds, not faster pressure.
-
-- **Statistical power is poor at N=4.** Total runtime CV is now
-  22% (was 14% at N=3). std of per-phase outliers is ~80s. To
-  detect a 10% genuine regression, we'd need N ≥ 16. To detect
-  a 5% regression, N ≥ 64. Single-run hypercar_bench timing
-  numbers are NOT FIT FOR PURPOSE for Goal 3 / Goal 4 tracking.
-
-New TASKS.md entries filed: **NONE**.
-All five Run-23 findings (#7-11) are still blocking and reproduced
-for the fourth consecutive time.
-
-Cadence note (yet again, but this time with a stronger angle): four
-consecutive runs against the same SHA have produced ~28,000 lines of
-snapshot data. The bimodal-timing finding from Run 26 is the FIRST
-genuinely new analytical signal since Run 23 — and it took until
-N=4 to surface. If the goal is to characterize variance properly,
-the cron should KEEP firing (we need N=16 or more), but BENCHMARKS.md
-should NOT keep growing — append-only stats files in
-bench/snapshots/aggregate/ would be more useful than per-run prose.
-That's a TASKS.md entry I am NOT filing because it's a meta-process
-issue not a benchmark-derived bug.
-```
-
-### Run 27: N=5 Confirms Per-Task Bimodal Distribution — Two Tasks Drafted
-```
-Date: 2026-04-13
-SHA:  49114c7 (no commits since Run 26; working tree identical)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run27_2026-04-13T04-23/
-
-Fifth reproducibility data point. Same crash, same cliff, same Metal
-peak (5/5 byte-identical at 41.45 GB). Runtime 1122.8s — second-slowest
-of five. Phase 3 NIAH 243s and RULER 16K keys=5 221s — both in slow
-mode (second slow-slow combination). With N=5 the bimodal hypothesis
-from Run 26 is confirmed: each phase has a clean fast cluster (~70s)
-and a slow cluster (~230s) with a 136-139s gap between them — a real
-distribution, not measurement noise. Two new tasks drafted (#16, #17)
-but written to bench/snapshots/run27_*/proposed_tasks.md NOT to
-TASKS.md proper, because TASKS.md still has uncommitted user WIP
-(Tasks 12-15) that the analyst should not sweep into a benchmark
-commit. Engineers should review the drafts and merge them in band.
-
-Commits since Run 26: (none — HEAD unchanged at 49114c7)
-
-Benchmark results (--full, total 1122.8s, crashed at task 5/15 Phase 3b):
-
-  Phase                  | Result                      | Time
-  -----------------------|-----------------------------|--------
-  0: Smoke               | decode TBD                  |   ~9s
-  1: Coherence           | 2/2                         |   2.4s
-  2: Code Intelligence   | 5/5 — gate PASS             |   5.3s
-  3: NIAH                | 4K + 16K PASS (slow mode)   | 243.4s
-  3b: RULER              | 4/15 PASSED then CRASH      | 766s
-  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
-  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
-  4: HumanEval           | NEVER RAN                   |   —
-
-Five-run per-phase table:
-
-  Phase                       R23   R24   R25   R26   R27   median   class
-  ----------------------     ----  ----  ----  ----  ----   ------   -----
-  Smoke (s)                  10.3   9.2   8.8   8.4  ~9.0    ~9.0    drift-down
-  Coherence (s)               2.4   2.4   2.4   2.4   2.4     2.4    stable
-  Code Intel (s)              5.3   5.3   5.4   5.3   5.3     5.3    stable
-  NIAH 4K+16K (s)             208    69    68   232   243     208    BIMODAL
-  RULER 4K k=2 (s)             11    11    11    12    12      11    stable
-  RULER 4K k=4 (s)              9     9     9     9     9       9    stable
-  RULER 16K k=3 (s)           231   236   222   257   223     231    stable ±7%
-  RULER 16K k=5 (s)            61   236    85   259   221     221    BIMODAL
-  RULER 64K k=3 (breach)      205   283   218   412   291     283    wide
-  TOTAL (s)                   851   967   732  1303  1123     967    21% CV
-
-Bimodal cluster analysis (N=5):
-
-  Phase NIAH (Phase 3):
-    Sorted: 68, 69, 208, 232, 243
-    Fast cluster:  [68, 69]            mean= 68.5  std= 0.5  N=2
-    Slow cluster:  [208, 232, 243]     mean=227.7  std=14.7  N=3
-    Inter-cluster gap: 139s
-    Slow/fast ratio: 3.32x
-
-  Phase RULER 16K keys=5:
-    Sorted: 61, 85, 221, 236, 259
-    Fast cluster:  [61, 85]            mean= 73.0  std=12.0  N=2
-    Slow cluster:  [221, 236, 259]     mean=238.7  std=15.6  N=3
-    Inter-cluster gap: 136s
-    Slow/fast ratio: 3.27x
-
-  Both phases:
-    - 2 of 5 runs in fast cluster, 3 of 5 in slow cluster
-    - Inter-cluster gap is 4-5x larger than within-cluster std
-    - Ratio between modes is ~3.3x in BOTH phases (consistent)
-    - Fast/slow draw is INDEPENDENT per phase (Run 23 was slow-NIAH +
-      fast-k5; Run 24 was fast-NIAH + slow-k5)
-    - Slow cluster appears slightly more often (3/5) but N too small
-
-  Combination matrix coverage (N=5):
-    NIAH/k5    fast      slow
-    fast       Run 25    Run 24
-    slow       Run 23    Run 26, Run 27
-
-  All 4 cells observed. Slow-slow has hit twice now (Runs 26, 27).
-  Fast-fast hit only once (Run 25). Mixed cells once each.
-
-Memory profile (5-run consistency):
-
-                              R23     R24     R25     R26     R27     spread
-  Metal active max (GB)      41.44   41.43   41.44   41.38   41.43   ±0.06
-  Metal peak (GB)            41.45   41.45   41.45   41.45   41.45   ±0.00 ← byte-identical 5/5
-  Swap peak depth (GB)        8.63    6.93    6.73    7.76    7.80   ±10%
-
-Allocation cliff at breach (5/5 byte-identical pattern):
-
-  pre-cliff metal_active        40.13–40.27 GB (all 5 runs)
-  free metal_active             33.00 GB         (all 5 runs)
-  cliff metal_active            41.27/41.36 GB   (all 5 runs)
-  post-cliff metal_peak         41.45 GB         (all 5 runs)
-
-System memory I/O (5-run):
-
-                              R23     R24     R25     R26     R27     mean ± σ
-  Pageins (GB)                36.4    35.7    34.0    37.4    36.0    35.9 ± 1.2
-  Total swap I/O (GB)         337.8   422.7   270.5   608.7   521.1   432 ± 130 (30%)
-  Sustained swap (MB/s)       406     448     369     467     464     431 ± 38 (9%)
-  Compressions (M pages)      30.7    34.5    34.1    48.3    39.5    37.4 ± 6.7 (18%)
-  Run duration (s)            851     967     732    1303    1123     995 ± 211 (21%)
-
-  KEY INSIGHT (now solid at N=5): sustained swap rate is far more
-  stable (CV 9%) than total swap I/O (CV 30%) or runtime (CV 21%).
-  The macOS page compressor's sustained throughput on this hardware
-  is ~430 ± 40 MB/s — that's a hardware constant. Slower runs spend
-  more SECONDS in this throughput regime, not faster MB/s. So when
-  the per-task allocation pattern triggers more compressor work
-  (Run 26: 48M ops), the runtime balloons proportionally.
-
-Analysis notes (snapshot: bench/snapshots/run27_2026-04-13T04-23/):
-
-- **Bimodal distribution is confirmed**: N=5 gives clean clusters with
-  a 4-5x signal-to-noise ratio (gap 136-139s vs within-cluster std
-  12-15s). Both NIAH and RULER 16K keys=5 show the same ~3.3x slow/fast
-  ratio. The hypothesis at this point: SOME cost (Metal kernel compile?
-  initial page faulting? command buffer warm-up?) is paid once per
-  ~run-instance for these specific tensor shapes, but the COST itself
-  is variable and bimodal — not "first time vs subsequent" because
-  these tasks run in fresh subprocesses each time. Needs Metal-buffer-
-  level instrumentation to localize. Drafted as proposed task #16.
-
-- **Sustained swap rate is a hardware constant.** ~430 ± 40 MB/s across
-  5 runs. This is the M4 Pro page compressor's real bandwidth limit.
-  Implication: any benchmark that pushes more memory than the working
-  set fits will be bottlenecked by this exact rate. Goal 5 should be
-  re-stated as "compressor-saturated workloads run at 430 MB/s, plan
-  prefill chunk sizes to stay under that."
-
-- **Runtime distribution is widening with N**: CV 14% (N=3) → 22%
-  (N=4) → 21% (N=5). The N=4 spike from Run 26 was the long-tail edge,
-  Run 27 brings it back slightly. With N=10 we should see CV converge.
-  Statistical detection floor is still in the 10-15% region — single-run
-  numbers cannot be trusted for regression detection at < 30%.
-
-- **CPU metric: 0.0 in all 1096 samples**. 5-run cumulative: 4858
-  samples broken, 0 non-zero. Task #8 profiler bug is now the
-  longest-running data quality issue in the project.
-
-- **Allocation cliff is byte-deterministic for the 5th time.** Five
-  independent runs across ~3 hours of wall clock all hit the exact
-  same pre-cliff/free/cliff metal_active values. The 64K multi-key
-  RULER prefill memory peak is structurally deterministic. Task #9
-  (projected headroom gate) is the right fix.
-
-- **Pre-run load avg 2.35 — clean.** Post-run 3.20, also clean. The
-  Run 26 contamination concern (post-load 6.38) was a one-off
-  compressor catch-up.
-
-New TASKS.md entries filed in TASKS.md: **NONE.**
-But TWO new tasks drafted in bench/snapshots/run27_2026-04-13T04-23/proposed_tasks.md:
-  #16  Add Metal command buffer instrumentation to identify per-task
-       bimodal timing root cause [M-L]
-  #17  Add multi-run aggregation tooling to bench/scoring.py for
-       median/p95 metric tracking [M]
-
-These are NOT yet in TASKS.md because TASKS.md has uncommitted user
-WIP (Tasks 12-15 from research pass 2) that the analyst should not
-sweep into a benchmark commit. Engineers: review the proposed_tasks.md
-file and merge into TASKS.md in-band along with your Tasks 12-15
-edits.
-
-All five Run-23 findings (#7-11) are still blocking, reproduced for
-the 5th consecutive time.
-```
-
-### Run 28: N=6 — Fast-N + Slow-k5 Combo Replicates Run 24 Within 3%
-```
-Date: 2026-04-13
-SHA:  c3a60c1 (no commits since Run 27)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run28_2026-04-13T05-23/
-
-Sixth reproducibility data point. Same crash, same cliff, same Metal
-peak (6/6 byte-identical). Total 999.1s — fast-NIAH + slow-16K-k5
-combo, replicating Run 24 (967s) within 3%. N=6 narrows runtime CV
-21% → 19% and refines the bimodal clusters. Pure confirmation run;
-no new analytical findings; no new tasks filed or drafted.
-
-Commits since Run 27: (none — HEAD unchanged at c3a60c1)
-
-Benchmark results (--full, total 999.1s):
-  Phase 0  Smoke              PASS   ~9s
-  Phase 1  Coherence          PASS   2.4s
-  Phase 2  Code Intel 5/5     PASS   5.3s
-  Phase 3  NIAH 4K+16K        PASS  72.7s ← FAST cluster
-  Phase 3b RULER 4/15         CRASH (5/15 breach same as always)
-  Phase 4  HumanEval          NEVER RAN
-
-RULER task draws this run:
-  [1] 4K k=2   PASS 2/2   11s        (stable)
-  [2] 4K k=4   PASS 4/4    9s        (stable)
-  [3] 16K k=3  PASS 3/3  230s        (stable ±7%)
-  [4] 16K k=5  PASS 4/5  241s        ← SLOW cluster
-  [5] 64K k=3  BREACH      —
-
-Combination this run: fast-NIAH + slow-16K-k5 = "mixed-worst"
-Same as Run 24 (967s). Delta to Run 24: +32s (+3.3%).
-
-Six-run bimodal cluster refinement:
-
-  Phase NIAH — sorted: 68, 69, 73, 208, 232, 243
-    Fast cluster:  [68, 69, 73]         mean  70.0s  std  2.6s  (N=3)
-    Slow cluster:  [208, 232, 243]      mean 227.7s  std 14.7s  (N=3)
-    Gap 135s, ratio 3.25x. Balance 3/3 exactly even.
-
-  Phase RULER 16K keys=5 — sorted: 61, 85, 221, 236, 241, 259
-    Fast cluster:  [61, 85]             mean  73.0s  std 12.0s  (N=2)
-    Slow cluster:  [221, 236, 241, 259] mean 239.3s  std 13.8s  (N=4)
-    Gap 136s, ratio 3.28x. Balance 2/4 leaning slow.
-
-Combination matrix (N=6):
-                  fast k5       slow k5
-  fast NIAH       Run 25        Runs 24, 28
-  slow NIAH       Run 23        Runs 26, 27
-
-All 4 cells populated; 3 have replicates. Max cell count is 2.
-
-Six-run aggregate statistics:
-
-                       mean    std    CV     min     max
-  Runtime (s)           996    189   19%    732    1303
-  Swap I/O (GB)         435    125   29%    271     609
-  Sustained (MB/s)      433     36    8%    369     467  ← hardware constant
-  Metal peak (GB)     41.45   0.00    0%  41.45   41.45  ← 6/6 byte-identical
-  Compressions (M)     38.2    6.1   16%   30.7    48.3
-
-  Runtime CV trajectory: N=3 14% → N=4 22% → N=5 21% → N=6 19%.
-  Slow convergence, expected to stabilize near 17-18% at N≥10.
-
-Memory profile & allocation cliff: 6/6 byte-identical to all prior
-runs. 40.13-40.27 GB pre-cliff → 33.00 GB free → 41.27 GB cliff →
-41.45 GB peak. Structurally deterministic.
-
-System memory I/O (Run 28 vm_stat deltas):
-  Pageins     35.7 GB   (within 1σ of 6-run mean 35.9 GB)
-  Swap I/O   446.2 GB   (mid-range for the 6 runs)
-  Sustained  447 MB/s   (within 1σ of hardware constant 433 MB/s)
-  Compress   40.9M      (slightly above mean 38.2M)
-  Duration   999.1s     (near the 6-run mean 996s)
-
-Analysis notes (snapshot: bench/snapshots/run28_2026-04-13T05-23/):
-
-- **Pure confirmation run.** Run 28 adds no new analytical signal.
-  It confirms Run 27's bimodal cluster characterization, it falls
-  within the expected runtime range (996 ± 189s), and it replicates
-  Run 24's combo cell within 3%. First run since Run 23 that was
-  NOT worth filing a task over.
-
-- **Combo-cell additivity confirmed**: runs 24 and 28 (same combo)
-  produced totals within 3% of each other (967s vs 999s). This is
-  direct evidence that TOTAL runtime is well-predicted by the
-  combination of per-task draws — you can estimate a Run N runtime
-  just from knowing which combo cell the random per-task draws land
-  in. Previously we only knew individual phases were bimodal; now we
-  know the combination is additively composable.
-
-- **Bimodal balance at N=6**: NIAH 3/3 (perfectly even), k5 2/4
-  (leaning slow). Observed combo counts 1/2/1/2 match the 50/50
-  independent hypothesis within sampling noise.
-
-- **CPU metric: 0% in all samples.** 6-run cumulative: 5954 broken
-  samples, 0 non-zero. Task #8 is now the longest-standing data
-  quality defect in the project.
-
-- **Sustained swap rate 433 ± 36 MB/s (CV 8%) is the tightest
-  metric observed.** This is a candidate for a first-class constant
-  in CLAUDE.md Goal 5 — "M4 Pro page compressor sustains ~430 MB/s;
-  prefill workloads that push beyond the wired working set are
-  bandwidth-limited by this."
-
-- **Environment clean across all 6 runs.** Max pre-run load 2.94,
-  min 2.33. Never above the 4.0 threshold. The Run 26 post-run
-  spike (6.38) remains the sole anomaly and was compressor tail,
-  not live contamination.
-
-New TASKS.md entries: **NONE.** (No changes since Run 27's
-proposed_tasks.md at bench/snapshots/run27_2026-04-13T04-23/proposed_tasks.md —
-Tasks #16 and #17 still pending engineer review and merge.)
-
-All five Run-23 findings (#7-11) still blocking, reproduced 6/6.
-```
-
-### Run 29: Drift Signal — Swap Peak Monotonic Upward Since Run 25
-```
-Date: 2026-04-13
-SHA:  8001e3a (no commits since Run 28)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run29_2026-04-13T06-23/
-
-Seventh reproducibility data point. Same crash mode, same Metal
-peak (7/7 byte-identical at 41.45 GB). But Run 29 is NOT a pure
-confirmation — three anomalies:
-  1. Swap peak 9.7 GB — new high across all runs (prior max 8.63)
-  2. RULER 16K k=3 at 173s broke a previously-"stable" phase (prior
-     range 222-257s)
-  3. Pre-run load 3.13 (highest so far), post-run 4.01 (right at
-     the 4.0 contamination threshold)
-Uncontaminated by the pre-run rule, but the environment was the
-most pressured of any run. Runtime 932.7s, combo cell slow-N +
-fast-k5 (matches Run 23).
-
-Commits since Run 28: (none — HEAD unchanged at 8001e3a)
-
-Benchmark results (--full, total 932.7s):
-  Phase 0  Smoke          PASS   8.3s (fastest yet)
-  Phase 1  Coherence      PASS   2.4s
-  Phase 2  Code Intel 5/5 PASS   5.3s
-  Phase 3  NIAH 4K+16K    PASS 231.4s ← SLOW cluster
-  Phase 3b RULER 4/15     CRASH same as always
-  Phase 4  HumanEval      NEVER RAN
-  Phase 5  Memory         FAIL: Metal 41.4 GB > 41.2 limit
-
-RULER task timings (comparison to prior):
-                            R29     6-run range
-  [1] 4K k=2                17s    [11-12]   ← outlier high
-  [2] 4K k=4                10s    [9-9]
-  [3] 16K k=3              173s    [222-257] ← NEW LOW
-  [4] 16K k=5               98s    [61-259]  ← upper edge of fast cluster
-  [5] 64K k=3 (breach)     377s    [205-412]
-
-Seven-run per-phase snapshot:
-
-  Phase                     R23   R24   R25   R26   R27   R28   R29
-  ----------------------   ----  ----  ----  ----  ----  ----  ----
-  Smoke                    10.3   9.2   8.8   8.4   9.0   9.0   8.3
-  NIAH 4K+16K               208    69    68   232   243    73   231
-  RULER 16K k=3             231   236   222   257   223   230   173 ←
-  RULER 16K k=5              61   236    85   259   221   241    98
-  Total                     851   967   732  1303  1123   999   933
-
-Bimodal clusters (N=7):
-
-  Phase NIAH sorted:  68, 69, 73, 208, 231, 232, 243
-    Fast cluster:  [68, 69, 73]                 mean  70.0  std 2.6
-    Slow cluster:  [208, 231, 232, 243]         mean 228.5  std 12.7
-    Gap 135s, ratio 3.26x. Balance 3/4 leaning slow.
-
-  Phase RULER 16K k=5 sorted:  61, 85, 98, 221, 236, 241, 259
-    Fast cluster:  [61, 85, 98]                 mean 81.3  std 18.5 ← wider
-    Slow cluster:  [221, 236, 241, 259]         mean 239.3 std 13.8
-    Gap 123s (was 136 at N=6), ratio 2.94x (was 3.28 at N=6).
-    Balance 3/4 leaning slow.
-
-  Fast cluster for k5 widened at N=7: Run 29's 98s is the new max
-  of the fast cluster (prior max was 85). The gap to the slow
-  cluster narrowed from 136s to 123s. Still clearly bimodal but
-  the fast cluster is noisier than the N=5/6 picture suggested.
-
-  Combination matrix (N=7):
-    NIAH/k5    fast          slow
-    fast       Run 25        Runs 24, 28
-    slow       Runs 23, 29   Runs 26, 27
-
-  All cells populated; 3 cells now have replicates. Max count 2
-  in three of four cells.
-
-Swap peak trend (by run order):
-
-  Run  Swap peak  Goal 5 (<8 GB)
-  ---  ---------  --------------
-  23    8.63 GB    VIOLATE
-  24    6.93 GB    pass
-  25    6.73 GB    pass
-  26    7.76 GB    pass (tight)
-  27    7.80 GB    pass (tight)
-  28    8.30 GB    VIOLATE
-  29    9.70 GB    VIOLATE (new high)
-
-  From Run 25 onward, swap peak is monotonically rising (6.73 →
-  6.73 → 7.76 → 7.80 → 8.30 → 9.70). That's +2.97 GB drift over
-  4 runs with no code changes. Either:
-  (a) system state is drifting (background processes accumulating),
-  (b) MLX/Metal driver is leaking slightly and peak tracker is
-      accumulating across runs (possible if mx.get_peak_memory is
-      per-process and the Python process is reused),
-  (c) macOS page compressor is gradually losing efficiency as
-      compressed memory fragments.
-  Hypothesis (c) is the most plausible given the compressor stats:
-  pre-compressor pages have climbed from 968K (Run 23) to 1102K
-  (Run 28) to 1094K (Run 29 pre). The compressor's working set
-  is growing.
-
-  Run 23 also violated Goal 5 (8.63 GB) but at that time the
-  system had been up for 0:23. Run 29 is at uptime 6:23 — six
-  hours of system use with the same Claude + benchmark workload.
-  Suggests the drift is real and attributable to accumulated OS
-  state, not run-to-run noise.
-
-Seven-run aggregate statistics:
-
-                       mean    std    CV     min     max
-  Runtime (s)           987    183   19%    732    1303
-  Swap I/O (GB)         428    115   27%    271     609
-  Sustained (MB/s)      431     34    8%    369     467  ← still tight
-  Swap peak (GB)       7.98   1.12   14%   6.73    9.70  ← drift!
-  Metal peak (GB)     41.45   0.00    0%  41.45   41.45
-  Pre-run load         2.62   0.27   10%   2.33    3.13  ← drift!
-  Compressions (M)     38.1    5.7   15%   30.7    48.3
-
-Analysis notes (snapshot: bench/snapshots/run29_2026-04-13T06-23/):
-
-- **Swap peak drift is the headline new finding.** Goal 5 ("swap
-  < 8 GB at any point") was marginally satisfied at Run 25 (6.73 GB)
-  and has been climbing monotonically since — 7.76, 7.80, 8.30, 9.70.
-  Three of seven runs now violate Goal 5, and the most recent is
-  the worst. This is real drift, not noise. Likely cause: macOS
-  page compressor fragmentation accumulating across runs, or
-  compressor internal bookkeeping overhead growing. Consistent
-  with the upward trend in pre-compressor-page counts.
-
-- **Pre-run load is also drifting upward**: 2.51, 2.94, 2.89, 2.52,
-  2.35, 2.33, 3.13 (by run order). Not monotonic but the most
-  recent is the highest. The system is accumulating load even when
-  "idle" between runs. Unclear whether this is the benchmark's
-  cleanup tail (post-run load in Run 26 was 6.38, well over
-  threshold) or something else in the session — need inspection
-  from outside the analyst loop.
-
-- **The "stable" 16K k=3 phase is NOT stable at N=7.** Prior range
-  222-257s, Run 29: 173s. That's a new low, 22% below the prior
-  minimum. With N=7 the range is [173, 257] — 49% spread. The
-  16K k=3 phase should be RE-EXAMINED for its own bimodal structure
-  (not enough data yet to confirm).
-
-- **RULER 16K k=5 fast cluster is widening.** At N=6 it was tight
-  (61, 85 — std 12). At N=7 it includes 98 (std 18.5). The gap
-  between fast and slow clusters narrowed from 136s to 123s.
-  Still clearly bimodal but less clean than the N=5/6 picture.
-
-- **7 runs × 7 phases = 49 data points; Metal peak constant for
-  49/49 samples.** The only perfectly deterministic metric in the
-  benchmark. Memory behavior is structurally fixed; everything
-  else drifts.
-
-- **CPU metric: 0% in all samples.** 7-run cumulative: ~6900 broken
-  samples, 0 non-zero.
-
-- **Runtime CV trajectory**: N=3 14% → N=4 22% → N=5 21% → N=6 19%
-  → N=7 19%. Looks stabilized around 19%. Detection floor for
-  real regressions is ~2σ = 38%, which is too loose to be useful
-  for Goal 3/4 tracking.
-
-New TASKS.md entries: **NONE filed.**
-Candidate new finding (not yet drafted as a task): "investigate
-swap peak drift across N=7 runs — 2.97 GB growth from Run 25 to
-Run 29 with no code changes, Goal 5 now violated in 3/7 runs."
-Holding this at "observation" not "task" until N=10 to rule out
-sampling artifact.
-
-All five Run-23 findings (#7-11) still blocking. Tasks #16, #17
-still in Run 27's proposed_tasks.md awaiting engineer merge.
-```
-
-### Run 30: Drift Refuted — Swap Peak Dropped 9.7→8.5 GB; 50% Goal 5 Violation Rate
-```
-Date: 2026-04-13
-SHA:  88b0a67 (no commits since Run 29)
-Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
-Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
-Snapshot: bench/snapshots/run30_2026-04-13T07-23/
-
-Eighth data point. Natural experiment: Run 29 hit swap peak 9.7 GB
-at elevated pre-load 3.13. Before Run 30, pre-load recovered to 2.16.
-Result: Run 30 swap peak 8.5 GB — LOWER than Run 29 but still above
-Goal 5 (8 GB). The strict "monotonic drift" hypothesis from Run 29
-is refuted; the drift is noisy, not monotonic. But the Goal 5
-violation rate is now 4 of 8 runs (50%). The threshold is not
-reliably met on this configuration.
-
-Commits since Run 29: (none — HEAD unchanged at 88b0a67)
-
-Benchmark results (--full, total 1030.9s, same crash mode):
-  Phase 0  Smoke          PASS   9.5s
-  Phase 1  Coherence      PASS   2.4s
-  Phase 2  Code Intel 5/5 PASS   5.3s
-  Phase 3  NIAH           PASS  81.6s ← FAST cluster
-  Phase 3b RULER 4/15     CRASH same as always
-  Phase 4  HumanEval      NEVER RAN
-  Phase 5  Memory         FAIL: Metal 41.4 > 41.2 limit
-
-RULER task draws:
-  [1] 4K k=2   11s   (stable)
-  [2] 4K k=4    9s   (stable)
-  [3] 16K k=3 250s   (back in normal range after R29's outlier 173s)
-  [4] 16K k=5 231s   ← SLOW cluster
-  [5] 64K k=3 421s   (high end, second slowest for this task)
-
-Combination cell: fast-NIAH + slow-16K-k5 (3rd replicate)
-  Runs in this cell:  R24 (967s), R28 (999s), R30 (1031s)
-  Drift within cell:  +32s per run, linear
-  3 data points is too few to confirm cell-level drift but the
-  pattern is suggestive. Holding as observation until N≥5 in-cell.
-
-Swap peak trajectory (8 runs, not monotonic):
-
-  Run  Swap peak   Pre-load   Goal 5 (<8 GB)
-  ---  ---------   --------   --------------
-  23    8.63 GB     2.51      VIOLATE
-  24    6.93 GB     2.94      pass
-  25    6.73 GB     2.89      pass  ← min
-  26    7.76 GB     2.52      pass (tight)
-  27    7.80 GB     2.35      pass (tight)
-  28    8.30 GB     2.33      VIOLATE
-  29    9.70 GB     3.13      VIOLATE  ← max
-  30    8.50 GB     2.16      VIOLATE
-
-  Goal 5 violation rate: 4/8 = 50%
-  Correlation pre-load ↔ swap peak: weak positive but noisy.
-  Run 29 (high pre-load, high swap) and Run 30 (low pre-load,
-  still high swap) show pre-load is not the sole driver.
-
-Eight-run aggregate statistics:
-
-                       mean    std    CV     min     max
-  Runtime (s)           992    173   17%    732    1303
-  Swap I/O (GB)         432    108   25%    271     609
-  Sustained (MB/s)      433     32    7%    369     467  ← hardware constant
-  Swap peak (GB)       7.92   0.98   12%   6.73    9.70
-  Pre-run load         2.61   0.30   12%   2.16    3.13
-  Metal peak (GB)     41.45   0.00    0%  41.45   41.45
-  Compressions (M)     38.2    5.4   14%   30.7    48.3
-
-  Runtime CV trajectory: 14% (N=3) → 22% (N=4) → 21% (N=5) → 19%
-  (N=6) → 19% (N=7) → 17% (N=8). Narrowing. Projected floor ~15%.
-
-Bimodal clusters (N=8):
-
-  Phase NIAH sorted: 68, 69, 73, 82, 208, 231, 232, 243
-    Fast cluster: [68, 69, 73, 82]          mean 73.0  std 5.4
-    Slow cluster: [208, 231, 232, 243]      mean 228.5 std 12.7
-    Gap 126s, ratio 3.13x. Balance 4/4 EVEN.
-
-  Phase RULER 16K k=5 sorted: 61, 85, 98, 221, 231, 236, 241, 259
-    Fast cluster: [61, 85, 98]              mean  81.3 std 18.5
-    Slow cluster: [221, 231, 236, 241, 259] mean 237.6 std 13.2
-    Gap 123s, ratio 2.92x. Balance 3/5 leaning slow.
-
-  Combination matrix (N=8):
-    NIAH/k5     fast         slow
-    fast        R25          R24, R28, R30
-    slow        R23, R29     R26, R27
-
-  fast-slow cell now has 3 samples.
-
-Analysis notes (snapshot: bench/snapshots/run30_2026-04-13T07-23/):
-
-- **"Monotonic drift" hypothesis from Run 29 is REFUTED.** Run 30's
-  swap peak 8.5 GB < Run 29's 9.7 GB. The drift is noisy, not
-  directional. Run 29 was a local peak, not a plateau. However:
-
-- **Goal 5 is violated 50% of the time** on this configuration.
-  8-run split: 4 pass (6.73-7.80 GB), 4 violate (8.30-9.70 GB).
-  The 8-bit model's swap profile is bimodal-at-the-threshold —
-  lucky runs hit ~7 GB, unlucky runs hit ~9 GB. Either the goal
-  needs re-stating (as argued since Run 23) or the model/config
-  needs a headroom fix (Task #2 2-bit KV, Task #3 Quest, or
-  Task #9 RULER gate).
-
-- **Fast-slow combo cell drift** (+32s per run within R24, R28, R30):
-  3 data points insufficient but the pattern is monotonic. Either
-  a real accumulation effect or a coincidence. Need 2 more data
-  points in this cell before claiming it's real.
-
-- **Pre-load is NOT a good predictor of swap peak.** Run 29
-  (pre-load 3.13) → 9.7 GB swap. Run 30 (pre-load 2.16) → 8.5 GB
-  swap. Run 25 (pre-load 2.89) → 6.73 GB swap (lowest). Pre-load
-  ranges 2.16-3.13, swap peaks range 6.73-9.70, correlation is
-  weak. Session state and per-run stochasticity both contribute.
-
-- **"Stable" 16K k=3 phase returned to normal**: R29 outlier 173s
-  was a one-off. R30 back to 250s (within the prior R23-28 range
-  of 222-257). The phase IS stable ±14% except for R29's outlier.
-
-- **CPU metric: 0% in all samples.** 8-run cumulative: ~7900 broken
-  samples, 0 non-zero. Task #8 still the longest-standing blocker.
-
-- **Runtime CV is slowly converging.** 17% at N=8, down from 22%
-  peak at N=4. Projected floor ~15% at N=16. Detection threshold
-  for real regressions is ~2σ = 30%, still too loose for Goal 3/4
-  fine-grained tracking.
-
-New TASKS.md entries: **NONE filed.**
-The Run 29 candidate "investigate swap drift" is now downgraded —
-the drift is not monotonic, just noisy. Goal 5 50% violation rate
-is already captured by Task #9 (RULER headroom gate) in spirit,
-though a more accurate task might be "re-state Goal 5 as an
-N-run p90 metric against the observed hardware constant 433 MB/s."
-Not filing because it's a CLAUDE.md editorial decision for the
-human, not a code-derived task.
-
-All five Run-23 findings (#7-11) still blocking, reproduced 8/8.
-Tasks #16, #17 still awaiting engineer merge from Run 27's
-proposed_tasks.md.
+  (plus untracked research/* PDFs from pass 1/2/3 research work)
+
+Benchmark results (--full, total 1869.4s, crashed at task 9/15 Phase 3b):
+
+  Phase                       | Result                        | Time
+  ----------------------------|-------------------------------|--------
+  0: Smoke                    | decode 4.8 tok/s (contam)     |  12.4s
+  1: Coherence                | 2/2 (math, code)              |   2.5s
+  2: Code Intelligence        | 5/5 — gate PASS               |   5.7s
+  3: NIAH                     | 4K + 16K PASS (slow mode)     | 273.1s
+  3b: RULER                   | 5 PASS + 2 FAIL + 1 SKIP      |1565.8s
+                              | + 1 BREACH = 9/15 tasks ran   |
+  >> 5: Memory Profile        | Swap delta 38.2 GB > 12.9 FAIL|   0.0s
+  6: Summary                  | PASS                          |   0.0s
+  4: HumanEval                | NEVER RAN (Phase 3b cascade)  |   —
+
+RULER task outcomes (5/15 PASS, 2/15 FAIL, 1/15 SKIP, 1/15 BREACH):
+  [1] multi_key_niah@4K  k=2:  PASS 2/2 (100%)     11s
+  [2] multi_key_niah@4K  k=4:  PASS 4/4 (100%)     10s
+  [3] multi_key_niah@16K k=3:  PASS 3/3 (100%)    405s
+  [4] multi_key_niah@16K k=5:  PASS 4/5 ( 80%)    439s
+  [5] multi_key_niah@64K k=3:  SKIP — projected 30.6 GB > 7.8 GB
+                                   headroom (Task 9 gate fires)
+  [6] variable_tracking@4K  chain=3: PASS 1/1 (100%)     9s
+  [7] variable_tracking@4K  chain=4: FAIL 0/1 (  0%)     7s  ← NEW CEILING
+  [8] variable_tracking@16K chain=4: FAIL 0/1 (  0%)   404s  ← NEW CEILING
+  [9] variable_tracking@16K chain=8: BREACH during task (swap 20.3 GB)
+  [10-15]: NEVER RAN
+
+Fix validation (all three Task #7/9/10 confirmed working):
+
+  Task #7 (RULER KeyError):
+    Evidence: console.txt line 1659 shows "BREACH: memory_breach"
+    instead of "KeyError: 'found'". Phase 3b correctly aborted with
+    a clean failure signal, not a raised exception.
+
+  Task #9 (headroom gate):
+    Evidence: console.txt line 1011 shows
+    "[5/15] multi_key_niah@64K keys=3 — SKIP: projected 30.6GB >
+    7.8GB headroom (Metal 32.4GB + limit 41.2GB)"
+    The 64K task was correctly gated away. This is the same task
+    that caused the byte-deterministic cliff in Runs 23-30 (via
+    deduped snapshot data).
+
+  Task #10 (NIAH decode artifact):
+    Evidence: Phase 3 results.json details now include
+    decode_stress_tokens=128 and honest decode_toks values:
+      4K  NIAH decode: 30.0 tok/s
+      16K NIAH decode: 16.8 tok/s
+    Prior runs reported 0.3 tok/s at 16K from the short-decode
+    artifact. That nonsense number is gone.
+
+Memory profile (with Task 9 active):
+  Model load:         32.4 GB  (unchanged)
+  Metal active max:   37.69 GB ← BIG CHANGE from 41.44 ± 0.06 baseline
+  Metal peak:         37.78 GB ← BIG CHANGE from 41.45 ± 0.00 baseline
+  Swap peak (delta):  38.16 GB ← BIG CHANGE from 7.92 ± 0.98 baseline
+                                  (the watchdog fired at 20.3 GB; the
+                                  profiler kept going until process
+                                  exit, recording the final delta)
+  Run duration:     1869.4s    ← longest of all runs (prior max 1303)
+
+System memory I/O (vm_stat deltas):
+  Pageins (disk reads):           91.2 GB
+  Total swap I/O:                945.0 GB  ← ALL-TIME HIGH (+55% over Run 26)
+  Sustained swap rate:         505 MB/s    ← above 8-run constant 431 ± 34
+  Compressions:                 65.1 M     ← +34% over prior max 48.3 M
+
+The sustained rate exceeding the "hardware constant" is likely
+contamination-driven (pre-run load 4.86). Treat 505 MB/s as suspect;
+retry post-contamination to confirm.
+
+First credible Goal 3 decode-speed-vs-context data (Task 10 fix):
+  4K NIAH decode: 30.0 tok/s
+  16K NIAH decode: 16.8 tok/s   (44% slowdown for 4x context)
+  Gap to Goal 3 target (>= 50 tok/s constant):
+    4K  : 30.0 / 50 = 60% of target
+    16K : 16.8 / 50 = 34% of target
+  Goal 3 is currently NOT MET at 16K on 8-bit + native-3bit-KV.
+  This is the first honest number against that gate after 8 runs
+  of measurement artifact.
+
+Analysis notes (snapshot: bench/snapshots/run31_2026-04-13T08-23/):
+
+- **Three fixes validated end-to-end.** Tasks 7, 9, 10 all landed
+  and all three show their expected behavior in the same run. First
+  time the analyst's filed tasks have been closed AND confirmed in
+  one cycle.
+
+- **8-run allocation cliff hypothesis REFUTED.** Runs 23-30 all hit
+  Metal peak 41.45 GB byte-identical. I characterized that as
+  "structurally deterministic." Task #9 SKIPped the 64K multi_key
+  task and Metal peak dropped to 37.78 GB — proving the cliff was
+  not benchmark-structural, it was specifically the 64K multi-key
+  prefill's attention scores tensor materialization. The 41.45 GB
+  constant was 64K-task-specific, not harness-wide.
+
+- **New failure mode surfaced: swap delta breach in variable_tracking
+  @16K chain=8**. Watchdog fired at 20.3 GB delta (12.9 GB limit),
+  profiler recorded final delta of 38.2 GB. This is the first
+  non-Metal-peak breach across all observed runs. The implication:
+  with the 64K multi-key task gone, RULER's variable_tracking tasks
+  accumulate enough swap pressure over their own runtimes to hit
+  the swap watchdog instead. This replaces one failure mode with
+  another, not fixes the underlying "8-bit model doesn't fit"
+  issue.
+
+- **NEW QUALITY CEILING: variable_tracking at chain=4 fails 0%**.
+  - chain=3 4K:  100% (1/1)
+  - chain=4 4K:    0% (0/1) — short-context reasoning failure
+  - chain=4 16K:   0% (0/1) — same failure at longer context
+  This is NOT a retrieval failure; it's a reasoning failure on
+  deeply-nested variable tracking. This is the first Qwen3-Coder
+  reasoning-ceiling data point we have. Worth filing as its own
+  task (see "unfilled findings" below) after confirming
+  reproducibility on an uncontaminated run.
+
+- **Phase 4 HumanEval still never ran**. The harness cascade-aborts
+  any time Phase 3b fails. Even with Task #7 (clean breach) and
+  Task #9 (skip instead of crash), Phase 3b still hits FAIL status
+  via the swap breach → Phase 4 never gets called. This cascade
+  logic is a separate concern — worth filing as a task once Tasks
+  #7/9/10 are battle-tested.
+
+- **Run contamination is real**: pre-run load 4.86 (1m) exceeded
+  the 4.0 threshold specified in the prompt. Post-run 5m was 7.51.
+  Timing numbers (runtime 1869s, sustained swap 505 MB/s, smoke
+  decode 4.8 tok/s) are directional only. Memory-deterministic
+  data (Metal peak 37.78 GB, which tasks ran, which tasks failed,
+  quality outcomes) remain valid.
+
+- **CPU metric still 0% in all 1820 profile samples.** Task #8
+  (profiler rebuild) is the last remaining analyst-filed blocker
+  from Run 23. It was started (commit c71dddd) but not yet
+  implemented. Next run will still have this observability gap.
+
+Unfilled findings (worth drafting as tasks after a clean run):
+  - Variable-tracking chain=4 reasoning ceiling (new quality signal)
+  - Swap-delta breach in RULER variable_tracking@16K chain=8
+    (new failure mode; different from the Metal-peak-breach path
+     that Task #9 was designed to prevent)
+  - Phase 4 HumanEval cascade-abort blocks independent eval coverage
+    even when Phase 3b is partially successful
+
+Not filing yet — Run 31 is contaminated and these findings need
+a clean-baseline reproduction before they meet the atomic-and-
+testable bar.
+
+Still blocking tasks from Run 23 analyst findings: #8 (profiler
+rebuild), #11 (sandbox diagnostic commands).
+Resolved by fixes in this commit window: #7, #9, #10.
 ```
 
 ---
