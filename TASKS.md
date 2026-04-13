@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-_(none)_
+- **Task 8**: Rebuild profiler.py observability for macOS unified memory
 
 ## Completed
 
