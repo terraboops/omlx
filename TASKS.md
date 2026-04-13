@@ -1026,3 +1026,159 @@ _(none)_
   numbers in its final report.
 - **Effort**: S (one-line config change) to M (if refactor path is
   chosen instead)
+
+## Research-derived tasks (from LIT_REVIEW.md pass 4, 2026-04-13)
+
+### 36. MMLU-Pro reasoning gate in hypercar_bench
+- **Goal**: 2 (intelligence breadth — hard reasoning, explicitly the "MMLU-style reasoning" gap from CLAUDE.md's Goal 2 status row)
+- **Derived from**: MMLU-Pro (2406.01574)
+- **Change**:
+  - New `omlx/eval/mmlu_pro/` module that loads the pinned HuggingFace
+    release of MMLU-Pro (`TIGER-Lab/MMLU-Pro`, pinned to a specific
+    revision for reproducibility). Reuse the existing chat-completions
+    client path that LiveCodeBench/tau-bench use — no new transport.
+  - Use the paper's own chain-of-thought prompt template (not raw Q&A)
+    and extract the answer letter via the same regex pattern as
+    LiveCodeBench Task 18's answer extractor.
+  - Add `phase_mmlu_pro()` to `omlx/bench/hypercar_bench.py`: 25
+    questions sampled from `computer_science` + `math` in `--quick`
+    (must stay under 60 seconds wall), 500 questions sampled across all
+    14 categories in `--full`.
+  - Add `mmlu_pro_cs_math >= 0.35` as a new Goal-2 gate (well below
+    GPT-4o's ~0.55 on those subjects, but a strong regression signal).
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --quick` prints
+  an `mmlu_pro_cs_math` gate row; gate passes at accuracy >= 0.35. Wall
+  clock for the `--quick` phase stays under 60 seconds. The bench
+  summary lists MMLU-Pro as an independent Goal-2 eval row alongside
+  HumanEval, RULER, τ-bench, LiveCodeBench.
+- **Effort**: S
+
+### 37. LiveBench contamination-free multi-category gate in hypercar_bench
+- **Goal**: 2 (intelligence breadth — contamination-free reasoning + data analysis + instruction-following, complement to LiveCodeBench)
+- **Derived from**: LiveBench (2406.19314)
+- **Change**:
+  - New `omlx/eval/livebench/` module that pins a dated LiveBench
+    release (e.g. `livebench-2025-10`) and wraps the upstream
+    `livebench` pip package's task loader. Ground-truth scoring only
+    (the upstream package already avoids LLM-as-judge, which matches
+    our "no external API" constraint for reproducible bench runs).
+  - Add `phase_livebench()` to `omlx/bench/hypercar_bench.py` running
+    the `math` + `reasoning` + `data_analysis` categories only
+    (skip `language`, `instruction_following`, and `coding` — `coding`
+    overlaps LiveCodeBench, the other two are less decision-relevant
+    for a coder model). 10 tasks per category in `--quick` (~5 min
+    wall), all 80+ tasks per category in `--full`.
+  - Add `livebench_reasoning >= 0.30` as a new Goal-2 gate.
+  - Sandbox the LiveBench scoring in a subprocess so its pandas/numpy
+    version pin doesn't collide with the main server venv.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full` prints
+  `livebench_math`, `livebench_reasoning`, `livebench_data_analysis`
+  rows; the `livebench_reasoning` gate passes at accuracy >= 0.30.
+  Bench summary now shows five independent Goal-2 evals
+  (HumanEval/LCB, RULER, τ-bench, MMLU-Pro, LiveBench).
+- **Effort**: S-M
+- **Depends on**: 36 (shares the answer-extraction / subprocess
+  sandbox plumbing; landing both in one week is cheaper than separately)
+
+### 38. LayerSkip self-speculative decoding (calibration-only variant)
+- **Goal**: 3 (decode speed, constant across context)
+- **Derived from**: LayerSkip (2404.16710)
+- **Change**:
+  - New `scripts/layerskip_calibrate.py` that runs Qwen3-Coder-30B-A3B
+    over a short calibration corpus (HumanEval+ prompts + a few
+    repo-aware completions) and records, per layer, the distribution
+    of per-token softmax entropy / max-logit confidence at each early-
+    exit depth. Emit a per-layer exit-confidence threshold table to
+    `omlx/patches/layerskip_thresholds/qwen3_coder_30b_a3b_instruct_8bit.json`.
+  - New `omlx/patches/layerskip_decode.py` that hooks the decode loop
+    in `omlx/hypercar_server.py`:
+    - Draft phase: run the first K layers, check exit-confidence; if
+      above threshold, emit a draft token, else bail to the full model.
+    - Verify phase: when ≥1 draft token exists, run the remaining
+      (48-K) layers on the draft token(s) in a single forward and
+      accept only the prefix that agrees with the greedy argmax of
+      the full model's output. Lossless by construction.
+  - Flag: `--layerskip K` on both `omlx/hypercar_server.py` and
+    `omlx.bench.hypercar_bench`. Default off. Must compose with
+    `--kv-mode tq3` (the cache is shared between draft and verify
+    passes — no second KV).
+  - CRITICAL: the draft-confidence threshold must be strict enough
+    that acceptance rate is nontrivially positive; if every draft
+    token gets rejected, the overhead strictly slows decode. Task
+    output must report `layerskip_accept_rate` in the bench JSON.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full --layerskip 16`
+  shows (a) decode tok/s at 2K and 16K >= 1.25x the baseline,
+  (b) HumanEval pass@1 exactly equal to the baseline (lossless gate,
+  not "within 2%" — acceptance verification must be bit-exact), and
+  (c) `layerskip_accept_rate >= 0.35` in the bench JSON. All three
+  required.
+- **Effort**: M
+- **Depends on**: none (can land before or after Task 28/29 EAGLE-2
+  probes; this is the cheaper alternative)
+
+### 39. LazyLLM per-layer token-pruning prefill hook
+- **Goal**: 4 (prefill speed, constant across context), 1 (effective 1M context)
+- **Derived from**: LazyLLM (2407.14057)
+- **Change**:
+  - New `omlx/patches/lazyllm_prefill.py` registering a per-layer
+    token-selection hook during prefill. At each layer, compute
+    per-token importance from the layer's attention scores (sum of
+    attention weight received across all heads), drop tokens below
+    a per-layer top-K budget before the next layer's input. The
+    budget schedule is: layer 0..N/4 keep 100%, layer N/4..N/2 keep
+    85%, layer N/2..3N/4 keep 65%, layer 3N/4..N keep 50%. These
+    ratios are hyper-parameters — the paper's ratios are a starting
+    point, not a commitment.
+  - Pruned tokens' KV entries are NOT discarded — they are marked
+    "cold" in `omlx/turboquant_kv.py` and retained for decode-time
+    revival. Revival triggers when a decode token's raw dot-product
+    against a cold token's stored key exceeds a revival threshold.
+    Revival is batched per decode step to avoid a branch-heavy hot path.
+  - Flag: `--prefill-prune lazyllm` on both the server and bench
+    (mutually exclusive with `--prefill-sparse minference` for now;
+    composing them is Task 39-follow-up).
+  - Must gate on *both* prefill and decode: if revival makes decode
+    slower, the task is a net loss and must be backed out.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full --prefill-prune lazyllm`
+  shows (a) prefill tok/s at 16K >= 1.5x baseline, (b) decode tok/s
+  at 16K regresses by < 5% vs baseline (revival cost cap), (c)
+  `ruler_multi_key@16K` accuracy within 2% of baseline, AND (d)
+  HumanEval >= 85%. All four required. Report `lazyllm_revival_rate`
+  (fraction of decode steps that trigger at least one revival) in
+  the bench JSON for observability.
+- **Effort**: M
+- **Depends on**: none (composes orthogonally with Task 5 MInference
+  prefill sparse dispatch; both can land independently)
+
+### 40. SWE-agent + SWE-bench Lite realistic SE eval
+- **Goal**: 2 (intelligence breadth — realistic software engineering agentic eval, the workload our server actually runs)
+- **Derived from**: SWE-agent (2405.15793)
+- **Change**:
+  - New `omlx/eval/swe_agent/` module that vendors a pinned commit of
+    `princeton-nlp/SWE-agent` and wraps its agent loop to point at our
+    local `hypercar_server` `/v1/chat/completions` endpoint. The
+    minimal 7-tool ACI (file viewer, scoped editor, search, etc.) is
+    the direct import from upstream — we do NOT reimplement.
+  - Replace the upstream Docker-per-task sandbox with a colima or lima
+    VM that hosts the per-issue repo state and test runner. Each
+    SWE-bench Lite issue checks out the parent commit, applies the
+    candidate patch, runs pytest, and diffs pass/fail against the
+    known-good test set. Fallback for dev loops: a macOS-native
+    `subprocess + venv-per-issue` runner that works for the 60-70%
+    of issues whose tests don't require system packages.
+  - Add `phase_swe_agent()` to `omlx/bench/hypercar_bench.py`: 5
+    SWE-bench Lite issues sampled in `--quick` (cap wall clock at
+    10 minutes total — some issues are very long), 30 issues in
+    `--full`. Report `swe_lite_resolved` (fraction resolved).
+  - Add `swe_lite_resolved >= 0.05` as the Goal-2 gate — purely a
+    "tool path is alive" signal, not a performance benchmark. The
+    point is to catch silent breakages of the OpenCode-style agent
+    loop, not to beat frontier models.
+- **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --full` runs
+  `phase_swe_agent()` to completion and prints a `swe_lite_resolved`
+  gate row; gate passes at `resolved >= 0.05` on 30 issues. Wall clock
+  for the SWE-agent phase in `--full` stays under 45 minutes (skip
+  overlong issues if necessary).
+- **Effort**: M-L (biggest unknown is the colima/lima setup; if it
+  proves flaky, fall back to the subprocess runner for a reduced
+  per-issue subset)
