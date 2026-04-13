@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 15**: SimPO contrast step in TTT engine
 
 ## Completed
 
