@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-_(none)_
+- **Task 21**: Add multi-run statistical aggregation to omlx/bench/aggregate.py
 
 ## Completed
 
