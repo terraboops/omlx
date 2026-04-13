@@ -1,0 +1,5005 @@
+{
+  "summary": {
+    "total_seconds": 732.38,
+    "metal_peak_gb": 41.45,
+    "metal_avg_gb": 36.52,
+    "rss_peak_gb": 16.77,
+    "cpu_avg_pct": 0.0,
+    "cpu_peak_pct": 0.0,
+    "swap_peak_gb": 6.73,
+    "num_samples": 713
+  },
+  "samples": [
+    {
+      "t": 0.01,
+      "metal_active_gb": 0.0,
+      "metal_peak_gb": 0.0,
+      "rss_gb": 0.33,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 1.01,
+      "metal_active_gb": 4.97,
+      "metal_peak_gb": 4.97,
+      "rss_gb": 3.02,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 2.02,
+      "metal_active_gb": 8.93,
+      "metal_peak_gb": 8.93,
+      "rss_gb": 6.84,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 3.04,
+      "metal_active_gb": 12.9,
+      "metal_peak_gb": 12.9,
+      "rss_gb": 10.95,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 4.05,
+      "metal_active_gb": 16.87,
+      "metal_peak_gb": 16.87,
+      "rss_gb": 14.99,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 5.07,
+      "metal_active_gb": 24.16,
+      "metal_peak_gb": 24.16,
+      "rss_gb": 16.77,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 7.02,
+      "metal_active_gb": 27.47,
+      "metal_peak_gb": 27.47,
+      "rss_gb": 9.97,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 8.03,
+      "metal_active_gb": 30.11,
+      "metal_peak_gb": 30.11,
+      "rss_gb": 4.97,
+      "swap_gb": 0.0
+    },
+    {
+      "t": 9.05,
+      "metal_active_gb": 32.44,
+      "metal_peak_gb": 32.44,
+      "rss_gb": 2.39,
+      "swap_gb": 0.32
+    },
+    {
+      "t": 10.06,
+      "metal_active_gb": 32.44,
+      "metal_peak_gb": 32.44,
+      "rss_gb": 2.8,
+      "swap_gb": 1.84
+    },
+    {
+      "t": 11.08,
+      "metal_active_gb": 32.44,
+      "metal_peak_gb": 32.44,
+      "rss_gb": 2.8,
+      "swap_gb": 3.52
+    },
+    {
+      "t": 12.1,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 3.43
+    },
+    {
+      "t": 13.12,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 14.14,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 2.4
+    },
+    {
+      "t": 15.15,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 1.85
+    },
+    {
+      "t": 16.16,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 1.33
+    },
+    {
+      "t": 17.17,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 1.19
+    },
+    {
+      "t": 18.19,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.45,
+      "rss_gb": 2.8,
+      "swap_gb": 1.13
+    },
+    {
+      "t": 19.21,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.12
+    },
+    {
+      "t": 20.23,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.11
+    },
+    {
+      "t": 21.24,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.1
+    },
+    {
+      "t": 22.26,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.09
+    },
+    {
+      "t": 23.27,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.06
+    },
+    {
+      "t": 24.28,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.04
+    },
+    {
+      "t": 25.3,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.04
+    },
+    {
+      "t": 26.32,
+      "metal_active_gb": 32.45,
+      "metal_peak_gb": 32.46,
+      "rss_gb": 2.91,
+      "swap_gb": 1.01
+    },
+    {
+      "t": 27.34,
+      "metal_active_gb": 35.17,
+      "metal_peak_gb": 35.17,
+      "rss_gb": 2.91,
+      "swap_gb": 1.01
+    },
+    {
+      "t": 28.36,
+      "metal_active_gb": 34.19,
+      "metal_peak_gb": 35.18,
+      "rss_gb": 2.91,
+      "swap_gb": 1.01
+    },
+    {
+      "t": 29.37,
+      "metal_active_gb": 34.2,
+      "metal_peak_gb": 35.19,
+      "rss_gb": 2.91,
+      "swap_gb": 1.01
+    },
+    {
+      "t": 30.39,
+      "metal_active_gb": 34.14,
+      "metal_peak_gb": 35.2,
+      "rss_gb": 2.91,
+      "swap_gb": 1.01
+    },
+    {
+      "t": 31.42,
+      "metal_active_gb": 35.22,
+      "metal_peak_gb": 35.22,
+      "rss_gb": 2.91,
+      "swap_gb": 0.99
+    },
+    {
+      "t": 32.44,
+      "metal_active_gb": 34.24,
+      "metal_peak_gb": 35.23,
+      "rss_gb": 2.91,
+      "swap_gb": 0.98
+    },
+    {
+      "t": 33.46,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 35.24,
+      "rss_gb": 2.82,
+      "swap_gb": 0.98
+    },
+    {
+      "t": 34.48,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 35.24,
+      "rss_gb": 2.82,
+      "swap_gb": 0.98
+    },
+    {
+      "t": 35.49,
+      "metal_active_gb": 34.29,
+      "metal_peak_gb": 35.36,
+      "rss_gb": 2.83,
+      "swap_gb": 0.98
+    },
+    {
+      "t": 36.51,
+      "metal_active_gb": 34.3,
+      "metal_peak_gb": 35.37,
+      "rss_gb": 2.83,
+      "swap_gb": 0.98
+    },
+    {
+      "t": 37.53,
+      "metal_active_gb": 34.31,
+      "metal_peak_gb": 35.39,
+      "rss_gb": 2.83,
+      "swap_gb": 0.97
+    },
+    {
+      "t": 38.55,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 35.4,
+      "rss_gb": 2.83,
+      "swap_gb": 0.97
+    },
+    {
+      "t": 39.56,
+      "metal_active_gb": 34.26,
+      "metal_peak_gb": 35.41,
+      "rss_gb": 2.83,
+      "swap_gb": 0.97
+    },
+    {
+      "t": 40.58,
+      "metal_active_gb": 34.35,
+      "metal_peak_gb": 35.42,
+      "rss_gb": 2.79,
+      "swap_gb": 0.95
+    },
+    {
+      "t": 41.6,
+      "metal_active_gb": 34.36,
+      "metal_peak_gb": 35.43,
+      "rss_gb": 2.79,
+      "swap_gb": 0.95
+    },
+    {
+      "t": 42.82,
+      "metal_active_gb": 35.37,
+      "metal_peak_gb": 35.44,
+      "rss_gb": 2.59,
+      "swap_gb": 0.95
+    },
+    {
+      "t": 44.94,
+      "metal_active_gb": 35.47,
+      "metal_peak_gb": 35.47,
+      "rss_gb": 2.23,
+      "swap_gb": 1.63
+    },
+    {
+      "t": 45.96,
+      "metal_active_gb": 35.44,
+      "metal_peak_gb": 35.48,
+      "rss_gb": 2.23,
+      "swap_gb": 1.62
+    },
+    {
+      "t": 46.99,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 35.48,
+      "rss_gb": 2.23,
+      "swap_gb": 1.6
+    },
+    {
+      "t": 48.0,
+      "metal_active_gb": 35.36,
+      "metal_peak_gb": 35.49,
+      "rss_gb": 2.23,
+      "swap_gb": 1.54
+    },
+    {
+      "t": 49.02,
+      "metal_active_gb": 35.5,
+      "metal_peak_gb": 35.5,
+      "rss_gb": 2.23,
+      "swap_gb": 1.49
+    },
+    {
+      "t": 50.03,
+      "metal_active_gb": 35.47,
+      "metal_peak_gb": 35.51,
+      "rss_gb": 2.23,
+      "swap_gb": 1.49
+    },
+    {
+      "t": 51.06,
+      "metal_active_gb": 35.43,
+      "metal_peak_gb": 35.52,
+      "rss_gb": 2.23,
+      "swap_gb": 1.49
+    },
+    {
+      "t": 52.08,
+      "metal_active_gb": 35.39,
+      "metal_peak_gb": 35.53,
+      "rss_gb": 2.23,
+      "swap_gb": 1.49
+    },
+    {
+      "t": 53.09,
+      "metal_active_gb": 35.54,
+      "metal_peak_gb": 35.54,
+      "rss_gb": 2.23,
+      "swap_gb": 1.49
+    },
+    {
+      "t": 54.1,
+      "metal_active_gb": 35.51,
+      "metal_peak_gb": 35.55,
+      "rss_gb": 2.23,
+      "swap_gb": 1.47
+    },
+    {
+      "t": 55.12,
+      "metal_active_gb": 36.59,
+      "metal_peak_gb": 36.64,
+      "rss_gb": 1.4,
+      "swap_gb": 1.47
+    },
+    {
+      "t": 56.14,
+      "metal_active_gb": 36.56,
+      "metal_peak_gb": 36.65,
+      "rss_gb": 1.4,
+      "swap_gb": 1.42
+    },
+    {
+      "t": 57.16,
+      "metal_active_gb": 36.66,
+      "metal_peak_gb": 36.66,
+      "rss_gb": 1.4,
+      "swap_gb": 1.42
+    },
+    {
+      "t": 58.18,
+      "metal_active_gb": 36.61,
+      "metal_peak_gb": 36.66,
+      "rss_gb": 1.4,
+      "swap_gb": 1.41
+    },
+    {
+      "t": 59.2,
+      "metal_active_gb": 36.58,
+      "metal_peak_gb": 36.67,
+      "rss_gb": 1.4,
+      "swap_gb": 1.38
+    },
+    {
+      "t": 60.22,
+      "metal_active_gb": 36.58,
+      "metal_peak_gb": 36.68,
+      "rss_gb": 1.4,
+      "swap_gb": 1.38
+    },
+    {
+      "t": 61.23,
+      "metal_active_gb": 36.63,
+      "metal_peak_gb": 36.68,
+      "rss_gb": 1.4,
+      "swap_gb": 1.37
+    },
+    {
+      "t": 62.25,
+      "metal_active_gb": 36.6,
+      "metal_peak_gb": 36.69,
+      "rss_gb": 1.4,
+      "swap_gb": 1.37
+    },
+    {
+      "t": 63.27,
+      "metal_active_gb": 36.6,
+      "metal_peak_gb": 36.7,
+      "rss_gb": 1.4,
+      "swap_gb": 1.31
+    },
+    {
+      "t": 64.28,
+      "metal_active_gb": 36.65,
+      "metal_peak_gb": 36.7,
+      "rss_gb": 1.4,
+      "swap_gb": 1.31
+    },
+    {
+      "t": 65.3,
+      "metal_active_gb": 36.62,
+      "metal_peak_gb": 36.71,
+      "rss_gb": 1.4,
+      "swap_gb": 1.31
+    },
+    {
+      "t": 66.32,
+      "metal_active_gb": 36.62,
+      "metal_peak_gb": 36.72,
+      "rss_gb": 1.4,
+      "swap_gb": 1.31
+    },
+    {
+      "t": 67.34,
+      "metal_active_gb": 36.73,
+      "metal_peak_gb": 36.73,
+      "rss_gb": 1.4,
+      "swap_gb": 1.31
+    },
+    {
+      "t": 68.36,
+      "metal_active_gb": 37.49,
+      "metal_peak_gb": 37.5,
+      "rss_gb": 1.24,
+      "swap_gb": 1.34
+    },
+    {
+      "t": 71.11,
+      "metal_active_gb": 37.58,
+      "metal_peak_gb": 37.58,
+      "rss_gb": 1.08,
+      "swap_gb": 3.55
+    },
+    {
+      "t": 72.13,
+      "metal_active_gb": 37.46,
+      "metal_peak_gb": 37.59,
+      "rss_gb": 1.08,
+      "swap_gb": 4.21
+    },
+    {
+      "t": 73.14,
+      "metal_active_gb": 37.5,
+      "metal_peak_gb": 37.59,
+      "rss_gb": 1.08,
+      "swap_gb": 3.98
+    },
+    {
+      "t": 74.16,
+      "metal_active_gb": 37.46,
+      "metal_peak_gb": 37.59,
+      "rss_gb": 1.08,
+      "swap_gb": 3.77
+    },
+    {
+      "t": 75.18,
+      "metal_active_gb": 37.53,
+      "metal_peak_gb": 37.6,
+      "rss_gb": 1.08,
+      "swap_gb": 3.49
+    },
+    {
+      "t": 76.2,
+      "metal_active_gb": 37.5,
+      "metal_peak_gb": 37.6,
+      "rss_gb": 1.08,
+      "swap_gb": 3.25
+    },
+    {
+      "t": 77.22,
+      "metal_active_gb": 37.51,
+      "metal_peak_gb": 37.61,
+      "rss_gb": 1.08,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 78.24,
+      "metal_active_gb": 37.51,
+      "metal_peak_gb": 37.61,
+      "rss_gb": 1.08,
+      "swap_gb": 2.62
+    },
+    {
+      "t": 79.27,
+      "metal_active_gb": 37.55,
+      "metal_peak_gb": 37.62,
+      "rss_gb": 1.08,
+      "swap_gb": 2.48
+    },
+    {
+      "t": 80.29,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.62,
+      "rss_gb": 1.08,
+      "swap_gb": 2.43
+    },
+    {
+      "t": 81.3,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.63,
+      "rss_gb": 0.5,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 82.32,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.64,
+      "rss_gb": 0.5,
+      "swap_gb": 2.42
+    },
+    {
+      "t": 83.34,
+      "metal_active_gb": 37.54,
+      "metal_peak_gb": 37.64,
+      "rss_gb": 0.5,
+      "swap_gb": 2.43
+    },
+    {
+      "t": 84.36,
+      "metal_active_gb": 37.51,
+      "metal_peak_gb": 37.64,
+      "rss_gb": 0.5,
+      "swap_gb": 2.45
+    },
+    {
+      "t": 85.38,
+      "metal_active_gb": 37.58,
+      "metal_peak_gb": 37.65,
+      "rss_gb": 0.49,
+      "swap_gb": 2.42
+    },
+    {
+      "t": 86.39,
+      "metal_active_gb": 37.52,
+      "metal_peak_gb": 37.65,
+      "rss_gb": 0.49,
+      "swap_gb": 2.4
+    },
+    {
+      "t": 87.4,
+      "metal_active_gb": 37.57,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.38
+    },
+    {
+      "t": 88.42,
+      "metal_active_gb": 37.57,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.33
+    },
+    {
+      "t": 89.44,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.38
+    },
+    {
+      "t": 90.46,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 91.48,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 92.49,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 93.51,
+      "metal_active_gb": 32.79,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.49,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 94.52,
+      "metal_active_gb": 32.44,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.45
+    },
+    {
+      "t": 95.7,
+      "metal_active_gb": 34.24,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.38
+    },
+    {
+      "t": 96.72,
+      "metal_active_gb": 34.25,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 97.74,
+      "metal_active_gb": 35.3,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 98.76,
+      "metal_active_gb": 35.31,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 99.77,
+      "metal_active_gb": 35.32,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 100.79,
+      "metal_active_gb": 35.33,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 101.81,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 102.82,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.36
+    },
+    {
+      "t": 103.84,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 104.86,
+      "metal_active_gb": 32.54,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 105.87,
+      "metal_active_gb": 32.54,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 106.88,
+      "metal_active_gb": 34.23,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 107.89,
+      "metal_active_gb": 34.24,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 108.9,
+      "metal_active_gb": 34.18,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 109.91,
+      "metal_active_gb": 34.2,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 110.92,
+      "metal_active_gb": 34.19,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 111.94,
+      "metal_active_gb": 34.29,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 112.96,
+      "metal_active_gb": 34.3,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 113.97,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 114.99,
+      "metal_active_gb": 32.53,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 116.0,
+      "metal_active_gb": 34.29,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.26
+    },
+    {
+      "t": 117.02,
+      "metal_active_gb": 35.37,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.26
+    },
+    {
+      "t": 118.04,
+      "metal_active_gb": 34.23,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.26
+    },
+    {
+      "t": 119.06,
+      "metal_active_gb": 34.32,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.23
+    },
+    {
+      "t": 120.08,
+      "metal_active_gb": 34.34,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.22
+    },
+    {
+      "t": 121.1,
+      "metal_active_gb": 34.28,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.22
+    },
+    {
+      "t": 122.11,
+      "metal_active_gb": 35.43,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.22
+    },
+    {
+      "t": 123.13,
+      "metal_active_gb": 35.36,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.22
+    },
+    {
+      "t": 124.14,
+      "metal_active_gb": 35.48,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.22
+    },
+    {
+      "t": 125.15,
+      "metal_active_gb": 35.39,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.2
+    },
+    {
+      "t": 126.17,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.19
+    },
+    {
+      "t": 127.19,
+      "metal_active_gb": 35.43,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.19
+    },
+    {
+      "t": 128.2,
+      "metal_active_gb": 35.51,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.18
+    },
+    {
+      "t": 129.22,
+      "metal_active_gb": 35.48,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.47,
+      "swap_gb": 2.18
+    },
+    {
+      "t": 130.25,
+      "metal_active_gb": 35.44,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.18
+    },
+    {
+      "t": 131.26,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.16
+    },
+    {
+      "t": 132.28,
+      "metal_active_gb": 35.44,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 133.3,
+      "metal_active_gb": 36.64,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 134.32,
+      "metal_active_gb": 36.59,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 135.33,
+      "metal_active_gb": 36.57,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 136.34,
+      "metal_active_gb": 36.66,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 137.36,
+      "metal_active_gb": 36.56,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.13
+    },
+    {
+      "t": 138.37,
+      "metal_active_gb": 36.54,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.12
+    },
+    {
+      "t": 139.39,
+      "metal_active_gb": 36.68,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.12
+    },
+    {
+      "t": 140.41,
+      "metal_active_gb": 36.58,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.1
+    },
+    {
+      "t": 141.43,
+      "metal_active_gb": 36.61,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.07
+    },
+    {
+      "t": 142.45,
+      "metal_active_gb": 36.7,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.07
+    },
+    {
+      "t": 143.46,
+      "metal_active_gb": 36.6,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.07
+    },
+    {
+      "t": 144.48,
+      "metal_active_gb": 36.63,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.07
+    },
+    {
+      "t": 145.5,
+      "metal_active_gb": 36.72,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.06
+    },
+    {
+      "t": 146.52,
+      "metal_active_gb": 37.61,
+      "metal_peak_gb": 37.66,
+      "rss_gb": 0.46,
+      "swap_gb": 2.06
+    },
+    {
+      "t": 147.53,
+      "metal_active_gb": 37.57,
+      "metal_peak_gb": 37.7,
+      "rss_gb": 0.46,
+      "swap_gb": 2.07
+    },
+    {
+      "t": 149.87,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.7,
+      "rss_gb": 0.46,
+      "swap_gb": 3.01
+    },
+    {
+      "t": 150.89,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.7,
+      "rss_gb": 0.46,
+      "swap_gb": 2.8
+    },
+    {
+      "t": 151.91,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.71,
+      "rss_gb": 0.46,
+      "swap_gb": 3.0
+    },
+    {
+      "t": 152.92,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.71,
+      "rss_gb": 0.46,
+      "swap_gb": 2.63
+    },
+    {
+      "t": 153.94,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.71,
+      "rss_gb": 0.46,
+      "swap_gb": 2.74
+    },
+    {
+      "t": 154.95,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.72,
+      "rss_gb": 0.46,
+      "swap_gb": 2.66
+    },
+    {
+      "t": 155.96,
+      "metal_active_gb": 37.61,
+      "metal_peak_gb": 37.72,
+      "rss_gb": 0.46,
+      "swap_gb": 2.48
+    },
+    {
+      "t": 156.97,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.72,
+      "rss_gb": 0.46,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 157.99,
+      "metal_active_gb": 37.59,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.71
+    },
+    {
+      "t": 159.0,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.91
+    },
+    {
+      "t": 160.01,
+      "metal_active_gb": 37.6,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.68
+    },
+    {
+      "t": 161.03,
+      "metal_active_gb": 37.66,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 162.05,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.84
+    },
+    {
+      "t": 163.06,
+      "metal_active_gb": 37.6,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 164.08,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 3.16
+    },
+    {
+      "t": 165.09,
+      "metal_active_gb": 37.67,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 3.64
+    },
+    {
+      "t": 166.11,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.73,
+      "rss_gb": 0.46,
+      "swap_gb": 3.33
+    },
+    {
+      "t": 167.13,
+      "metal_active_gb": 37.67,
+      "metal_peak_gb": 37.74,
+      "rss_gb": 0.46,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 168.15,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.74,
+      "rss_gb": 0.46,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 169.17,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.74,
+      "rss_gb": 0.46,
+      "swap_gb": 3.7
+    },
+    {
+      "t": 170.18,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.74,
+      "rss_gb": 0.46,
+      "swap_gb": 3.41
+    },
+    {
+      "t": 171.2,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.75,
+      "rss_gb": 0.46,
+      "swap_gb": 3.07
+    },
+    {
+      "t": 172.22,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.75,
+      "rss_gb": 0.46,
+      "swap_gb": 2.65
+    },
+    {
+      "t": 173.23,
+      "metal_active_gb": 37.68,
+      "metal_peak_gb": 37.75,
+      "rss_gb": 0.46,
+      "swap_gb": 2.62
+    },
+    {
+      "t": 174.25,
+      "metal_active_gb": 37.75,
+      "metal_peak_gb": 37.75,
+      "rss_gb": 0.41,
+      "swap_gb": 2.82
+    },
+    {
+      "t": 175.27,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.75,
+      "rss_gb": 0.41,
+      "swap_gb": 2.51
+    },
+    {
+      "t": 176.28,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 177.3,
+      "metal_active_gb": 37.67,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 178.32,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 179.34,
+      "metal_active_gb": 37.66,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 180.35,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.55
+    },
+    {
+      "t": 181.37,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 2.57
+    },
+    {
+      "t": 182.39,
+      "metal_active_gb": 37.67,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 3.09
+    },
+    {
+      "t": 183.4,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 3.47
+    },
+    {
+      "t": 184.41,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.76,
+      "rss_gb": 0.41,
+      "swap_gb": 3.14
+    },
+    {
+      "t": 185.42,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 2.68
+    },
+    {
+      "t": 186.44,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 2.85
+    },
+    {
+      "t": 187.46,
+      "metal_active_gb": 37.67,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 3.42
+    },
+    {
+      "t": 188.48,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 3.08
+    },
+    {
+      "t": 189.5,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 2.58
+    },
+    {
+      "t": 190.51,
+      "metal_active_gb": 37.68,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 2.72
+    },
+    {
+      "t": 191.52,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.77,
+      "rss_gb": 0.41,
+      "swap_gb": 3.02
+    },
+    {
+      "t": 192.54,
+      "metal_active_gb": 37.68,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.81
+    },
+    {
+      "t": 193.56,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.6
+    },
+    {
+      "t": 194.58,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 195.59,
+      "metal_active_gb": 37.68,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.2
+    },
+    {
+      "t": 196.61,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.39
+    },
+    {
+      "t": 197.63,
+      "metal_active_gb": 37.78,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.02
+    },
+    {
+      "t": 198.65,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.99
+    },
+    {
+      "t": 199.66,
+      "metal_active_gb": 37.68,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.52
+    },
+    {
+      "t": 200.68,
+      "metal_active_gb": 37.72,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.48
+    },
+    {
+      "t": 201.69,
+      "metal_active_gb": 33.32,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.08
+    },
+    {
+      "t": 202.7,
+      "metal_active_gb": 33.19,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.84
+    },
+    {
+      "t": 203.72,
+      "metal_active_gb": 32.83,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.81
+    },
+    {
+      "t": 204.74,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.79
+    },
+    {
+      "t": 205.76,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.68
+    },
+    {
+      "t": 206.78,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.55
+    },
+    {
+      "t": 207.79,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.58
+    },
+    {
+      "t": 208.8,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.48
+    },
+    {
+      "t": 209.82,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.5
+    },
+    {
+      "t": 210.84,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.6
+    },
+    {
+      "t": 211.85,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.65
+    },
+    {
+      "t": 212.87,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.74
+    },
+    {
+      "t": 213.88,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 214.9,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 215.93,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 216.94,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.58
+    },
+    {
+      "t": 217.96,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.64
+    },
+    {
+      "t": 218.98,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.7
+    },
+    {
+      "t": 219.99,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 221.0,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.76
+    },
+    {
+      "t": 222.02,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.86
+    },
+    {
+      "t": 223.04,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 224.05,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.92
+    },
+    {
+      "t": 225.07,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.88
+    },
+    {
+      "t": 226.09,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.76
+    },
+    {
+      "t": 227.1,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.78
+    },
+    {
+      "t": 228.12,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.83
+    },
+    {
+      "t": 229.13,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.85
+    },
+    {
+      "t": 230.15,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.79
+    },
+    {
+      "t": 231.17,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.9
+    },
+    {
+      "t": 232.18,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.83
+    },
+    {
+      "t": 233.2,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.97
+    },
+    {
+      "t": 234.21,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 235.23,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.89
+    },
+    {
+      "t": 236.25,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.67
+    },
+    {
+      "t": 237.27,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.68
+    },
+    {
+      "t": 238.28,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.74
+    },
+    {
+      "t": 239.29,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 240.3,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.71
+    },
+    {
+      "t": 241.32,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.65
+    },
+    {
+      "t": 242.33,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.68
+    },
+    {
+      "t": 243.34,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 244.36,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.65
+    },
+    {
+      "t": 245.38,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.52
+    },
+    {
+      "t": 246.39,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 247.41,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 248.42,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.54
+    },
+    {
+      "t": 249.44,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.54
+    },
+    {
+      "t": 250.46,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.57
+    },
+    {
+      "t": 251.47,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.6
+    },
+    {
+      "t": 252.49,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.61
+    },
+    {
+      "t": 253.5,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.67
+    },
+    {
+      "t": 254.52,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 255.54,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.03
+    },
+    {
+      "t": 256.55,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.1
+    },
+    {
+      "t": 257.57,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.97
+    },
+    {
+      "t": 258.59,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.97
+    },
+    {
+      "t": 259.6,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.88
+    },
+    {
+      "t": 260.62,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 261.64,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.89
+    },
+    {
+      "t": 262.65,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.86
+    },
+    {
+      "t": 263.66,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.84
+    },
+    {
+      "t": 264.68,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.81
+    },
+    {
+      "t": 265.69,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.66
+    },
+    {
+      "t": 266.7,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.71
+    },
+    {
+      "t": 267.72,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.83
+    },
+    {
+      "t": 268.74,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 269.75,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.86
+    },
+    {
+      "t": 270.77,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 271.79,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 272.81,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 273.82,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.9
+    },
+    {
+      "t": 274.83,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 275.85,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 276.87,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 277.88,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.76
+    },
+    {
+      "t": 278.9,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 279.92,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.8
+    },
+    {
+      "t": 280.93,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.76
+    },
+    {
+      "t": 281.95,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.84
+    },
+    {
+      "t": 282.97,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.82
+    },
+    {
+      "t": 283.98,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.84
+    },
+    {
+      "t": 285.0,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.89
+    },
+    {
+      "t": 286.02,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 287.04,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.69
+    },
+    {
+      "t": 288.05,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.78
+    },
+    {
+      "t": 289.07,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.87
+    },
+    {
+      "t": 290.09,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 291.11,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 292.12,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.02
+    },
+    {
+      "t": 293.13,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 294.15,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 295.17,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.0
+    },
+    {
+      "t": 296.18,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.82
+    },
+    {
+      "t": 297.2,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.92
+    },
+    {
+      "t": 298.21,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.99
+    },
+    {
+      "t": 299.23,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.02
+    },
+    {
+      "t": 300.24,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.02
+    },
+    {
+      "t": 301.26,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.0
+    },
+    {
+      "t": 302.28,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.04
+    },
+    {
+      "t": 303.29,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.06
+    },
+    {
+      "t": 304.3,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.07
+    },
+    {
+      "t": 305.31,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.05
+    },
+    {
+      "t": 306.33,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.86
+    },
+    {
+      "t": 307.35,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.91
+    },
+    {
+      "t": 308.37,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.92
+    },
+    {
+      "t": 309.38,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 310.4,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.03
+    },
+    {
+      "t": 311.42,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.06
+    },
+    {
+      "t": 312.43,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.12
+    },
+    {
+      "t": 313.45,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.18
+    },
+    {
+      "t": 314.46,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.15
+    },
+    {
+      "t": 315.48,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.09
+    },
+    {
+      "t": 316.5,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.07
+    },
+    {
+      "t": 317.51,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.04
+    },
+    {
+      "t": 318.53,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.1
+    },
+    {
+      "t": 319.54,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.91
+    },
+    {
+      "t": 320.55,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.99
+    },
+    {
+      "t": 321.56,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 322.58,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.03
+    },
+    {
+      "t": 323.6,
+      "metal_active_gb": 32.79,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 3.01
+    },
+    {
+      "t": 324.61,
+      "metal_active_gb": 32.79,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.99
+    },
+    {
+      "t": 325.63,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 326.64,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.98
+    },
+    {
+      "t": 327.66,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 328.68,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 329.69,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 330.71,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 331.72,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.96
+    },
+    {
+      "t": 332.74,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.41,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 333.76,
+      "metal_active_gb": 32.81,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.28,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 334.78,
+      "metal_active_gb": 32.81,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.28,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 335.8,
+      "metal_active_gb": 32.81,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.28,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 336.81,
+      "metal_active_gb": 34.18,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 337.83,
+      "metal_active_gb": 34.22,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 338.84,
+      "metal_active_gb": 34.31,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 339.86,
+      "metal_active_gb": 34.25,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 340.88,
+      "metal_active_gb": 34.33,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 341.89,
+      "metal_active_gb": 34.32,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 342.91,
+      "metal_active_gb": 34.28,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.31,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 343.92,
+      "metal_active_gb": 35.37,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 344.95,
+      "metal_active_gb": 35.47,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 345.97,
+      "metal_active_gb": 35.48,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 347.0,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 348.01,
+      "metal_active_gb": 35.36,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 349.03,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 350.04,
+      "metal_active_gb": 35.51,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 351.06,
+      "metal_active_gb": 35.43,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 352.07,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 353.09,
+      "metal_active_gb": 35.44,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 354.11,
+      "metal_active_gb": 35.41,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 355.13,
+      "metal_active_gb": 36.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 356.14,
+      "metal_active_gb": 36.54,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 357.17,
+      "metal_active_gb": 36.57,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 358.18,
+      "metal_active_gb": 36.67,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 359.2,
+      "metal_active_gb": 36.56,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 360.22,
+      "metal_active_gb": 36.59,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 361.24,
+      "metal_active_gb": 36.69,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 362.25,
+      "metal_active_gb": 36.58,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 363.27,
+      "metal_active_gb": 36.61,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 364.29,
+      "metal_active_gb": 36.71,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 365.3,
+      "metal_active_gb": 36.62,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.94
+    },
+    {
+      "t": 366.33,
+      "metal_active_gb": 36.63,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.93
+    },
+    {
+      "t": 367.34,
+      "metal_active_gb": 36.73,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.93
+    },
+    {
+      "t": 368.35,
+      "metal_active_gb": 37.54,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.95
+    },
+    {
+      "t": 371.16,
+      "metal_active_gb": 37.59,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 4.53
+    },
+    {
+      "t": 372.18,
+      "metal_active_gb": 37.59,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 4.72
+    },
+    {
+      "t": 373.2,
+      "metal_active_gb": 37.57,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 4.19
+    },
+    {
+      "t": 374.22,
+      "metal_active_gb": 37.55,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.43
+    },
+    {
+      "t": 375.23,
+      "metal_active_gb": 37.69,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 376.25,
+      "metal_active_gb": 37.69,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.31
+    },
+    {
+      "t": 377.26,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.25
+    },
+    {
+      "t": 378.28,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.35
+    },
+    {
+      "t": 379.29,
+      "metal_active_gb": 37.58,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.28
+    },
+    {
+      "t": 380.31,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 381.32,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 382.33,
+      "metal_active_gb": 37.62,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.38
+    },
+    {
+      "t": 383.35,
+      "metal_active_gb": 37.72,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.26
+    },
+    {
+      "t": 384.37,
+      "metal_active_gb": 37.63,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 385.39,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.19
+    },
+    {
+      "t": 386.4,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.17
+    },
+    {
+      "t": 387.42,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.14
+    },
+    {
+      "t": 388.44,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.14
+    },
+    {
+      "t": 389.45,
+      "metal_active_gb": 37.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.14
+    },
+    {
+      "t": 390.47,
+      "metal_active_gb": 37.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.12
+    },
+    {
+      "t": 391.5,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.09
+    },
+    {
+      "t": 392.51,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.08
+    },
+    {
+      "t": 393.53,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.08
+    },
+    {
+      "t": 394.55,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.05
+    },
+    {
+      "t": 395.57,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.04
+    },
+    {
+      "t": 396.58,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.04
+    },
+    {
+      "t": 397.6,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.04
+    },
+    {
+      "t": 398.61,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.06
+    },
+    {
+      "t": 399.62,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.08
+    },
+    {
+      "t": 400.64,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.16
+    },
+    {
+      "t": 401.66,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.34
+    },
+    {
+      "t": 402.68,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.34
+    },
+    {
+      "t": 403.69,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.34
+    },
+    {
+      "t": 404.7,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 405.82,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.34
+    },
+    {
+      "t": 406.84,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.33
+    },
+    {
+      "t": 407.85,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 408.87,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 409.89,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 410.9,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.47
+    },
+    {
+      "t": 411.92,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 412.94,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.3,
+      "swap_gb": 2.46
+    },
+    {
+      "t": 413.96,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.26,
+      "swap_gb": 2.45
+    },
+    {
+      "t": 414.98,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.25,
+      "swap_gb": 2.44
+    },
+    {
+      "t": 416.0,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.25,
+      "swap_gb": 2.44
+    },
+    {
+      "t": 417.02,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.25,
+      "swap_gb": 2.44
+    },
+    {
+      "t": 418.03,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.25,
+      "swap_gb": 2.44
+    },
+    {
+      "t": 419.05,
+      "metal_active_gb": 32.8,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.23,
+      "swap_gb": 2.43
+    },
+    {
+      "t": 420.07,
+      "metal_active_gb": 32.81,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.13,
+      "swap_gb": 2.41
+    },
+    {
+      "t": 421.09,
+      "metal_active_gb": 32.81,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.13,
+      "swap_gb": 2.41
+    },
+    {
+      "t": 422.11,
+      "metal_active_gb": 34.28,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 423.12,
+      "metal_active_gb": 34.23,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 424.13,
+      "metal_active_gb": 35.38,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 425.14,
+      "metal_active_gb": 34.22,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 426.16,
+      "metal_active_gb": 34.25,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.39
+    },
+    {
+      "t": 427.18,
+      "metal_active_gb": 34.35,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 428.19,
+      "metal_active_gb": 34.35,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 429.21,
+      "metal_active_gb": 35.39,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 430.23,
+      "metal_active_gb": 35.47,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 431.25,
+      "metal_active_gb": 35.44,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 432.27,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 433.29,
+      "metal_active_gb": 35.36,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.37
+    },
+    {
+      "t": 434.31,
+      "metal_active_gb": 35.41,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 435.33,
+      "metal_active_gb": 35.52,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 436.35,
+      "metal_active_gb": 35.43,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 437.37,
+      "metal_active_gb": 35.4,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 438.38,
+      "metal_active_gb": 35.47,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 439.39,
+      "metal_active_gb": 36.55,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.36,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 440.42,
+      "metal_active_gb": 36.51,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.32
+    },
+    {
+      "t": 441.44,
+      "metal_active_gb": 36.65,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 442.45,
+      "metal_active_gb": 36.57,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 443.47,
+      "metal_active_gb": 36.6,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 444.49,
+      "metal_active_gb": 36.67,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 445.51,
+      "metal_active_gb": 36.59,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 446.52,
+      "metal_active_gb": 36.62,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 447.53,
+      "metal_active_gb": 36.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 448.56,
+      "metal_active_gb": 36.61,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 449.58,
+      "metal_active_gb": 36.61,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 450.59,
+      "metal_active_gb": 36.66,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 451.62,
+      "metal_active_gb": 36.63,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.3
+    },
+    {
+      "t": 452.63,
+      "metal_active_gb": 36.64,
+      "metal_peak_gb": 37.78,
+      "rss_gb": 0.35,
+      "swap_gb": 2.29
+    },
+    {
+      "t": 453.65,
+      "metal_active_gb": 37.71,
+      "metal_peak_gb": 37.82,
+      "rss_gb": 0.35,
+      "swap_gb": 2.29
+    },
+    {
+      "t": 454.66,
+      "metal_active_gb": 37.74,
+      "metal_peak_gb": 37.83,
+      "rss_gb": 0.35,
+      "swap_gb": 2.28
+    },
+    {
+      "t": 455.68,
+      "metal_active_gb": 37.7,
+      "metal_peak_gb": 37.83,
+      "rss_gb": 0.35,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 456.7,
+      "metal_active_gb": 37.84,
+      "metal_peak_gb": 37.84,
+      "rss_gb": 0.35,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 457.71,
+      "metal_active_gb": 37.85,
+      "metal_peak_gb": 37.85,
+      "rss_gb": 0.35,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 458.73,
+      "metal_active_gb": 37.74,
+      "metal_peak_gb": 37.85,
+      "rss_gb": 0.35,
+      "swap_gb": 2.27
+    },
+    {
+      "t": 459.75,
+      "metal_active_gb": 37.74,
+      "metal_peak_gb": 37.85,
+      "rss_gb": 0.35,
+      "swap_gb": 2.29
+    },
+    {
+      "t": 460.84,
+      "metal_active_gb": 37.77,
+      "metal_peak_gb": 37.86,
+      "rss_gb": 0.35,
+      "swap_gb": 2.51
+    },
+    {
+      "t": 461.86,
+      "metal_active_gb": 37.73,
+      "metal_peak_gb": 37.86,
+      "rss_gb": 0.35,
+      "swap_gb": 2.82
+    },
+    {
+      "t": 462.88,
+      "metal_active_gb": 37.87,
+      "metal_peak_gb": 37.87,
+      "rss_gb": 0.35,
+      "swap_gb": 2.75
+    },
+    {
+      "t": 463.9,
+      "metal_active_gb": 37.77,
+      "metal_peak_gb": 37.87,
+      "rss_gb": 0.35,
+      "swap_gb": 2.71
+    },
+    {
+      "t": 465.02,
+      "metal_active_gb": 37.88,
+      "metal_peak_gb": 37.88,
+      "rss_gb": 0.35,
+      "swap_gb": 2.79
+    },
+    {
+      "t": 466.04,
+      "metal_active_gb": 37.77,
+      "metal_peak_gb": 37.88,
+      "rss_gb": 0.35,
+      "swap_gb": 2.78
+    },
+    {
+      "t": 467.06,
+      "metal_active_gb": 37.8,
+      "metal_peak_gb": 37.89,
+      "rss_gb": 0.35,
+      "swap_gb": 2.77
+    },
+    {
+      "t": 468.08,
+      "metal_active_gb": 37.8,
+      "metal_peak_gb": 37.9,
+      "rss_gb": 0.35,
+      "swap_gb": 2.76
+    },
+    {
+      "t": 469.1,
+      "metal_active_gb": 37.8,
+      "metal_peak_gb": 37.9,
+      "rss_gb": 0.35,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 470.11,
+      "metal_active_gb": 37.91,
+      "metal_peak_gb": 37.91,
+      "rss_gb": 0.35,
+      "swap_gb": 2.73
+    },
+    {
+      "t": 471.12,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 38.92,
+      "rss_gb": 0.35,
+      "swap_gb": 2.72
+    },
+    {
+      "t": 472.14,
+      "metal_active_gb": 38.9,
+      "metal_peak_gb": 39.0,
+      "rss_gb": 0.35,
+      "swap_gb": 2.75
+    },
+    {
+      "t": 473.38,
+      "metal_active_gb": 38.94,
+      "metal_peak_gb": 39.01,
+      "rss_gb": 0.35,
+      "swap_gb": 4.08
+    },
+    {
+      "t": 474.4,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.01,
+      "rss_gb": 0.35,
+      "swap_gb": 3.79
+    },
+    {
+      "t": 475.42,
+      "metal_active_gb": 38.9,
+      "metal_peak_gb": 39.01,
+      "rss_gb": 0.35,
+      "swap_gb": 3.28
+    },
+    {
+      "t": 476.44,
+      "metal_active_gb": 39.01,
+      "metal_peak_gb": 39.01,
+      "rss_gb": 0.35,
+      "swap_gb": 3.18
+    },
+    {
+      "t": 477.45,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.27
+    },
+    {
+      "t": 478.47,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.32
+    },
+    {
+      "t": 479.49,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.91
+    },
+    {
+      "t": 480.5,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 4.46
+    },
+    {
+      "t": 481.52,
+      "metal_active_gb": 38.93,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 4.38
+    },
+    {
+      "t": 482.54,
+      "metal_active_gb": 38.89,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.29
+    },
+    {
+      "t": 483.56,
+      "metal_active_gb": 38.96,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.09
+    },
+    {
+      "t": 484.57,
+      "metal_active_gb": 38.89,
+      "metal_peak_gb": 39.02,
+      "rss_gb": 0.35,
+      "swap_gb": 3.49
+    },
+    {
+      "t": 485.59,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.24
+    },
+    {
+      "t": 486.6,
+      "metal_active_gb": 38.89,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.43
+    },
+    {
+      "t": 487.62,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.78
+    },
+    {
+      "t": 488.64,
+      "metal_active_gb": 38.96,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.73
+    },
+    {
+      "t": 489.66,
+      "metal_active_gb": 39.03,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.48
+    },
+    {
+      "t": 490.68,
+      "metal_active_gb": 38.96,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.35,
+      "swap_gb": 3.27
+    },
+    {
+      "t": 491.7,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.34,
+      "swap_gb": 4.09
+    },
+    {
+      "t": 492.71,
+      "metal_active_gb": 38.97,
+      "metal_peak_gb": 39.03,
+      "rss_gb": 0.34,
+      "swap_gb": 4.84
+    },
+    {
+      "t": 493.72,
+      "metal_active_gb": 38.94,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 5.26
+    },
+    {
+      "t": 494.74,
+      "metal_active_gb": 38.97,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 4.92
+    },
+    {
+      "t": 495.75,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 4.52
+    },
+    {
+      "t": 496.77,
+      "metal_active_gb": 38.97,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 3.94
+    },
+    {
+      "t": 497.79,
+      "metal_active_gb": 39.04,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 3.62
+    },
+    {
+      "t": 498.81,
+      "metal_active_gb": 38.97,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 3.41
+    },
+    {
+      "t": 499.82,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 3.39
+    },
+    {
+      "t": 500.84,
+      "metal_active_gb": 38.94,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 4.14
+    },
+    {
+      "t": 501.85,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 4.33
+    },
+    {
+      "t": 502.86,
+      "metal_active_gb": 38.93,
+      "metal_peak_gb": 39.04,
+      "rss_gb": 0.34,
+      "swap_gb": 4.5
+    },
+    {
+      "t": 503.87,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 5.02
+    },
+    {
+      "t": 504.88,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 5.01
+    },
+    {
+      "t": 505.9,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 4.67
+    },
+    {
+      "t": 506.9,
+      "metal_active_gb": 38.91,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 4.38
+    },
+    {
+      "t": 507.92,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 4.38
+    },
+    {
+      "t": 508.94,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 4.17
+    },
+    {
+      "t": 509.94,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 3.99
+    },
+    {
+      "t": 510.96,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 4.79
+    },
+    {
+      "t": 511.98,
+      "metal_active_gb": 38.92,
+      "metal_peak_gb": 39.05,
+      "rss_gb": 0.34,
+      "swap_gb": 5.31
+    },
+    {
+      "t": 513.0,
+      "metal_active_gb": 38.99,
+      "metal_peak_gb": 39.06,
+      "rss_gb": 0.34,
+      "swap_gb": 4.93
+    },
+    {
+      "t": 514.02,
+      "metal_active_gb": 38.99,
+      "metal_peak_gb": 39.06,
+      "rss_gb": 0.34,
+      "swap_gb": 4.7
+    },
+    {
+      "t": 515.03,
+      "metal_active_gb": 38.99,
+      "metal_peak_gb": 39.06,
+      "rss_gb": 0.34,
+      "swap_gb": 4.45
+    },
+    {
+      "t": 516.04,
+      "metal_active_gb": 39.0,
+      "metal_peak_gb": 39.06,
+      "rss_gb": 0.34,
+      "swap_gb": 4.22
+    },
+    {
+      "t": 517.06,
+      "metal_active_gb": 39.07,
+      "metal_peak_gb": 39.07,
+      "rss_gb": 0.34,
+      "swap_gb": 4.0
+    },
+    {
+      "t": 518.07,
+      "metal_active_gb": 39.0,
+      "metal_peak_gb": 39.07,
+      "rss_gb": 0.34,
+      "swap_gb": 3.77
+    },
+    {
+      "t": 519.08,
+      "metal_active_gb": 39.07,
+      "metal_peak_gb": 39.07,
+      "rss_gb": 0.34,
+      "swap_gb": 3.72
+    },
+    {
+      "t": 520.11,
+      "metal_active_gb": 39.01,
+      "metal_peak_gb": 39.07,
+      "rss_gb": 0.34,
+      "swap_gb": 3.69
+    },
+    {
+      "t": 521.13,
+      "metal_active_gb": 39.01,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.68
+    },
+    {
+      "t": 522.14,
+      "metal_active_gb": 38.99,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.85
+    },
+    {
+      "t": 523.15,
+      "metal_active_gb": 39.01,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.71
+    },
+    {
+      "t": 524.17,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.83
+    },
+    {
+      "t": 525.18,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 4.07
+    },
+    {
+      "t": 526.2,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 4.2
+    },
+    {
+      "t": 527.22,
+      "metal_active_gb": 38.98,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.86
+    },
+    {
+      "t": 528.23,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.08,
+      "rss_gb": 0.34,
+      "swap_gb": 3.91
+    },
+    {
+      "t": 529.24,
+      "metal_active_gb": 38.99,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 4.23
+    },
+    {
+      "t": 530.26,
+      "metal_active_gb": 39.02,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 4.68
+    },
+    {
+      "t": 531.28,
+      "metal_active_gb": 38.97,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 4.35
+    },
+    {
+      "t": 532.29,
+      "metal_active_gb": 38.95,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 3.86
+    },
+    {
+      "t": 533.31,
+      "metal_active_gb": 33.42,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 4.09
+    },
+    {
+      "t": 534.32,
+      "metal_active_gb": 33.29,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 3.8
+    },
+    {
+      "t": 535.33,
+      "metal_active_gb": 32.91,
+      "metal_peak_gb": 39.09,
+      "rss_gb": 0.34,
+      "swap_gb": 3.62
+    },
+    {
+      "t": 536.35,
+      "metal_active_gb": 39.91,
+      "metal_peak_gb": 39.91,
+      "rss_gb": 0.34,
+      "swap_gb": 3.23
+    },
+    {
+      "t": 537.36,
+      "metal_active_gb": 40.18,
+      "metal_peak_gb": 40.18,
+      "rss_gb": 0.34,
+      "swap_gb": 4.27
+    },
+    {
+      "t": 538.37,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.18,
+      "rss_gb": 0.34,
+      "swap_gb": 4.91
+    },
+    {
+      "t": 539.39,
+      "metal_active_gb": 40.08,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.47
+    },
+    {
+      "t": 540.41,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.66
+    },
+    {
+      "t": 541.42,
+      "metal_active_gb": 40.19,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.23
+    },
+    {
+      "t": 542.44,
+      "metal_active_gb": 40.05,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 4.85
+    },
+    {
+      "t": 543.46,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.09
+    },
+    {
+      "t": 544.47,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.53
+    },
+    {
+      "t": 545.49,
+      "metal_active_gb": 40.05,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.25
+    },
+    {
+      "t": 546.49,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 4.8
+    },
+    {
+      "t": 547.51,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 548.53,
+      "metal_active_gb": 40.06,
+      "metal_peak_gb": 40.19,
+      "rss_gb": 0.34,
+      "swap_gb": 4.72
+    },
+    {
+      "t": 549.55,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.34,
+      "swap_gb": 4.57
+    },
+    {
+      "t": 550.56,
+      "metal_active_gb": 40.06,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.34,
+      "swap_gb": 4.6
+    },
+    {
+      "t": 551.58,
+      "metal_active_gb": 40.1,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 552.6,
+      "metal_active_gb": 40.1,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 5.55
+    },
+    {
+      "t": 553.61,
+      "metal_active_gb": 40.06,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 5.35
+    },
+    {
+      "t": 554.63,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.99
+    },
+    {
+      "t": 555.64,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 5.11
+    },
+    {
+      "t": 556.66,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.86
+    },
+    {
+      "t": 557.68,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.47
+    },
+    {
+      "t": 558.7,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.34
+    },
+    {
+      "t": 559.71,
+      "metal_active_gb": 40.1,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.93
+    },
+    {
+      "t": 560.73,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.2,
+      "rss_gb": 0.33,
+      "swap_gb": 4.52
+    },
+    {
+      "t": 561.75,
+      "metal_active_gb": 40.1,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.19
+    },
+    {
+      "t": 562.76,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 563.78,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 4.94
+    },
+    {
+      "t": 564.8,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 4.58
+    },
+    {
+      "t": 565.82,
+      "metal_active_gb": 40.06,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 4.47
+    },
+    {
+      "t": 566.84,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.18
+    },
+    {
+      "t": 567.86,
+      "metal_active_gb": 40.21,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.2
+    },
+    {
+      "t": 568.87,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 4.68
+    },
+    {
+      "t": 569.88,
+      "metal_active_gb": 40.08,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.12
+    },
+    {
+      "t": 570.9,
+      "metal_active_gb": 40.07,
+      "metal_peak_gb": 40.21,
+      "rss_gb": 0.33,
+      "swap_gb": 5.31
+    },
+    {
+      "t": 571.93,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.33,
+      "swap_gb": 5.6
+    },
+    {
+      "t": 572.94,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.33,
+      "swap_gb": 5.17
+    },
+    {
+      "t": 573.96,
+      "metal_active_gb": 40.08,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.33,
+      "swap_gb": 4.91
+    },
+    {
+      "t": 574.98,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 5.21
+    },
+    {
+      "t": 575.99,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 5.78
+    },
+    {
+      "t": 577.01,
+      "metal_active_gb": 40.08,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 5.88
+    },
+    {
+      "t": 578.02,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 5.44
+    },
+    {
+      "t": 579.03,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 5.1
+    },
+    {
+      "t": 580.05,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 4.79
+    },
+    {
+      "t": 581.06,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.25,
+      "swap_gb": 4.56
+    },
+    {
+      "t": 582.08,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.15,
+      "swap_gb": 5.2
+    },
+    {
+      "t": 583.1,
+      "metal_active_gb": 40.16,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.15,
+      "swap_gb": 5.65
+    },
+    {
+      "t": 584.11,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.22,
+      "rss_gb": 0.15,
+      "swap_gb": 5.36
+    },
+    {
+      "t": 585.12,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 4.95
+    },
+    {
+      "t": 586.14,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 5.05
+    },
+    {
+      "t": 587.14,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 5.52
+    },
+    {
+      "t": 588.16,
+      "metal_active_gb": 40.16,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 5.45
+    },
+    {
+      "t": 589.18,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 590.19,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 4.89
+    },
+    {
+      "t": 591.21,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.15,
+      "swap_gb": 4.79
+    },
+    {
+      "t": 592.22,
+      "metal_active_gb": 40.09,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.09,
+      "swap_gb": 5.07
+    },
+    {
+      "t": 593.24,
+      "metal_active_gb": 40.16,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.09,
+      "swap_gb": 5.48
+    },
+    {
+      "t": 594.24,
+      "metal_active_gb": 40.23,
+      "metal_peak_gb": 40.23,
+      "rss_gb": 0.09,
+      "swap_gb": 5.25
+    },
+    {
+      "t": 595.25,
+      "metal_active_gb": 40.24,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 4.86
+    },
+    {
+      "t": 596.27,
+      "metal_active_gb": 40.24,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 4.61
+    },
+    {
+      "t": 597.29,
+      "metal_active_gb": 40.17,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 4.53
+    },
+    {
+      "t": 598.3,
+      "metal_active_gb": 40.1,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 4.46
+    },
+    {
+      "t": 599.32,
+      "metal_active_gb": 40.14,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.36
+    },
+    {
+      "t": 600.34,
+      "metal_active_gb": 40.17,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.83
+    },
+    {
+      "t": 601.35,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.48
+    },
+    {
+      "t": 602.37,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.08
+    },
+    {
+      "t": 603.38,
+      "metal_active_gb": 40.14,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 4.79
+    },
+    {
+      "t": 604.4,
+      "metal_active_gb": 40.18,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.2
+    },
+    {
+      "t": 605.41,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.24,
+      "rss_gb": 0.09,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 606.42,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.14
+    },
+    {
+      "t": 607.44,
+      "metal_active_gb": 40.18,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.6
+    },
+    {
+      "t": 608.44,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.38
+    },
+    {
+      "t": 609.45,
+      "metal_active_gb": 40.18,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.05
+    },
+    {
+      "t": 610.47,
+      "metal_active_gb": 40.11,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 4.77
+    },
+    {
+      "t": 611.48,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.13
+    },
+    {
+      "t": 612.5,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.56
+    },
+    {
+      "t": 613.51,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.46
+    },
+    {
+      "t": 614.53,
+      "metal_active_gb": 40.18,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 5.14
+    },
+    {
+      "t": 615.54,
+      "metal_active_gb": 40.16,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 4.83
+    },
+    {
+      "t": 616.56,
+      "metal_active_gb": 40.15,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 4.67
+    },
+    {
+      "t": 617.57,
+      "metal_active_gb": 40.19,
+      "metal_peak_gb": 40.25,
+      "rss_gb": 0.09,
+      "swap_gb": 4.41
+    },
+    {
+      "t": 618.59,
+      "metal_active_gb": 40.26,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.7
+    },
+    {
+      "t": 619.6,
+      "metal_active_gb": 40.19,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.88
+    },
+    {
+      "t": 620.61,
+      "metal_active_gb": 40.26,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.55
+    },
+    {
+      "t": 621.62,
+      "metal_active_gb": 40.19,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.3
+    },
+    {
+      "t": 622.63,
+      "metal_active_gb": 40.21,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.04
+    },
+    {
+      "t": 623.69,
+      "metal_active_gb": 40.16,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.94
+    },
+    {
+      "t": 625.01,
+      "metal_active_gb": 40.12,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 5.17
+    },
+    {
+      "t": 626.03,
+      "metal_active_gb": 40.26,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.85
+    },
+    {
+      "t": 627.04,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.39
+    },
+    {
+      "t": 628.06,
+      "metal_active_gb": 40.17,
+      "metal_peak_gb": 40.26,
+      "rss_gb": 0.09,
+      "swap_gb": 4.17
+    },
+    {
+      "t": 629.08,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.67
+    },
+    {
+      "t": 630.09,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.48
+    },
+    {
+      "t": 631.1,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.13
+    },
+    {
+      "t": 632.12,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.21
+    },
+    {
+      "t": 633.13,
+      "metal_active_gb": 40.27,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.65
+    },
+    {
+      "t": 634.14,
+      "metal_active_gb": 40.2,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 5.16
+    },
+    {
+      "t": 635.15,
+      "metal_active_gb": 40.13,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 5.02
+    },
+    {
+      "t": 636.17,
+      "metal_active_gb": 33.51,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.73
+    },
+    {
+      "t": 637.18,
+      "metal_active_gb": 33.38,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.34
+    },
+    {
+      "t": 638.19,
+      "metal_active_gb": 33.0,
+      "metal_peak_gb": 40.27,
+      "rss_gb": 0.09,
+      "swap_gb": 4.18
+    },
+    {
+      "t": 639.21,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.28,
+      "rss_gb": 0.1,
+      "swap_gb": 3.99
+    },
+    {
+      "t": 640.22,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.36,
+      "rss_gb": 0.1,
+      "swap_gb": 5.53
+    },
+    {
+      "t": 641.24,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.15
+    },
+    {
+      "t": 642.25,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.73
+    },
+    {
+      "t": 643.25,
+      "metal_active_gb": 41.23,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.7
+    },
+    {
+      "t": 644.27,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.37
+    },
+    {
+      "t": 645.28,
+      "metal_active_gb": 41.23,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 5.97
+    },
+    {
+      "t": 646.3,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 5.69
+    },
+    {
+      "t": 647.31,
+      "metal_active_gb": 41.24,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 5.45
+    },
+    {
+      "t": 648.33,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.0
+    },
+    {
+      "t": 649.34,
+      "metal_active_gb": 41.24,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.49
+    },
+    {
+      "t": 650.35,
+      "metal_active_gb": 41.26,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 6.19
+    },
+    {
+      "t": 651.36,
+      "metal_active_gb": 41.24,
+      "metal_peak_gb": 41.37,
+      "rss_gb": 0.1,
+      "swap_gb": 5.75
+    },
+    {
+      "t": 652.38,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.06
+    },
+    {
+      "t": 653.39,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.43
+    },
+    {
+      "t": 654.41,
+      "metal_active_gb": 41.38,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.01
+    },
+    {
+      "t": 655.42,
+      "metal_active_gb": 41.24,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.57
+    },
+    {
+      "t": 656.44,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.55
+    },
+    {
+      "t": 657.44,
+      "metal_active_gb": 41.22,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.29
+    },
+    {
+      "t": 658.47,
+      "metal_active_gb": 41.25,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.11
+    },
+    {
+      "t": 659.48,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.27
+    },
+    {
+      "t": 660.49,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 5.05
+    },
+    {
+      "t": 661.61,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.14
+    },
+    {
+      "t": 662.62,
+      "metal_active_gb": 41.25,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.68
+    },
+    {
+      "t": 663.64,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.38,
+      "rss_gb": 0.1,
+      "swap_gb": 6.51
+    },
+    {
+      "t": 664.65,
+      "metal_active_gb": 41.25,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 6.11
+    },
+    {
+      "t": 665.66,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.72
+    },
+    {
+      "t": 666.68,
+      "metal_active_gb": 41.25,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.33
+    },
+    {
+      "t": 667.69,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.72
+    },
+    {
+      "t": 668.71,
+      "metal_active_gb": 41.26,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 6.11
+    },
+    {
+      "t": 669.73,
+      "metal_active_gb": 41.39,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.77
+    },
+    {
+      "t": 670.74,
+      "metal_active_gb": 41.29,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.33
+    },
+    {
+      "t": 671.75,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.86
+    },
+    {
+      "t": 672.77,
+      "metal_active_gb": 41.23,
+      "metal_peak_gb": 41.39,
+      "rss_gb": 0.1,
+      "swap_gb": 5.38
+    },
+    {
+      "t": 673.79,
+      "metal_active_gb": 41.26,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.24
+    },
+    {
+      "t": 674.8,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.66
+    },
+    {
+      "t": 675.81,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 6.16
+    },
+    {
+      "t": 676.82,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 6.02
+    },
+    {
+      "t": 677.84,
+      "metal_active_gb": 41.26,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.61
+    },
+    {
+      "t": 678.85,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.21
+    },
+    {
+      "t": 679.87,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.26
+    },
+    {
+      "t": 680.88,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.24
+    },
+    {
+      "t": 681.9,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.4,
+      "rss_gb": 0.1,
+      "swap_gb": 5.16
+    },
+    {
+      "t": 682.91,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 4.96
+    },
+    {
+      "t": 683.92,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.06
+    },
+    {
+      "t": 684.93,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.28
+    },
+    {
+      "t": 685.94,
+      "metal_active_gb": 41.27,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.03
+    },
+    {
+      "t": 686.96,
+      "metal_active_gb": 41.25,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.22
+    },
+    {
+      "t": 687.98,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.02
+    },
+    {
+      "t": 688.98,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 4.74
+    },
+    {
+      "t": 690.0,
+      "metal_active_gb": 41.41,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.12
+    },
+    {
+      "t": 691.02,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.63
+    },
+    {
+      "t": 692.03,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.52
+    },
+    {
+      "t": 693.04,
+      "metal_active_gb": 41.35,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.18
+    },
+    {
+      "t": 694.05,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.41,
+      "rss_gb": 0.1,
+      "swap_gb": 5.33
+    },
+    {
+      "t": 695.07,
+      "metal_active_gb": 41.35,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 5.84
+    },
+    {
+      "t": 696.09,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 6.1
+    },
+    {
+      "t": 697.1,
+      "metal_active_gb": 41.42,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 5.79
+    },
+    {
+      "t": 698.11,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 5.31
+    },
+    {
+      "t": 699.13,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 5.06
+    },
+    {
+      "t": 700.15,
+      "metal_active_gb": 41.29,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 5.75
+    },
+    {
+      "t": 701.16,
+      "metal_active_gb": 41.36,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 6.39
+    },
+    {
+      "t": 702.18,
+      "metal_active_gb": 41.26,
+      "metal_peak_gb": 41.42,
+      "rss_gb": 0.1,
+      "swap_gb": 6.04
+    },
+    {
+      "t": 703.2,
+      "metal_active_gb": 41.29,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.59
+    },
+    {
+      "t": 704.21,
+      "metal_active_gb": 41.36,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.2
+    },
+    {
+      "t": 705.23,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.02
+    },
+    {
+      "t": 706.28,
+      "metal_active_gb": 41.36,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.76
+    },
+    {
+      "t": 707.3,
+      "metal_active_gb": 41.29,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 6.09
+    },
+    {
+      "t": 708.31,
+      "metal_active_gb": 41.36,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.68
+    },
+    {
+      "t": 709.32,
+      "metal_active_gb": 41.32,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.71
+    },
+    {
+      "t": 710.34,
+      "metal_active_gb": 41.36,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.44
+    },
+    {
+      "t": 711.35,
+      "metal_active_gb": 41.38,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 5.15
+    },
+    {
+      "t": 712.52,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 6.0
+    },
+    {
+      "t": 713.54,
+      "metal_active_gb": 41.37,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 6.46
+    },
+    {
+      "t": 714.55,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.43,
+      "rss_gb": 0.1,
+      "swap_gb": 6.13
+    },
+    {
+      "t": 715.56,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.66
+    },
+    {
+      "t": 716.58,
+      "metal_active_gb": 41.37,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.71
+    },
+    {
+      "t": 717.59,
+      "metal_active_gb": 41.3,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 6.15
+    },
+    {
+      "t": 718.6,
+      "metal_active_gb": 41.44,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.76
+    },
+    {
+      "t": 719.61,
+      "metal_active_gb": 41.28,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.79
+    },
+    {
+      "t": 720.64,
+      "metal_active_gb": 41.37,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 6.05
+    },
+    {
+      "t": 721.65,
+      "metal_active_gb": 41.44,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.59
+    },
+    {
+      "t": 722.67,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.28
+    },
+    {
+      "t": 723.68,
+      "metal_active_gb": 41.33,
+      "metal_peak_gb": 41.44,
+      "rss_gb": 0.1,
+      "swap_gb": 5.79
+    },
+    {
+      "t": 724.7,
+      "metal_active_gb": 41.34,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 6.36
+    },
+    {
+      "t": 725.71,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 6.44
+    },
+    {
+      "t": 726.72,
+      "metal_active_gb": 41.35,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 6.14
+    },
+    {
+      "t": 727.73,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 5.69
+    },
+    {
+      "t": 728.93,
+      "metal_active_gb": 41.35,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 5.41
+    },
+    {
+      "t": 729.94,
+      "metal_active_gb": 41.31,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 5.81
+    },
+    {
+      "t": 730.96,
+      "metal_active_gb": 41.22,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 5.55
+    },
+    {
+      "t": 731.97,
+      "metal_active_gb": 33.46,
+      "metal_peak_gb": 41.45,
+      "rss_gb": 0.1,
+      "swap_gb": 5.57
+    }
+  ]
+}

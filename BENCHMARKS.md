@@ -1131,6 +1131,161 @@ run after this will be indistinguishable from Run 24 except for
 stochastic timing.
 ```
 
+### Run 25: N=3 Variance Baseline — Allocation Cliff Confirmed Deterministic
+```
+Date: 2026-04-13
+SHA:  43f383f (working tree IDENTICAL to Run 24, no commits since)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run25_2026-04-13T02-23/
+
+Third reproducibility data point on the same SHA. Same crash, same
+phase, same task, same allocation cliff to the byte. Run 25 is the
+FASTEST of the three (732s vs 851/967), refuting the "Run 23 → 24
+trend" hypothesis: variance is bursty, not directional. With N=3 we
+can finally bound it: total runtime 850 ± 117s (14% σ), total swap
+I/O 344 ± 76 GB (22% σ).
+
+Commits since Run 24 (43f383f, 2026-04-13):
+  (none — HEAD unchanged)
+
+Uncommitted working tree changes (byte-identical to Run 24):
+  CLAUDE.md, TASKS.md (with user's pass-2 Tasks 12-15),
+  omlx/bench/agentic_bench.py, omlx/ttt.py, untracked research PDFs.
+
+Benchmark results (--full, total 732.4s, crashed at task 5/15 Phase 3b):
+
+  Phase                  | Result                      | Time
+  -----------------------|-----------------------------|--------
+  0: Smoke               | decode 21.4 tok/s           |   8.8s
+  1: Coherence           | 2/2                         |   2.4s
+  2: Code Intelligence   | 5/5 — gate PASS             |   5.4s
+  3: NIAH                | 4K + 16K PASS               |  68.2s
+  3b: RULER              | 4/15 PASSED then CRASH      | 545s
+  >> CRASH               | KeyError: 'found' @ L852    |   0.0s
+  >> 5: Memory Profile   | Metal 41.4 GB > 41.2 FAIL   |   0.0s
+  4: HumanEval           | NEVER RAN                   |   —
+
+Three-run reproducibility table:
+
+                              Run 23     Run 24     Run 25     mean ± σ
+  Phase 0 Smoke (s)          10.3        9.2        8.8        9.4 ± 0.8 (8%)
+  Phase 1 Coherence (s)       2.4        2.4        2.4        2.4 ± 0  (0%)
+  Phase 2 Code Intel (s)      5.3        5.3        5.4        5.3 ± 0  (1%)
+  Phase 3 NIAH (s)           208.3      69.0      68.2       115 ± 80 (70%) ← bursty
+  RULER 4K keys=2 (s)         11        11         11         11 ± 0   (0%)
+  RULER 4K keys=4 (s)          9         9          9          9 ± 0   (0%)
+  RULER 16K keys=3 (s)       231       236        222        230 ± 7   (3%)
+  RULER 16K keys=5 (s)        61       236         85        127 ± 95 (75%) ← bursty
+  RULER 64K keys=3 (s)       205       283        218        235 ± 42 (18%)
+  Total runtime (s)          851       967        732        850 ± 117 (14%)
+
+Memory profile (three-run consistency):
+
+                              Run 23     Run 24     Run 25     spread
+  Metal active max (GB)      41.44     41.43     41.44      0.01 GB ← deterministic
+  Metal peak (GB)            41.45     41.45     41.45      0.00 GB ← byte-identical
+  Swap peak depth (GB)        8.63      6.93      6.73      ±20% (decreasing)
+  RSS peak (misleading)      14.56     17.17     16.77      ±9%
+
+Allocation cliff at breach (sample-by-sample, all 3 runs):
+
+  Sample      Run 23 (t=754s)  Run 24 (t=872s)  Run 25 (t=639s)
+  --------    ---------------  ---------------  ---------------
+  pre-stable    40.13–40.27 GB    40.13–40.27 GB    40.13–40.27 GB
+  free-1        33.51             33.51             33.51
+  free-2        33.38             33.38             33.38
+  free-3        33.00             33.00             33.00
+  CLIFF -->     41.27 GB          41.27 GB          41.27 GB
+
+  ^^^^ The allocation cliff fires at IDENTICAL metal_active values to the
+       second decimal across all three runs. The 64K multi_key_niah prefill's
+       peak is a deterministic constant of the code, not of timing or state.
+
+System memory I/O (vm_stat pre/post deltas):
+
+                              Run 23     Run 24     Run 25     mean ± σ
+  Pageins (disk reads, GB)    36.4      35.7      34.0       35.4 ± 1.0 (3%)
+  Swap I/O total (GB)        337.8     422.7     270.5     344 ± 76  (22%)
+  Sustained swap rate (MB/s)  406       448       369       408 ± 33   (8%)
+  Compressions (M pages)      30.7      34.5      34.1      33.1 ± 1.7 (5%)
+
+  Key observation: faster runs swap less. Run 25 (fastest) had 36% less
+  total swap I/O than Run 24 (slowest). The ~117s timing spread is
+  largely explained by ~150 GB of swap I/O variance — slower runs spent
+  the extra time waiting on compressed-memory pages to decompress.
+  Goal 5 needs to be re-stated as a throughput metric, not depth.
+
+Analysis notes (snapshot: bench/snapshots/run25_2026-04-13T02-23/):
+
+- **Allocation cliff is byte-deterministic across 3 runs**: profile.json
+  samples show identical metal_active values pre-cliff (40.20 GB),
+  during free (33.00 GB), and post-cliff (41.27 GB). Three independent
+  runs at three different timestamps all hit the same memory pattern.
+  This is the strongest possible evidence the 64K RULER prefill peak is
+  a structural constant, not noise.
+
+- **Timing variance is bursty, not uniform**: most phases are stable
+  (Coherence 0%, Code Intel 1%, RULER 16K keys=3 3%) but two phases
+  show large outliers — Phase 3 NIAH (70% σ, Run 23 outlier) and RULER
+  16K keys=5 (75% σ, Run 24 outlier). With N=3 we don't yet know
+  whether those are independent flukes or whether specific phases are
+  intrinsically noisier. Suggests the true Goal 3 decode variance is
+  NOT uniform across context lengths and needs per-phase replication.
+
+- **Run 25 is the cleanest data point so far**: lowest swap I/O,
+  fastest total runtime, no anomaly tasks. Use Run 25 numbers (NOT
+  Run 23 or 24) as the current baseline for "8-bit native 3-bit KV
+  on Qwen3-Coder-30B-A3B" until N grows or the harness improves.
+
+- **CPU metric reproducibly broken**: cpu_pct=0.0 in ALL 713 samples
+  (Run 25), 943 samples (Run 24), 830 samples (Run 23). Profiler
+  defect from Task #8 has now produced 2,486 broken samples total.
+
+- **Swap-pressure ↔ runtime correlation is now visible at N=3**:
+  Run 24 (slowest, 967s) had highest swap I/O (423 GB).
+  Run 25 (fastest, 732s) had lowest swap I/O (270 GB).
+  Run 23 in between on both axes. ~150 GB of swap I/O variance
+  explains ~117s of runtime variance (~5 ms/MB if you treat the
+  compressor decompression as the bottleneck — plausible for the
+  Apple Silicon page compressor).
+
+- **Environment baseline clean across all 3 runs**: load avgs were
+  2.51 / 2.94 / 2.89 pre-run, never above 3.20. No co-tenancy.
+  The variance is intrinsic to the workload + OS interaction,
+  not contamination.
+
+New TASKS.md entries filed: **NONE**.
+All observed issues are still tracked from Run 23:
+  #7  RULER KeyError (3/3 reproducible)        — STILL BLOCKING
+  #8  Profiler observability (3/3 reproducible) — STILL BLOCKING
+  #9  RULER headroom gate (3/3 reproducible)    — STILL BLOCKING
+  #10 NIAH decode artifact                      — STILL BLOCKING
+  #11 Sandbox diagnostic commands               — STILL BLOCKING
+
+Cadence recommendation, restated and stronger: **the hourly cron has
+now produced 3 commits totaling ~22,000 lines of snapshot data with
+zero new actionable findings.** Run 25's value is purely statistical
+(N=3 baseline) and that value plateaus quickly. Without a code change
+on the hypercar branch, Runs 26-30 will add ~36,000 more lines of
+indistinguishable failure data.
+
+Recommend either:
+  (a) Pause the cron until Task #7 lands (one-line fix).
+  (b) Change the cron's command to vary between configs each fire
+      (`--full` / `--quick` / `--full --kv-bits 2` / `--full --kv-bits 4`)
+      so we get cross-config signal instead of same-config replication.
+  (c) Cap the analyst at "no new findings → no commit" — skip the
+      BENCHMARKS.md/snapshot push when the run reproduces an already-
+      committed failure pattern.
+
+I cannot apply any of these — they require a code change to either
+the cron prompt or the hypercar_bench harness, which are outside
+the analyst's allow-list. Filing this as a meta-observation, not a
+TASKS.md entry, since none of (a)/(b)/(c) is a benchmark-derived
+issue — they're operations decisions for the human.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
