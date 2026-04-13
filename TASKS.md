@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 21**: Add multi-run statistical aggregation to omlx/bench/aggregate.py
+_(none)_
 
 ## Completed
 
@@ -469,6 +469,11 @@ _Last updated: 2026-04-13_
   - New `omlx/bench/baseline.py` — gathers system state via ctypes + psutil (zero subprocess)
   - Fields: system_memory_gb, swap_used_gb, load_avg, virtual_memory, mlx_processes, disk_io
   - Run as script (`python omlx/bench/baseline.py`) to avoid omlx root package MLX import chain
+- **Task 21**: Add multi-run statistical aggregation to omlx/bench/aggregate.py (2026-04-13)
+  - New `omlx/bench/aggregate.py` — walks bench/snapshots/run*/, groups by SHA, computes per-phase stats (mean, std, median, p10/p50/p90/p99, min, max)
+  - `--report HEAD` prints per-phase table with timing, decode/prefill tok/s, Goal 5 violation count
+  - Writes aggregate JSON to bench/snapshots/aggregate/<sha>.json (idempotent)
+  - stdlib only (no numpy) — _stats() uses manual percentile/std computation
 
 ---
 
