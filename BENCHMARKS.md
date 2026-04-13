@@ -1796,6 +1796,191 @@ becomes: how often does the fast-cluster align? N=5 post-warmup
 runs would tell us.
 ```
 
+### Run 37: Reproducibility Confirmation — Slow-Cluster Path, Phase 3b 15/15 Again, Goal 5 FAIL Again
+```
+Date: 2026-04-13
+SHA:  b6ea75a (bench captured; HEAD started at 0a15f06; research pass 6
+      commit landed mid-run)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run37_2026-04-13T15-33/
+Lock wait: 0s (first run under new cron lock protocol, acquired instantly)
+
+Reproducibility test for Run 35's landmark Goal 5 PASS. Result:
+Phase 3b 15/15 completion IS reproducible (2/2 runs), but the
+bimodal cluster draw determines Goal 5 pass/fail. Run 37 landed in
+SLOW cluster (NIAH 224.7s vs Run 35's 81.7s fast) and re-failed
+Goal 5 at p90 446.2 MB/s (4.5x over gate). The fast-cluster hit
+rate across N=3 post-warmup-default runs is now 1/3 = 33%.
+
+Commits since Run 35 (c201014, 2026-04-13):
+  2972b11  bench: Run 36 aborted during warmup (SIGTERM, no data captured)
+  b32b351  tasks: Start Task 24b — probe MLX argpartition speed for Quest
+  7949c59  bench: Quest top-K probe PASS — argpartition viable at all sizes
+  bbe0913  research: pass 5 — QuaRot weight quant + 4 tasks
+  2673720  fix: Benchmark lock auto-recovers from stale PIDs, cleans up on exit
+  97df157  fix: Pre-flight resource checks before benchmark
+  d5d1b43  fix: Raise pre-flight swap threshold to 12GB, handle psutil OSError
+  72e6f36  tasks: Start Task 15 — SimPO contrast step in TTT engine
+  0a15f06  feat: SimPO contrastive preference step in TTT engine (Task 15)
+  e16ccb3  tasks: Mark Task 26 done — block-sparse dispatch already in Task 5
+  b6ea75a  research: pass 6 — SnapKV + Lookahead/XGrammar/vAttention + 4 tasks
+
+Substantive engineering shipped this window: bench-internal lock
+mechanism, pre-flight resource checks, Task #15 SimPO, Task #24b
+Quest argpartition probe.
+
+Benchmark results (--full, total 1579.2s):
+  Phase 0  Smoke          PASS    0.3s  (warmup working)
+  Phase 1  Coherence      PASS    2.3s
+  Phase 2  Code Intel 5/5 PASS    5.2s
+  Phase 3  NIAH 4K+16K    PASS  224.7s  ← SLOW cluster
+  Phase 3b RULER 15/15    FAIL 1327.2s  (quality gate: vt@4K 0.50 < 0.70)
+  Phase 5  Memory Profile PASS    0.0s  ← 2nd consecutive PASS
+  Phase 6  Summary        PASS    0.0s
+  Phase 4  HumanEval      NEVER RAN (cascade abort on 3b FAIL)
+
+Phase 3b FAIL is a quality-gate failure (ruler_vt@4K 0.50 < 0.70),
+not a memory breach. Memory profile passed cleanly.
+
+RULER 15-task breakdown:
+  [1]  mk@4K  k=2       PASS 2/2 (100%)  12s
+  [2]  mk@4K  k=4       PASS 4/4 (100%)   9s
+  [3]  mk@16K k=3       PASS 3/3 (100%) 244s  (SLOW)
+  [4]  mk@16K k=5       PASS 4/5 (80%)  224s  (SLOW)
+  [5]  mk@64K k=3       SKIP             —    (headroom gate)
+  [6]  vt@4K  chain=3   PASS 1/1 (100%)   9s
+  [7]  vt@4K  chain=4   FAIL 0/1 (0%)     7s  ← reasoning ceiling (4th obs)
+  [8]  vt@16K chain=4   FAIL 0/1 (0%)   220s
+  [9]  vt@16K chain=8   PASS 1/1 (100%) 201s  ← NON-MONOTONIC!
+  [10] vt@64K chain=4   SKIP             —
+  [11] vt@64K chain=8   SKIP             —
+  [12] fw@4K  w=4       FAIL 1/3 (33%)    7s  ← first fw data
+  [13] fw@16K w=5       FAIL 1/3 (33%) 182s
+  [14] fw@16K w=7       FAIL 1/3 (33%) 212s
+  [15] fw@64K w=5       SKIP             —
+
+RULER accuracy summary (comparison to Run 35):
+                        R35     R37
+  multi_key_niah@4K     1.00    1.00  (stable)
+  multi_key_niah@16K    0.90    0.90  (stable — same 4/5 pattern)
+  variable_tracking@4K  0.50    0.50  (chain=3 PASS, chain=4 FAIL both runs)
+  variable_tracking@16K 0.50    0.50  (but DIFFERENT per-task pattern!)
+  frequent_word@4K      0.33    0.33  (stable)
+  frequent_word@16K     0.33    0.33  (stable)
+
+NEW FINDING — variable_tracking chain-length pattern is non-monotonic:
+  R35 vt@16K: details not captured per-task
+  R37 vt@16K: chain=4 FAIL 0/1, chain=8 PASS 1/1
+
+  Chain=8 has MORE variables but PASSED while chain=4 FAILED.
+  Either (a) per-instance stochastic — chain=4 drew a harder problem
+  this run, or (b) the failure is at specific chain-length instances,
+  not strictly monotonic in chain length. N=1 per task isn't enough
+  to distinguish. Run 31/34/35/37 all show chain=4 failing though
+  (4 observations), so the chain=4 failure IS reproducible even if
+  the chain-length scaling isn't monotonic.
+
+NEW FINDING — frequent_word family all score 33% at all tested
+configurations. First time fw data is captured in a completed Phase
+3b. All three fw tasks (4K w=4, 16K w=5, 16K w=7) got exactly 1/3
+correct. This is suspiciously uniform — either the gate definition
+is off, the model has a systematic retrieval issue on frequent_word
+format, or the 3-test sample size produces bimodal 0/1/2/3 outcomes
+with 1/3 as the mode.
+
+Memory profile (2nd consecutive Phase 5 PASS):
+  Metal peak:         37.78 GB  (5/5 byte-identical in post-Task-9 era)
+  Swap peak (delta):   9.48 GB  (lower than R31-34's 34-43 range but
+                                  still above CLAUDE.md 8 GB depth)
+  phys_footprint peak: 38.83 GB (Task 8 metric)
+  cpu_pct median:      12.8
+
+  swap_io_mb_per_s:
+    median: 91.2
+    p90:    446.2  ← 4.5x over Goal 5 gate
+    max:    2606.5
+
+Goal 5 (Task 23 metric) run-by-run:
+  R33 slow: p90 534.4  FAIL
+  R34 slow: p90 496.3  FAIL
+  R35 fast: p90  36.4  PASS
+  R37 slow: p90 446.2  FAIL
+
+Correlation is now unambiguous: fast cluster → Goal 5 PASS, slow
+cluster → Goal 5 FAIL. The bimodal draw is what determines whether
+Goal 5 is met.
+
+Fast-cluster hit rate (post-warmup-default only):
+  N=3 runs: R34 slow, R35 fast, R37 slow
+  Hit rate: 1/3 = 33%
+
+  At 33% hit rate, Goal 5 passes only 1 in 3 runs. That is NOT
+  production-quality reliability. Task #22's --kv-bits 2 remediation
+  would either:
+  (a) lower slow-cluster swap pressure below the gate (both clusters pass)
+  (b) improve fast-cluster hit rate via lower baseline pressure
+  Either way, Task #22 remains the most valuable open remediation.
+
+vm_stat deltas (Run 37):
+  Pageins:           38.8 GB  (back to ~36 GB 8-run baseline)
+  Total swap I/O:   641.1 GB  (slow-cluster territory)
+  Sustained rate:    406 MB/s wall-averaged
+  Compressions:      63.8 M
+
+Analysis notes (snapshot: bench/snapshots/run37_2026-04-13T15-33/):
+
+- **Reproducibility of Phase 3b 15/15 completion: CONFIRMED (2/2).**
+  Run 35 and Run 37 both processed all 15 RULER task slots (11
+  executed + 4 SKIPped by headroom gate). Memory stayed clean
+  enough that no watchdog breach fired in either run. The benchmark
+  is reliably producing Phase 3b data — just not passing its
+  quality gates.
+
+- **Fast-cluster hit rate = 1/3 post-warmup-default.** This is the
+  critical number for Task #22 prioritization. If warmup reliably
+  produced fast-cluster, Task #22 could be deprioritized. At 1/3
+  it cannot.
+
+- **Bimodal is orthogonal to Phase 3b completion.** Both R35 (fast)
+  and R37 (slow) completed Phase 3b — the difference is only in
+  memory pressure and runtime, not gate outcomes. Memory cleanup
+  between RULER tasks (chunked prefill + cache clear) is working
+  well enough that both clusters survive.
+
+- **New quality signal: non-monotonic variable_tracking at 16K.**
+  Chain=4 failed, chain=8 passed. N=1 so suggestive not definitive.
+  Chain=4 now has 4 observations of FAIL across R31/R34/R35/R37.
+  Need 2+ observations of chain=8 pass or fail to characterize.
+  Currently 1 observation each.
+
+- **frequent_word uniform 33% across all observed configurations.**
+  First time fw data is captured. Too early to distinguish
+  stochastic-sampling-noise from real quality issue. Run 38+ will
+  tell us.
+
+- **Lock mechanism worked cleanly**: Step 1.5 acquired lock in 0
+  seconds, Step 3 released successfully. This was the first run
+  under the new cron lock protocol (dee4df5b). No SIGTERM, no
+  concurrent-benchmark collision. The lock prevented the Run-36
+  failure mode.
+
+- **Decode speed 5-run streak of stability**: 4K 32.1/31.4/31.2/
+  31.6/31.6 (CV 1.1%), 16K 16.5/16.3/16.4/16.4/16.6 (CV 0.7%).
+  Decode remains the most reliable metric for Goal 3 tracking.
+
+New TASKS.md entries: **NONE filed.**
+Two candidate findings (non-monotonic chain-length, frequent_word
+33% uniform) are held at N=1 observation each. Need N>=2 before
+they meet the atomic-and-testable bar.
+
+Still blocking:
+  #22 HIGH PRIORITY 8-bit Goal 5 fix — fast-cluster hit rate
+      confirmed at 33%, Task 22 remediation still needed for
+      production reliability
+  #35 Sandbox broadening for aggregate tool
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

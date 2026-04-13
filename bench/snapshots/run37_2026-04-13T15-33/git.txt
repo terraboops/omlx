@@ -1,0 +1,10 @@
+=== HEAD ===
+0a15f06ecf72c3bd2301f190b05064c510019889
+
+=== log -6 ===
+0a15f06 feat: SimPO contrastive preference step in TTT engine (Task 15)
+72e6f36 tasks: Start Task 15 — SimPO contrast step in TTT engine
+d5d1b43 fix: Raise pre-flight swap threshold to 12GB, handle psutil OSError
+97df157 fix: Pre-flight resource checks before benchmark (GPU contention + memory)
+2673720 fix: Benchmark lock auto-recovers from stale PIDs, cleans up on exit
+bbe0913 research: pass 5 — QuaRot weight quant + 4 tasks

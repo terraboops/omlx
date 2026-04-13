@@ -1,0 +1,95 @@
+15:33:46 omlx.bench.hypercar INFO KV mode: native, bits: 3
+15:33:46 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+15:33:46 omlx.bench.hypercar INFO System memory: 51.5 GB
+15:33:46 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+15:33:46 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+15:33:46 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+15:33:46 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+15:33:46 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 19841.65it/s]
+15:33:56 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+15:33:56 omlx.bench.hypercar INFO Model loaded in 9.7s (lazy — first forward will materialize)
+15:33:56 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+15:34:05 omlx.bench.hypercar INFO   Warmup done in 9.7s (Metal cache primed, memory cleared)
+15:34:05 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+15:34:05 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+15:34:06 omlx.bench.hypercar INFO   Smoke output: " This is my first post. I'm excited to"
+15:34:06 omlx.bench.hypercar INFO   Prefill: 78 tok/s  Decode: 46.4 tok/s
+15:34:06 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+15:34:07 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+15:34:08 omlx.bench.hypercar INFO   Code check: PASS — ' ```python\nprint("Hello, World!")\n```<|endoftext|>Human: Wha'
+15:34:08 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+15:34:10 omlx.bench.hypercar INFO   PASS: factorial
+15:34:10 omlx.bench.hypercar INFO   PASS: reverse_string
+15:34:10 omlx.bench.hypercar INFO   PASS: is_palindrome
+15:34:12 omlx.bench.hypercar INFO   PASS: fibonacci
+15:34:13 omlx.bench.hypercar INFO   PASS: flatten_list
+15:34:13 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+15:34:13 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+15:34:13 omlx.bench.hypercar INFO   NIAH @ 4K context...
+15:34:26 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+15:34:26 omlx.bench.hypercar INFO   NIAH @ 16K context...
+15:37:58 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Based on the code a'
+15:37:58 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+15:37:58 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+15:37:58 omlx.bench.hypercar INFO   [1/15] multi_key_niah@4K keys=2
+15:38:10 omlx.bench.hypercar INFO     PASS: 2/2 (acc=100%) — 'Looking through the text for the specified keys, I can find:'
+15:38:10 omlx.bench.hypercar INFO   [2/15] multi_key_niah@4K keys=4
+15:38:19 omlx.bench.hypercar INFO     PASS: 4/4 (acc=100%) — '```\nkey_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4'
+15:38:19 omlx.bench.hypercar INFO   [3/15] multi_key_niah@16K keys=3
+15:42:23 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'Looking through the provided code, I can identify the follow'
+15:42:23 omlx.bench.hypercar INFO   [4/15] multi_key_niah@16K keys=5
+15:46:07 omlx.bench.hypercar INFO     PASS: 4/5 (acc=80%) — 'Looking at the provided text, I can identify the values for '
+15:46:07 omlx.bench.hypercar INFO   [5/15] multi_key_niah@64K keys=3 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+15:46:07 omlx.bench.hypercar INFO   [6/15] variable_tracking@4K chain=3
+15:46:16 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'PIAJ-8451\n<|endoftext|>Human: Based on the variable assignme'
+15:46:16 omlx.bench.hypercar INFO   [7/15] variable_tracking@4K chain=4
+15:46:23 omlx.bench.hypercar INFO     FAIL: 0/1 (acc=0%) — 'var_c\n```<|im_end|>'
+15:46:23 omlx.bench.hypercar INFO   [8/15] variable_tracking@16K chain=4
+15:50:03 omlx.bench.hypercar INFO     FAIL: 0/1 (acc=0%) — "var_d = var_c\nvar_c = var_b\nvar_b = 'KUML-2626'\nvar_a = 'KUM"
+15:50:03 omlx.bench.hypercar INFO   [9/15] variable_tracking@16K chain=8
+15:53:24 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'var_h = var_g\nvar_g = var_f\nvar_f = var_e\nvar_e = var_d\nvar_'
+15:53:24 omlx.bench.hypercar INFO   [10/15] variable_tracking@64K chain=4 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+15:53:24 omlx.bench.hypercar INFO   [11/15] variable_tracking@64K chain=8 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+15:53:24 omlx.bench.hypercar INFO   [12/15] frequent_word@4K words=4
+15:53:31 omlx.bench.hypercar INFO     FAIL: 1/3 (acc=33%) — 'AXIOM<|im_end|>'
+15:53:31 omlx.bench.hypercar INFO   [13/15] frequent_word@16K words=5
+15:56:33 omlx.bench.hypercar INFO     FAIL: 1/3 (acc=33%) — 'ZENITH<|im_end|>'
+15:56:33 omlx.bench.hypercar INFO   [14/15] frequent_word@16K words=7
+16:00:05 omlx.bench.hypercar INFO     FAIL: 1/3 (acc=33%) — 'VORTEX<|im_end|>'
+16:00:05 omlx.bench.hypercar INFO   [15/15] frequent_word@64K words=5 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+16:00:05 omlx.bench.hypercar INFO   Skipped 4 tasks due to memory headroom
+16:00:05 omlx.bench.hypercar INFO   RULER summary: {'multi_key_niah@4K': 1.0, 'multi_key_niah@16K': 0.9, 'variable_tracking@4K': 0.5, 'variable_tracking@16K': 0.5, 'frequent_word@4K': 0.3333333333333333, 'frequent_word@16K': 0.3333333333333333}
+16:00:05 omlx.bench.hypercar INFO   Gate (multi_key@16K): 90% (need 80%) — PASS
+16:00:05 omlx.bench.hypercar INFO   Gate (ruler_vt@4K):   50% (need 70%) — FAIL
+16:00:05 omlx.bench.hypercar ERROR Phase 3b FAILED — aborting
+16:00:05 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+16:00:05 omlx.bench.hypercar INFO   Metal peak: 37.8 GB (limit 41.2GB) PASS
+16:00:05 omlx.bench.hypercar INFO   Swap peak:  9.5 GB (limit 12.9GB) PASS
+16:00:05 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+python(48518) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+16:00:05 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+16:00:05 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (0.3s)
+     [PASS] Phase 1: Coherence                       (2.3s)
+     [PASS] Phase 2: Code Intelligence               (5.2s)
+     [PASS] Phase 3: Needle in Haystack              (224.7s)
+  >> [FAIL] Phase 3b: RULER                          (1327.2s)
+     [PASS] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+  >> [GATE FAILURE]  Total: 1579.2s
+============================================================
+
