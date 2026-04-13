@@ -1,0 +1,11 @@
+=== HEAD ===
+c20101452a9a6862d538ca221eb136b4d772a43e
+
+=== log -5 ===
+c201014 bench: Run 35 LANDMARK — first Goal 5 PASS, first Phase 3b completion, first Phase 5 PASS
+1ce6e77 bench: Run 34 — --warmup default gives 27x smoke speedup; Phase 3b reaches task 8/15
+66e8635 docs: Update CLAUDE.md Goal 3/4 status with warmup measurements
+7a62b53 bench: Make --warmup default, add --no-warmup to opt out
+afc37c8 research: Bimodal timing root cause — Metal shader cache cold/warm (Task 20)
+
+=== code diff vs Run 35 ===

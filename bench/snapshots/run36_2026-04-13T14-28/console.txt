@@ -1,0 +1,15 @@
+14:29:02 omlx.bench.hypercar INFO KV mode: native, bits: 3
+14:29:02 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+14:29:02 omlx.bench.hypercar INFO System memory: 51.5 GB
+14:29:02 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+14:29:02 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+14:29:02 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+14:29:02 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+14:29:02 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 13187.33it/s]
+14:29:12 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+14:29:12 omlx.bench.hypercar INFO Model loaded in 10.1s (lazy — first forward will materialize)
+14:29:12 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+/Users/terra/.local/share/uv/python/cpython-3.13.11-macos-aarch64-none/lib/python3.13/multiprocessing/resource_tracker.py:400: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-kh1k897k'}
+  warnings.warn(
