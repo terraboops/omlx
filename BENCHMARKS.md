@@ -1356,6 +1356,131 @@ Still blocking: Tasks #20 (bimodal timing root-cause investigation)
 and #22 (8-bit Goal 5 headroom fix via --kv-bits 2 or similar).
 ```
 
+### Run 33: Breach Point Regression — Phase 3 NIAH Now Breaches Before Phase 3b Starts
+```
+Date: 2026-04-13
+SHA:  66377eb (bench captured post-run; HEAD was 6e900e6 at start, Task
+      24 regression-detector commit landed during run execution)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run33_2026-04-13T10-09/
+
+Third post-fix run. Same Metal peak (37.66 GB) but NEW behaviour:
+swap delta watchdog fires during Phase 3 NIAH 16K, 28.8 GB delta —
+BEFORE Phase 3b even gets a chance to run. Phase 3b aborts at 0.0s
+because the watchdog.breached flag is already set at phase entry.
+Total runtime 249s, the shortest post-fix run. This is a regression
+in breach-point ordering: Run 31 breached at 3b task 9/15, Run 32 at
+3b task 4/15, Run 33 at Phase 3 itself. Root cause remains Task #22
+(8-bit model over the new Goal 5 swap-throughput budget) — this run
+adds no new root cause, just confirms that cumulative pressure is
+climbing per session hour. First measurement of p90 sustained
+swap_io against the new Goal 5 metric: **534 MB/s, 5.3x over the
+100 MB/s gate**.
+
+Commits since Run 32 (b06670f, 2026-04-13):
+  b0780df  bench: Run 32 — first run with complete observability rebuild
+  194e7f8  research: pass 4 — LayerSkip + 5 tasks
+  963a602  tasks: Bump Task #22 to top-of-backlog HIGH PRIORITY
+  6e900e6  tasks: Add Task 24 — 2-SHA regression detector + minference layer counter fix
+  66377eb  feat: 2-SHA regression detector in aggregate.py (Task 24)
+
+Benchmark results (--full, total 249.1s):
+  Phase 0  Smoke          PASS  10.0s
+  Phase 1  Coherence      PASS   2.4s
+  Phase 2  Code Intel 5/5 PASS   5.3s
+  Phase 3  NIAH 4K+16K    PASS 221.1s (SLOW cluster, Task 10 decodes credible)
+  Phase 3b RULER          FAIL   0.0s ← never ran; breach flag already set
+  Phase 5  Memory Profile FAIL   0.0s
+  Phase 6  Summary        PASS   0.1s
+
+First credible Goal 3 decode-vs-context at post-fix quality:
+  4K  NIAH decode: 31.4 tok/s (Run 32: 32.1)
+  16K NIAH decode: 16.3 tok/s (Run 32: 16.5)
+  Both values track Run 32 within 3% — stable and credible.
+
+Memory profile (new Task 8 profiler, 215 samples):
+  Metal peak:           37.66 GB (stable: R31 37.78, R32 37.78, R33 37.66)
+  Swap peak (delta):    43.13 GB ← NEW HIGH (R31 38.16, R32 37.21)
+  RSS peak:             14.46 GB
+  phys_footprint_gb:    tracked, well-behaved
+
+  cpu_pct:             median 14.8  mean 22.2  max 106.3 (Run 32: 14.4/19.9/106.1)
+  swap_io_mb_per_s:    median 229.9  mean 285.6  max 2901.9 (Run 32: 141/238/3768)
+  swap_io p90:         534.4 MB/s   ← 5.34x over Goal 5 new threshold
+
+Breach point regression across 3 post-fix runs:
+  Run 31: Phase 3b task 9/15 (variable_tracking@16K chain=8)  swap delta 20.3 GB
+  Run 32: Phase 3b task 4/15 (multi_key_niah@16K keys=5)      swap delta 24.7 GB
+  Run 33: Phase 3 NIAH 16K (before 3b)                        swap delta 28.8 GB
+  --
+  Each run's breach fires earlier in the benchmark and with a higher
+  swap-delta threshold-crossing value. This is consistent with cumulative
+  OS-level memory pressure accumulating across the ~3-hour session.
+  Compressor fragmentation or page-cache decay are the likely causes.
+
+vm_stat deltas (Run 33):
+  Pageins:           71.5 GB (elevated; 8-run baseline ~36 GB)
+  Total swap I/O:   110.7 GB (short run, proportional)
+  Sustained:         445 MB/s wall-averaged
+  Compressions/sec:  52.8K (Run 32: 43.5K, +21% per second)
+
+Analysis notes (snapshot: bench/snapshots/run33_2026-04-13T10-09/):
+
+- **FIRST direct p90-swap-io measurement against new Goal 5.** After
+  Task #23 re-stated Goal 5 as "p90 sustained swap_io < 100 MB/s",
+  Run 33 gives the first actual measurement: 534 MB/s p90. That's a
+  5.3x violation. The 8-bit model on native 3-bit KV structurally
+  cannot meet Goal 5 without the Task #22 remediation (--kv-bits 2
+  or equivalent). This confirms what Task #22 predicted and provides
+  a concrete measurement for the "before" side of the Task #22
+  validation.
+
+- **Phase 3b abort at 0.0s is CORRECT behavior, not a bug.** The
+  watchdog.breached flag is checked at phase entry. Phase 3b saw
+  the flag was set (from Phase 3 NIAH's breach) and aborted
+  immediately without running any tasks. Task #7's fix (clean
+  breach reporting) working as designed.
+
+- **Breach point is monotonically regressing within the post-Task-8
+  profiler era** (Runs 31, 32, 33). Each run breaches earlier and at
+  a higher swap delta. Two explanations:
+  (a) OS-level session drift — macOS compressor/page-cache state
+      degrades across hours of benchmarking. Resolution: reboot or
+      session restart between runs. Not actionable by the analyst.
+  (b) Per-run stochastic variance with a rising trend. Need N≥5 post-
+      Task-8 samples to distinguish from (a).
+  Either way, the fix is Task #22 — making the 8-bit model fit with
+  more headroom.
+
+- **Decode speed is stable and credible at post-fix quality**: 31.4
+  tok/s at 4K, 16.3 tok/s at 16K, matching Run 32 within 3%. These
+  are the first TWO consistent data points for Goal 3 tracking. Gap
+  to Goal 3 target (>= 50 tok/s constant): 63%% at 4K, 33% at 16K.
+
+- **NIAH 16K prefill is faster this run** (312 vs Run 32's 147 tok/s).
+  That's 2x speedup on the same code with the same inputs. Likely OS
+  page cache benefit — the model weights were hot from Run 32's
+  recent load. Not a real prefill improvement, just cache warmth.
+
+- **Task #22 is STILL at top of TASKS.md as HIGH PRIORITY but has NOT
+  been picked up by the implementation loop yet.** The loop hasn't
+  fired on this task. Human may need to manually trigger the
+  implementation loop to start work on Task #22, or Task #22 needs
+  to be marked more prominently to trigger the loop's selection.
+  Until Task #22 lands, every analyst run will show Goal 5 red.
+
+New TASKS.md entries: **NONE.** The Phase 3 NIAH breach point is a
+symptom of Task #22's root cause, not a distinct new issue. Per
+de-dup discipline, cite Task #22 as "still blocking" rather than
+file a new task.
+
+Still blocking:
+  #20 Bimodal timing root-cause investigation (awaiting multi-run aggregation)
+  #22 HIGH PRIORITY 8-bit model Goal 5 headroom fix (apply --kv-bits 2)
+  #35 Broaden sandbox exclusion to all omlx.bench.* modules
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

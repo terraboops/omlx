@@ -1,0 +1,19 @@
+=== HEAD ===
+6e900e647fd082e4ac3f4896af608cc231c93bd2
+
+=== status ===
+ M omlx/bench/agentic_bench.py
+ M omlx/ttt.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run33_2026-04-13T10-09/git.txt
+?? omlx/bench/ttt_bench.py
+
+=== log -8 ===
+6e900e6 tasks: Add Task 24 — 2-SHA regression detector + minference layer counter fix
+963a602 tasks: Bump Task #22 to top-of-backlog HIGH PRIORITY
+194e7f8 research: pass 4 — LayerSkip + 5 tasks
+b0780df bench: Run 32 — first run with complete observability rebuild (Tasks 7/8/9/10/11 all active)
+b06670f docs: Re-state Goal 5 as p90 sustained swap-rate metric (Task 23)
+7f459f9 tasks: Start Task 23 — re-state Goal 5 as p90 sustained swap-rate metric
+d1e4ea7 feat: Multi-run statistical aggregation for benchmarks (Task 21)
+b8ee474 tasks: Start Task 21 — multi-run statistical aggregation
