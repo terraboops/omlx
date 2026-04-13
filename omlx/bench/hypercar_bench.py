@@ -134,9 +134,16 @@ class MemoryWatchdog:
             self._check_thread.join(timeout=5)
         return self.profiler.stop()
 
+    # Swap I/O throughput threshold: sustained pressure above this kills perf
+    # 2000 MB/s = runaway thrashing. Normal model load may see 500-1000 MB/s
+    # transiently as the OS pages in model weights.
+    SWAP_IO_BREACH_MB_S = 2000.0
+    SWAP_IO_BREACH_CONSECUTIVE = 5  # Must exceed for N consecutive samples
+
     def _check_loop(self):
         """Poll profiler samples and check limits."""
         last_idx = 0
+        swap_io_breach_count = 0
         while not self._check_stop.is_set():
             samples = self.profiler.result.samples
             for i in range(last_idx, len(samples)):
@@ -155,6 +162,20 @@ class MemoryWatchdog:
                         s,
                     )
                     return
+                # Swap I/O throughput: detect runaway memory pressure
+                if s.swap_io_mb_per_s > self.SWAP_IO_BREACH_MB_S:
+                    swap_io_breach_count += 1
+                    if swap_io_breach_count >= self.SWAP_IO_BREACH_CONSECUTIVE:
+                        self._set_breach(
+                            f"Swap I/O {s.swap_io_mb_per_s:.0f} MB/s sustained "
+                            f"for {swap_io_breach_count} samples "
+                            f"(threshold {self.SWAP_IO_BREACH_MB_S:.0f} MB/s) — "
+                            f"system under critical memory pressure",
+                            s,
+                        )
+                        return
+                else:
+                    swap_io_breach_count = 0
             last_idx = len(samples)
             self._check_stop.wait(0.5)
 
@@ -1297,7 +1318,10 @@ def phase6_write_results(phases: List[PhaseResult], profiler_result,
                 "metal_active_gb": round(s.metal_active_gb, 2),
                 "metal_peak_gb": round(s.metal_peak_gb, 2),
                 "rss_gb": round(s.rss_gb, 2),
+                "phys_footprint_gb": round(s.phys_footprint_gb, 2),
+                "cpu_pct": round(s.cpu_pct, 1),
                 "swap_gb": round(s.swap_gb, 2),
+                "swap_io_mb_per_s": round(s.swap_io_mb_per_s, 1),
             }
             for s in profiler_result.samples
         ],

@@ -411,7 +411,7 @@ _Last updated: 2026-04-13_
 
 ## In Progress
 
-- **Task 8**: Rebuild profiler.py observability for macOS unified memory
+_(none)_
 
 ## Completed
 
@@ -460,6 +460,11 @@ _Last updated: 2026-04-13_
   - Each RULER task checks projected memory vs Metal headroom (limit - current - 1GB buffer) before dispatch
   - Tasks exceeding headroom are logged as SKIP with projected/limit details and excluded from gate evaluation
   - Phase details now include `num_ran`, `num_skipped`, and `skipped` list for auditability
+- **Task 8**: Rebuild profiler.py observability for macOS unified memory (2026-04-13)
+  - Fix 1: CPU metric — reuse single `psutil.Process()` across samples (was creating fresh one each time → always 0.0). Now 100% non-zero.
+  - Fix 2: RSS → phys_footprint — added `proc_pid_rusage()` via ctypes for macOS physical footprint (includes Metal + compressed pages). RSS kept for compat.
+  - Fix 3: Swap I/O throughput — added `swap_io_mb_per_s` field from psutil swap_memory() deltas (no subprocess fork). Watchdog breaches at 2000 MB/s sustained for 5 samples.
+  - Critical: ALL subprocess calls removed from profiler sampling loop (fork under memory pressure caused the original catastrophic swap storm)
 
 ---
 
