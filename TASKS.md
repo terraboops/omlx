@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 22**: Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify
+_(none)_
 
 ## Completed
 
@@ -573,6 +573,12 @@ all in `## In Progress`.
   - Result: decode 20→45 tok/s (2.25x), Phase 0 time 9s→0.3s after warmup
   - Strong evidence for Task 20 hypothesis 1 (Metal kernel cache cold/warm bimodality)
   - Clears Metal cache after warmup to avoid inflating memory baselines
+- **Task 22**: Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify (2026-04-13)
+  - TQ3 2-bit: Code Intel 5/5 PASS, decode 49.4 tok/s, swap 3.7 GB (PASS Goal 5)
+  - BUT: NIAH 4K FAIL (2-bit too lossy for short-context retrieval)
+  - Native 2-bit: total quality collapse ("2+2=2+2=2+2=") — only TQ3 WHT viable at 2-bit
+  - Conclusion: 2-bit fixes Goal 5 but regresses Goal 2 (NIAH). Trade-off documented.
+  - Also fixed: warmup uses native KVCache (TQ3 crashes on short warmup), added fcntl benchmark lock (prevents concurrent instances from swamping 48GB)
 
 ---
 

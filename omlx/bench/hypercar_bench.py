@@ -25,6 +25,7 @@ import argparse
 import gc
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -1400,6 +1401,21 @@ def main():
                         help="Path for results JSON")
     args = parser.parse_args()
 
+    # Exclusive lock: only one bench instance at a time on this machine.
+    # Running two model loads concurrently on 48GB causes catastrophic swap.
+    import fcntl
+    LOCK_PATH = Path("/tmp/hypercar_bench.lock")
+    lock_fd = open(LOCK_PATH, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("ERROR: Another hypercar_bench is already running. "
+              "Only one instance allowed at a time (48GB memory constraint).",
+              file=sys.stderr)
+        sys.exit(1)
+    lock_fd.write(f"{os.getpid()}\n")
+    lock_fd.flush()
+
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -1471,10 +1487,17 @@ def main():
             return _finish(phases, watchdog, limits, total_t0, results_path)
 
         # Warmup pass: prime Metal kernel cache + GPU pipeline state
+        # Always uses native KV cache for warmup (TQ3 below min_quant_tokens
+        # returns tuples that crash the SDPA path on short sequences).
         if args.warmup:
             logger.info("\n=== Warmup: priming Metal kernels ===")
             warmup_t0 = time.perf_counter()
-            _generate(model, tokenizer, "Hello", max_tokens=16)
+            from mlx_lm.models.cache import KVCache
+            n_layers = len(model.layers)
+            warmup_cache = [KVCache() for _ in range(n_layers)]
+            _generate(model, tokenizer, "Hello", max_tokens=16,
+                      cache=warmup_cache)
+            del warmup_cache
             gc.collect()
             mx.clear_cache()
             logger.info(f"  Warmup done in {time.perf_counter() - warmup_t0:.1f}s "
