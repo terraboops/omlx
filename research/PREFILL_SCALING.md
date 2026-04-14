@@ -40,6 +40,24 @@ It IS from:
   At 16K, the router must dispatch more total tokens across the expert
   set, increasing memory traffic.
 
+## 64K NIAH: Attention Scores Are the Real Bottleneck
+
+Attempted 64K NIAH with native 3-bit KV (Run 55):
+- Metal peaked at **51.3 GB** (exceeded 48 GB system memory!)
+- Swap: 17.8 GB
+- KV cache at 64K (3-bit): only 1.4 GB — NOT the bottleneck
+- Attention scores: 4096 × 65536 × 32 × 2 = **16 GB per chunk**
+
+The attention scores tensor is the real memory wall at 64K+.
+The KV cache compression (3-bit, ~1.4 GB at 64K) is already excellent.
+The problem is the O(n²) attention computation itself.
+
+**Solutions for Goal 1 at 64K+:**
+1. Smaller prefill chunks: 1024 → attention = 4 GB (fits)
+2. FlashAttention (MLX steel already avoids materialization for some paths)
+3. Streaming attention (TQ3 mode already has this)
+4. MInference sparse masks (reduce effective attention area)
+
 ## Implications
 
 - Goal 4 target (500 tok/s constant) requires attention cost to be
