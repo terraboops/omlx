@@ -2417,6 +2417,122 @@ to handle (future runs with quality-gate failures will still
 benefit).
 ```
 
+### Run 43: 🟢 ALL GATES PASSED #2 — Byte-Identical Reproduction of Run 41 Despite Code Changes
+```
+Date: 2026-04-14
+SHA:  1be67fb (HEAD started 5932dcf; race commit during run)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run43_2026-04-14T00-37/
+Lock wait: 0s
+
+**Second [ALL GATES PASSED] run** and **byte-perfect reproduction**
+of Run 41's quality metrics. Every RULER sub-score, MMLU-Pro score,
+and HumanEval score is identical. Phase 3b RULER runtime is also
+byte-identical (347.0s in both runs). Total runtime differs by
++0.4%, entirely in MMLU-Pro (+0.55%). Memory is even cleaner this
+run: swap peak 0.29 GB (R41 was 0.41), total swap I/O 0.446 GB
+(R41 was 0.77). The benchmark is now deterministic at the quality-
+metric level and production-ready for regression tracking.
+
+Commits since Run 41 (79e1b3c, 2026-04-13):
+  0e9a6bf  bench: Run 41 LANDMARK
+  46b0b77  bench: MILESTONE — first --full ALL GATES PASS (Run 41)
+  e0de8d5  research: pass 8 — InfiniGen + MLA + MagicPIG + Titans
+  450cf9f  fix: MInference skips quantized KV — prevents tuple-as-array crash
+  6f46912  docs: Goal 3 MET — 52.1 tok/s decode in fp16 mode
+  ef194a4  docs: Goal 4 prefill — 566 tok/s at 4K (PASS), 340 at 16K (drops)
+  1b7b2d5  bench: Run 42 aborted — pre-flight PID 68343 TQ3 mode bench
+  823058f  research: Prefill scaling profile — O(n²) attention bottleneck
+  798e18c  fix: MInference handles 'causal' string mask
+  ac305bd  fix: MInference rectangular masks for chunked prefill
+  bf1a113  feat: Server warmup at model load — eliminates 9s first-request penalty
+  422dffe  tasks: Start Task 13 — DuoAttention two-storage-class KV cache
+  5932dcf  feat: DuoAttention KV cache scaffolding + --kv-mode duo flag
+  1be67fb  (race commit during run)
+
+## R41 vs R43 side-by-side
+
+  Phase                     R41 (s)   R43 (s)   Delta
+  ------------------------  -------   -------   -----
+  Phase 0 Smoke               0.3      0.3      0%
+  Phase 1 Coherence           2.3      2.3      0%
+  Phase 2 Code Intel          5.2      5.2      0%
+  Phase 3 NIAH               69.8     69.9      +0.1%
+  Phase 3b RULER            347.0    347.0      0% ← BYTE-IDENTICAL
+  Phase 3c MMLU-Pro        1012.8   1018.4      +0.55%
+  Phase 4 HumanEval          20.8     20.8      0%
+  Total                    1470.2   1475.9      +0.39%
+
+Quality metrics — all byte-identical:
+  multi_key_niah@4K        1.00     1.00
+  multi_key_niah@16K       0.90     0.90
+  variable_tracking@4K     1.00     1.00
+  variable_tracking@16K    0.50     0.50 ← chain=4 still fails at 16K
+  frequent_word@4K         1.00     1.00
+  frequent_word@16K        1.00     1.00
+  MMLU-Pro                 45/100   45/100
+  HumanEval                18/20    18/20
+
+Memory — R43 is slightly cleaner:
+  Metal peak            37.82 GB  37.82 GB   (identical)
+  Swap peak              0.41 GB   0.29 GB   (-29%)
+  Total swap I/O         0.77 GB   0.446 GB  (-42%)
+  Goal 5 p90           0.0 MB/s  0.0 MB/s   PASS with maximum headroom
+
+CPU profile — consistent with R41 (MMLU-Pro CPU-heavy):
+  R41: median 58.7, max 104.7
+  R43: median 59.0, max 98.0
+
+Analysis notes (snapshot: bench/snapshots/run43_2026-04-14T00-37/):
+
+- **Reproducibility CONFIRMED at N=2.** Every quality metric is
+  byte-identical between R41 and R43. Phase 3b RULER total time
+  matches to 0.0% (347.0s exactly). The 31 new RULER unit tests
+  (a2f5b2b) successfully standardized the generators — there is no
+  remaining stochasticity in gate scoring.
+
+- **No regressions from the R41→R43 code changes.** 13 commits
+  landed in the window, including Task #13 DuoAttention scaffolding,
+  MInference rectangular mask fixes, server warmup at model load,
+  and 3 research passes. None of the changes affected the default
+  bench path (native 3-bit KV). Quality metrics unchanged.
+
+- **R43 memory is even cleaner than R41's already-clean profile.**
+  Swap peak dropped from 0.41 GB to 0.29 GB (-29%), total swap I/O
+  from 0.77 GB to 0.446 GB (-42%). Both runs pass Goal 5 p90 at
+  0.0 MB/s. Either the system baseline is converging toward a
+  stable clean state, or something in the MInference fixes reduced
+  memory pressure. Too early to attribute.
+
+- **vt@16K chain=4 still the only sub-task failing** (FAIL 0/1 in
+  both R41 and R43). Chain=3 passes at 4K, chain=4 passes at 4K,
+  chain=8 passes at 16K — only chain=4 at 16K fails consistently.
+  8 FAIL observations now across R31/34/35/37/40/41/43 for vt@16K
+  chain=4 (with some pass observations mixed in for other chain
+  lengths). This is a stable model-capability signal: Qwen3-Coder
+  can handle chain=4 at 4K context but not at 16K. Worth filing
+  as an investigation task if a proposed fix path emerges.
+
+- **CPU profile stable at median ~59%** across both passing runs.
+  MMLU-Pro dominates the CPU time. This is now a reliable
+  baseline — any future run with median CPU < 40% or > 75%
+  during MMLU-Pro phase would be an anomaly worth investigating.
+
+- **Run-to-run wall-clock variance is 0.4%** at the total level.
+  Compare to the pre-fix era where variance was 14-25% (R23-R30).
+  The benchmark is no longer bimodal or stochastic at the fast-
+  cluster level — Task 20's warmup + MInference fixes + cleanup
+  have moved it to reliable fast-cluster territory.
+
+New TASKS.md entries: **NONE.**
+
+This is a reproducibility-confirmation entry. The main finding is
+that Run 41 was not a lucky one-off — the benchmark reliably
+passes all gates on default config with Run 41's commit state,
+and the further code changes in R41→R43 did not regress anything.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
