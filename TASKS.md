@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 44**: ShadowKV SVD-rank probe on Qwen3-Coder K cache
 
 ## Completed
 
