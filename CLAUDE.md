@@ -30,7 +30,7 @@ any of these — even to improve another — needs explicit justification.
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
 | 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), **validated to 64K** (NIAH PASS, 33.9GB Metal) | Need 128K/256K validation; 1M needs streaming attention |
-| 2 | 4 independent evals beating GPT-4 | HumanEval 90%, Code Intel 5/5, RULER 100%, **MMLU-Pro 64% (duo mode)** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
+| 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62-64%** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
 | 3 | 50 tok/s decode constant | **52.4 tok/s with DuoKVCache — GOAL MET**. Native: 47.5, TQ3: 49.4. | Met in duo/fp16 mode. Drops to ~16 tok/s at 16K context (bandwidth bound). |
 | 4 | 500 tok/s prefill constant | **803 tok/s at 4K, 501 at 16K — GOAL MET** in duo mode. Native: 566/340. | Duo fp16 KV eliminates dequant overhead. O(n²) still applies at 64K+. |
 | 5 | Swap p90 < 100 MB/s | **0.0 GB swap across N=8 duo runs — GOAL MET**. p90 = 0 MB/s. | Validated: Runs 46-53 all zero swap with duo mode. |
