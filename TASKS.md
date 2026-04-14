@@ -1561,3 +1561,86 @@ all in `## In Progress`.
   baseline"). No production code changes in this task itself.
 - **Effort**: S (half a day — read + write, no code)
 - **Depends on**: none; unblocks Task 31.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 7, 2026-04-12)
+
+### 49. Adopt ProLong's RULER length × subtask matrix in Tasks 1/7/25
+- **Goal**: 1 (1M context, *effective*), 2 (eval honesty)
+- **Derived from**: How to Train Long-Context Language Models (Effectively) (2410.02660)
+- **Change**: Documentation-only edit to TASKS.md and `omlx/bench/hypercar_bench.py` doc strings.
+  - Update Task 1's "Verify" section with the specific RULER subtasks ProLong identifies as
+    diagnostic for retrieval, multi-hop tracing, and frequent-word aggregation, and the
+    specific length tiers (4K, 16K, 64K, 256K, 512K) at which each subtask should gate.
+  - Update Task 7's memory-breach early-return path to use ProLong's "fail at the
+    next-shorter length" semantics rather than aborting the whole phase.
+  - Update Task 25's profiling target list to match ProLong's recommended subset rather than
+    the current "all 13 tasks at all lengths" strawman.
+  - Add a one-paragraph note at the top of `phase3b_ruler` in `hypercar_bench.py` citing the
+    ProLong methodology so future contributors know why the subset was chosen.
+- **Verify**: `git diff TASKS.md omlx/bench/hypercar_bench.py` shows the four documentation
+  updates above and no behaviour changes. No new code paths. Tasks 1/7/25 each have an
+  explicit RULER subtask × length pair in their verify criterion.
+- **Effort**: S (half a day — pure documentation)
+- **Depends on**: none; unblocks Tasks 1, 7, 25 by making them more concrete.
+
+### 50. Training-free YOCO-lite KV-sharing probe in TurboQuantKVCache
+- **Goal**: 5 (swap p90), 1 (longer context same budget), 6 (48GB fit)
+- **Derived from**: You Only Cache Once (2405.05254)
+- **Change**: Add a `--kv-share-stride N` flag to `omlx/hypercar_server.py` that causes the
+  KV cache for layer `k` to be aliased to layer `k - (k mod N)` for `k mod N != 0`. Implement
+  by adding a `share_from` field to `omlx/turboquant_kv.py`'s per-layer metadata and routing
+  reads/writes through it. At `N=2` this halves the layer multiplier in the KV bill; at `N=4`
+  it quarters it. Wire a new bench phase `phase_yoco_share_quality` in
+  `omlx/bench/hypercar_bench.py` that runs RULER multi-key@16K and HumanEval with
+  `--kv-share-stride 2` and `--kv-share-stride 4`, gating on no quality regression vs the
+  existing 3-bit baseline.
+- **Verify**: `python -m omlx.bench.hypercar_bench --kv-share-stride 2` passes all existing
+  gates plus the new quality phase. KV memory at 64K context drops by >= 40% vs baseline (
+  measured via `omlx/bench/aggregate.py --report HEAD`). RULER multi-key@16K stays >= 80% of
+  baseline accuracy.
+- **Effort**: M (2-3 days)
+- **Depends on**: Task 12 (DuoAttention head classification) ideally lands first so we share
+  KV only across consecutive *retrieval* heads — but the probe can run independently as a
+  gross-effect baseline.
+
+### 51. Multi-Token Prediction LoRA-retrofit probe via TTT engine
+- **Goal**: 3 (decode speed)
+- **Derived from**: Better & Faster Large Language Models via Multi-token Prediction (2404.19737)
+- **Change**: Add a `train_mtp_heads` mode to `omlx/ttt.py` that:
+  - Freezes the trunk, attaches three new LoRA-rank output projections (each predicting
+    next+1, next+2, next+3 tokens), and trains them on a small coding corpus
+    (HumanEval-train + the existing `omlx/bench/code_intel_problems.py` set).
+  - Saves the resulting MTP head LoRAs to `~/.hypercar/ttt_checkpoints/mtp_*.npz`.
+  - Adds a `--mtp-heads <path>` flag to `omlx/hypercar_server.py` that, when set, runs the
+    main forward and verifies the n-1 extra-head predictions against the main head in a
+    single pass — accepted tokens are committed without an extra forward.
+  - Falls back to feeding the heads' top-1 predictions into Lookahead Decoding's n-gram pool
+    if direct verification acceptance rate is below 30%.
+- **Verify**: With trained MTP heads loaded, `python -m omlx.bench.hypercar_bench --quick`
+  reports decode tok/s at 2K context >= 1.3x the baseline (gated). HumanEval pass@1 stays
+  within 2 points of baseline. Acceptance rate logged in the bench output.
+- **Effort**: M (2-4 days)
+- **Depends on**: Task 47 (Lookahead Decoding) lands first to provide the n-gram fallback path
+  and the tree-attention verification primitive.
+
+### 52. rStar-Math process-supervision loop on top of TTT engine
+- **Goal**: 2 (intelligence breadth, reasoning quality)
+- **Derived from**: rStar-Math: Small LLMs Can Master Math Reasoning with Self-Evolved Deep Thinking (2501.04519)
+- **Change**: Add a `process_rollout` mode to `omlx/ttt.py` that:
+  - Runs MCTS-style rollouts on a single MMLU-Pro reasoning problem, branching at each
+    chain-of-thought step. Branching factor 3, depth 6 (tunable).
+  - Uses Qwen3-Coder itself as the step verifier via an XGrammar-constrained prompt that
+    forces a single token answer in `{good, bad, unsure}` per step (composes with Task 45).
+  - Selects winning trajectories (problems where the final answer is correct) and losing
+    trajectories (correct branches that lost to incorrect siblings) and feeds the pair into
+    the existing SimPO loss path from Task 15.
+  - Limits rollouts to MMLU-Pro categories where the most recent benchmark run reports
+    accuracy < 60%, so we never spend rollouts on problems we already solve.
+- **Verify**: After one rollout-and-train cycle on a held-out MMLU-Pro reasoning subset,
+  `python -m omlx.bench.hypercar_bench --full` reports MMLU-Pro accuracy on the targeted
+  category up by >= 3 points vs the pre-rollout checkpoint. No regression on HumanEval or
+  RULER. Rollout cost logged so we know how much compute one improvement cycle takes on the
+  M4 Pro.
+- **Effort**: L (multi-day, possibly 1-2 weeks)
+- **Depends on**: Task 36 (MMLU-Pro gate) and Task 15 (SimPO contrast in TTT) and Task 45
+  (XGrammar constrained decoding) all land first.

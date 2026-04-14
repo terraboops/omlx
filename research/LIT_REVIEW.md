@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-12 (pass 6)_
+_Last updated: 2026-04-12 (pass 7)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -1121,6 +1121,209 @@ paper-to-implementation path is not concrete for our stack — this is
 the kind of gap the brief explicitly says should be documented rather
 than filled with a filler task.
 
+## Pass 7 — 2026-04-12
+
+Bucket coverage from the brief: prior passes cover attention sparsity, KV
+quant/eviction/tiering, weight quant, MoE serving, prompt compression,
+speculative decoding, evals, online finetuning, allocators. This pass pushes
+into five completely new territories: (a) cross-layer KV sharing, (b)
+multi-token prediction heads (training-time speculative decoding without a
+separate draft), (c) process-supervised reasoning for small models, (d)
+long-context continual pretraining (effective vs. claimed context), and (e)
+adaptive depth via routed compute.
+
+### [You Only Cache Once: Decoder-Decoder Architectures for Language Models](https://arxiv.org/abs/2405.05254) — 2405.05254
+- **Authors**: Yutao Sun, Li Dong, Yi Zhu, Shaohan Huang, Wenhui Wang, Shuming Ma, Quanlu Zhang, Jianyong Wang, Furu Wei (Microsoft Research, Tsinghua)
+- **Published**: 2024-05 (NeurIPS 2024)
+- **Hypercar goals it addresses**: Goal 5 (swap), Goal 1 (longer context same budget), Goal 6 (48GB fit)
+- **TL;DR**: Restructures the transformer into a self-decoder that produces
+  global KV exactly *once* and a cross-decoder stack that re-uses those KVs
+  through cross-attention. The KV cache memory becomes O(L_self · N) instead
+  of O(L_total · N) — typically a 50%+ reduction at long context — without
+  changing per-token compute. Reports near-identical perplexity to a vanilla
+  transformer at the same parameter count and matches accuracy on long-context
+  needle tasks up to 1M tokens.
+- **Why it matters for Hypercar**: Every KV paper on our backlog (Quest,
+  DuoAttention, KIVI, SnapKV, ShadowKV, InfLLM, QuaRot) compresses *within* a
+  per-layer KV cache. YOCO is the first paper in the review that compresses
+  *across layers* — a strictly orthogonal axis. On Qwen3-Coder-30B's 48 layers
+  at 3-bit, the 22.5GB KV at 1M context comes overwhelmingly from layer
+  multiplication. A YOCO-style retrofit (or its inference-only cousin: dropping
+  the KV from layers ≥k and re-using layer k-1's KV via cross-attention) would
+  drop the KV bill from 22.5GB toward ~5-8GB — directly the headroom Goal 5
+  needs and orthogonal to every existing optimisation. The interesting
+  question for `omlx/turboquant_kv.py` is whether a *training-free* YOCO-lite
+  retrofit (share KV across consecutive layer pairs, no fine-tune) preserves
+  enough quality on Qwen3-Coder to be worth a probe before committing to a
+  full architecture rewrite.
+- **Cost of adoption**: M for the inference-only KV-sharing probe (2-3 days
+  to prototype layer-pair sharing in `omlx/turboquant_kv.py` and re-run NIAH
+  + RULER + HumanEval); L for a true YOCO retrofit (multi-week, requires a
+  short continued-pretraining run). Biggest risk: training-free layer KV
+  sharing has not been published as working — the YOCO paper trains the model
+  from scratch to support the structure. The probe might fail and then YOCO
+  becomes a "wait until we have a smaller base model we can fine-tune" item.
+- **Local PDF**: research/2405.05254_yoco.pdf
+
+### [Better & Faster Large Language Models via Multi-token Prediction](https://arxiv.org/abs/2404.19737) — 2404.19737
+- **Authors**: Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, Gabriel Synnaeve (Meta FAIR)
+- **Published**: 2024-04 (ICML 2024)
+- **Hypercar goals it addresses**: Goal 3 (decode speed), Goal 4 (prefill, indirectly via training-time signal density)
+- **TL;DR**: At training time, attaches *n* parallel output heads each
+  predicting the next 1, 2, ..., n tokens from a shared trunk representation.
+  At inference time, the n-1 extra heads serve as a free draft model: their
+  logits are verified against the main head in one forward pass, yielding up
+  to 3x decode speedup on code with no quality loss (and *better* code quality
+  than a single-head baseline at the same compute). Crucially, no separate
+  draft network exists — the speedup is built into the model architecture.
+- **Why it matters for Hypercar**: Pass 2 put EAGLE-2 on the backlog (Tasks
+  28/29) as the high-ceiling decode lever, but EAGLE-2 requires training a
+  separate draft head against the 30B MoE — a multi-week expedition. Pass 6
+  added Lookahead Decoding (Task 47) as the zero-training counterpart. MTP is
+  a third point on this design space: the heads are *already trained* into
+  the model — for Qwen3-Coder we don't have them, but the relevant question
+  is whether MTP heads can be *retrofitted* via a short LoRA fine-tune of new
+  output projections (the trunk stays frozen). If yes, this gives EAGLE-2-class
+  speedups at LayerSkip-class cost. If no, the paper is still load-bearing
+  background for future model selection: any future Qwen/DeepSeek base we
+  pick should be evaluated for MTP-head support, because it is the cheapest
+  decode-speed lever available to consumers of an off-the-shelf model.
+- **Cost of adoption**: M (2-4 days) for the LoRA-retrofit probe — train 3
+  extra output heads on a coding corpus using `omlx/ttt.py`'s LoRA machinery,
+  then implement parallel verification in `omlx/hypercar_server.py`. Risk:
+  the published MTP results train the heads jointly with the trunk; LoRA-only
+  retrofit on a frozen trunk may not match the speedup numbers. The fallback
+  is to use the heads only as a draft signal for Lookahead-style verification,
+  which is still strictly better than no draft at all.
+- **Local PDF**: research/2404.19737_multi_token_prediction.pdf
+
+### [rStar-Math: Small LLMs Can Master Math Reasoning with Self-Evolved Deep Thinking](https://arxiv.org/abs/2501.04519) — 2501.04519
+- **Authors**: Xinyu Guan, Li Lyna Zhang, Yifei Liu, Ning Shang, Youran Sun, Yi Zhu, Fan Yang, Mao Yang (Microsoft Research Asia)
+- **Published**: 2025-01
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth, reasoning quality)
+- **TL;DR**: Trains a 7B math reasoner that matches o1-preview on MATH and
+  AIME by combining (a) MCTS rollouts at training time to generate
+  step-verified reasoning trajectories, (b) a process reward model (PRM) that
+  scores intermediate steps not just final answers, and (c) a self-evolution
+  loop where each generation refines both the policy and the PRM. No human
+  annotations beyond the original problem set. The result is a reproducible
+  recipe for *teaching* reasoning rather than scaling parameters.
+- **Why it matters for Hypercar**: Goal 2's status row says we have HumanEval
+  + Code Intel + NIAH but need "MMLU-style reasoning". Pass 4 added MMLU-Pro
+  as a measurement gate (Task 36). rStar-Math is the first paper in the review
+  that suggests we can *raise* the score on that gate without changing the
+  base model — by running our existing TTT engine (`omlx/ttt.py`) as a
+  process-supervised loop instead of an outcome-supervised one. Our existing
+  TTT is outcome-supervised (HumanEval pass/fail signal). Switching to
+  step-level rewards on a chain-of-thought task is a direct port of the
+  rStar-Math algorithm into our existing infrastructure. The composition with
+  SimPO (Task 15) is exact: SimPO learns from (winner, loser) trajectory pairs,
+  and rStar-Math's MCTS naturally produces such pairs at every branching
+  node. This unlocks the "self-improvement on reasoning" axis that Text-to-LoRA
+  was *not* unlocking.
+- **Cost of adoption**: L (multi-day, possibly 1-2 weeks). Needs: (a) MCTS
+  rollout loop on top of `omlx/ttt.py`, (b) a process reward model — easiest
+  path is to *use Qwen3-Coder itself* as the verifier via XGrammar-constrained
+  step-classification prompts (which composes with Task 45), (c) self-
+  evolution outer loop. Biggest risk: MCTS at the 30B scale on a single M4 Pro
+  is slow; the rStar-Math paper uses many GPUs. We can de-risk by running the
+  rollout loop *only on small reasoning subsets* (MMLU-Pro categories where
+  we currently fail) rather than as a general training run. This reframes the
+  task from "train a math reasoner" to "patch the specific reasoning failure
+  modes the bench surfaces."
+- **Local PDF**: research/2501.04519_rstar_math.pdf
+
+### [How to Train Long-Context Language Models (Effectively)](https://arxiv.org/abs/2410.02660) — 2410.02660
+- **Authors**: Tianyu Gao, Alexander Wettig, Howard Yen, Danqi Chen (Princeton NLP)
+- **Published**: 2024-10
+- **Hypercar goals it addresses**: Goal 1 (1M context, *effective*), Goal 2 (eval honesty)
+- **TL;DR**: ProLong is a recipe for continual pretraining a base model on
+  long-context data such that the *effective* context length matches the
+  *claimed* one. Key findings: (1) a small fraction of long documents
+  interleaved into a much larger pretraining mixture is more effective than
+  pure long-document pretraining, (2) the YaRN/NTK rope-scaling tricks alone
+  are insufficient — the model also needs *training* on long sequences to
+  use them, and (3) RULER is the right gate for measuring whether a long-
+  context recipe actually worked. Reproduces strong RULER scores at 512K with
+  a Llama-3-8B base using ~5B tokens of additional pretraining.
+- **Why it matters for Hypercar**: Our Goal 1 status row says "1M theoretical,
+  validated to 64K in practice." The honest reading is that we have not
+  proven Qwen3-Coder is *useful* at 256K-1M — only that the KV cache fits
+  and the kernel runs. ProLong directly addresses this gap by giving us (a) a
+  diagnostic recipe for measuring effective vs. claimed context (RULER at
+  multiple lengths, which we are already adding via Task 1), and (b) a
+  remediation recipe if we discover Qwen3-Coder collapses at long context. We
+  almost certainly *cannot* afford the full ProLong fine-tune on a single M4
+  Pro, but the paper's *evaluation methodology* is the load-bearing piece for
+  us — it tells us which RULER subtasks are diagnostic of what failure modes
+  and at which lengths to gate. This is the missing instruction manual for
+  Tasks 1, 7, and 25.
+- **Cost of adoption**: S for the methodology adoption (half a day to update
+  Tasks 1, 7, and 25 with ProLong's recommended length tiers and subtask
+  selection); L for any actual continual pretraining (out of scope for the
+  M4 Pro target hardware — flag for cloud-based future work). The high-value
+  near-term action is *measurement*, not retraining. Risk: zero on the
+  measurement path; the implementation path stays on the "future cloud run"
+  shelf next to Text-to-LoRA training.
+- **Local PDF**: research/2410.02660_prolong.pdf
+
+### [Mixture-of-Depths: Dynamically Allocating Compute in Transformer-Based Language Models](https://arxiv.org/abs/2404.02258) — 2404.02258
+- **Authors**: David Raposo, Sam Ritter, Blake Richards, Timothy Lillicrap, Peter Conway Humphreys, Adam Santoro (Google DeepMind, McGill, Mila)
+- **Published**: 2024-04
+- **Hypercar goals it addresses**: Goal 3 (decode speed), Goal 4 (prefill speed)
+- **TL;DR**: Adds a per-layer top-k router that selects the k tokens that get
+  to participate in that layer's residual update; the rest skip the block
+  entirely (zero compute, identity residual). The router is trained jointly
+  with the base model. Reports up to 50% FLOP reduction with no quality loss
+  on language modelling, plus a strict total-compute budget knob (k is
+  fixed) that translates directly to wall-clock predictability — the
+  "constant across context window" property the Hypercar contract demands.
+- **Why it matters for Hypercar**: This is the *third* axis of decode/prefill
+  reduction, alongside attention sparsity (Quest, MInference) and depth
+  reduction (LayerSkip). LayerSkip drops *whole layers* per token via early
+  exit; MoD drops *per-(layer, token)* by routing only some tokens through
+  each layer. The two are composable: LayerSkip handles the easy tokens that
+  exit early, MoD handles the medium-difficulty tokens that need the deep
+  trunk for *some* layers but not all. For Qwen3-Coder's 48 layers, even a
+  conservative 25% MoD routing would give a 1.33x decode/prefill speedup
+  *on top of* LayerSkip's win. Critically for our setting, MoD is *not* a
+  drop-in retrofit — it requires the router to be trained — so this paper's
+  primary value is as a *future model-selection criterion*: the next time we
+  evaluate a base model, we should prefer one that already has MoD-style
+  routing trained in (DeepSeek-V3's MTP and MoD-like layer skip is the
+  closest production example).
+- **Cost of adoption**: L (multi-week, requires fine-tuning) for a true MoD
+  retrofit; S (half a day) for the *evaluation criterion* — add a "router
+  presence" check to the model-selection notes in CLAUDE.md so future model
+  upgrades prefer pre-trained MoD or MoD-like routers. Risk: MoD is closely
+  coupled to the trunk training and unlikely to retrofit cleanly via LoRA.
+  The conservative play is to track this paper as a forward-looking guide
+  rather than an immediate task. Listing it explicitly so we don't accidentally
+  pick a future base model that can't host MoD.
+- **Local PDF**: research/2404.02258_mixture_of_depths.pdf
+
+**Gap not closed this pass**: retrieval-augmented code generation (RAG-for-
+code). I looked for a strong 2024-2026 paper on RAG specifically tuned for
+code understanding (e.g., function-level retrieval, AST-aware chunking, repo-
+graph traversal) that would compose with our existing prompt cache and
+CacheBlend (Task 42). The literature exists — RepoCoder, CodeRAG, CodeBERT-
+retrieval — but the strongest 2024-2026 entries are either evaluation-only
+(no system contribution) or assume a vector store the server doesn't have.
+The paper-to-implementation path was not concrete enough to justify a task,
+and we already have CacheBlend on the backlog as the cross-request KV-reuse
+lever, which captures most of the latency win without the RAG infrastructure
+overhead. Revisit if a future agentic eval shows we are missing context the
+prompt cache cannot supply.
+
+**Gap not closed this pass**: chain-of-thought distillation. I looked for a
+2024-2026 paper that distills a long-CoT teacher (o1-style) into a smaller
+student that we could actually run on the M4 Pro. The strongest candidates
+are all post-r1-distill and would require a multi-day training pipeline that
+collides with the abandoned-work list (Granite distillation). The rStar-Math
+paper above covers the same axis via *self*-distillation through MCTS, which
+is a strictly cheaper path on our target hardware. Documenting here so we
+don't re-open the bucket without new evidence.
+
 ## Synthesis
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -1439,3 +1642,83 @@ first), SnapKV (single biggest Goal 5 move — land second), Lookahead
 EAGLE-2 work), vAttention-style MTLHeap allocator (upgrades Task 31
 from diagnostic to designed fix — land fourth, gated on measuring
 that Task 31's diagnosis matches the paper's premise).
+
+### Pass 7 adds (2026-04-12)
+
+**Highest-leverage find this pass: YOCO (2405.05254).** Every prior KV
+paper on the backlog — Quest, KIVI, DuoAttention, SnapKV, ShadowKV,
+InfLLM, QuaRot, LazyLLM, LLMLingua-2 — attacks the KV bill *within* a
+single layer's cache. YOCO is the first paper in the entire review
+that attacks the bill *across* layers, by sharing one global KV state
+between all layers above k. On Qwen3-Coder-30B's 48 layers, this is a
+strictly orthogonal axis, and the math is decisive: even a
+training-free YOCO-lite probe that shares KV across consecutive
+layer pairs would drop the 22.5GB at 1M context toward ~12GB —
+cutting the layer multiplier in half, *on top of* every per-layer
+compression already on the backlog. This composes with DuoAttention
+(streaming-head removal first, then YOCO-lite shares the surviving
+retrieval heads' KV across layers), with QuaRot (smaller weights ×
+half the layers contributing to KV), and with SnapKV (eviction
+applied to the shared KV is shared automatically across consumers).
+The single highest-impact item it does *not* compose with is
+ShadowKV, which already factors K across the time dimension —
+picking one or the other becomes a real choice once Tasks 43/44
+land. The training-free variant is the right first probe; the full
+architectural retrofit is multi-week and stays a future-cloud-run
+item.
+
+**Second highest: Multi-Token Prediction (2404.19737).** Pass 2 added
+EAGLE-2 (Tasks 28/29) as the high-ceiling Goal 3 lever, and Pass 6
+added Lookahead (Task 47) as the zero-training cousin. MTP is the
+third point on the same design space and uniquely interesting because
+it offers EAGLE-2-class speedups *without* the multi-week draft-model
+training run, *if* a LoRA-retrofit of new output heads on a frozen
+trunk works. The paper does not test that retrofit recipe, so this
+is genuinely a probe — but our existing `omlx/ttt.py` LoRA machinery
+makes the probe cheap (2-4 days), and the downside is bounded because
+the heads can fall back to feeding Lookahead's n-gram pool even if
+they don't reach EAGLE-2-class verification rates. This is the
+highest-ceiling decode-speed lever on the Pass 7 backlog.
+
+**rStar-Math (2501.04519)** is the first paper in the review that
+directly upgrades our existing TTT loop from outcome-supervised to
+process-supervised. We currently learn from HumanEval pass/fail; rStar
+shows how to learn from step-by-step verified reasoning, using the
+model itself as the verifier via constrained-decoding prompts (which
+composes exactly with Task 45's XGrammar work). It also gives SimPO
+(Task 15) a much richer source of (winner, loser) pairs than the
+single-trajectory contrast we currently extract. Sequencing matters:
+rStar-Math should land *after* MMLU-Pro (Task 36) is a measurement
+gate, because we need to see which reasoning categories Qwen3-Coder
+fails on before we know which MCTS rollouts are worth doing.
+
+**ProLong (2410.02660)** is the missing instruction manual for our
+RULER work (Tasks 1, 7, 25). It does not change the implementation
+plan — those tasks already use RULER — but it tells us *which length
+tiers and which subtasks are diagnostic of which failure modes*,
+which is information our current task descriptions are missing. This
+is a Goal-1 honesty upgrade rather than a new feature: it converts
+"validate to 256K, 512K, 1M" from a vague target into a specific
+RULER subtask × length matrix. The continual-pretraining half of
+ProLong stays parked alongside Text-to-LoRA training as a future
+cloud item; the methodology half lands now as a documentation update
+to the existing tasks.
+
+**Mixture-of-Depths (2404.02258)** is included as a *future model-
+selection criterion* rather than as an implementation task. The
+training-from-scratch coupling makes a retrofit infeasible against
+Qwen3-Coder, but the next time we evaluate a base model upgrade we
+should explicitly check for MoD-style routed compute. Listing it
+here so the criterion is captured in the literature record rather
+than as a TODO that gets lost.
+
+Sequencing for Pass 7 tasks: ProLong methodology update (Task 49)
+lands first — it is half a day of documentation and immediately
+makes Tasks 1/7/25 more meaningful. YOCO training-free probe (Task
+50) lands next as the highest-impact bet, gated on the existing
+DuoAttention work to avoid double-counting head-class wins. MTP
+LoRA-retrofit probe (Task 51) follows, gated on Lookahead (Task 47)
+landing first so we have a tree-attention primitive to plug the heads
+into. rStar-Math process-supervision loop on TTT (Task 52) lands last,
+gated on MMLU-Pro (Task 36) being live so we have a measurement
+target for the rollouts.
