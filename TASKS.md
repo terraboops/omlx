@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 13**: Two-storage-class KV cache (DuoAttention runtime)
+_(none)_
 
 ## Completed
 
@@ -623,6 +623,11 @@ all in `## In Progress`.
   - Depth 16-32: 2-3% agreement — MoE routing makes every layer critical
   - Verdict: **LayerSkip NOT VIABLE** for this MoE model. Expert selection per-layer prevents early exit.
   - Results at `omlx/patches/layerskip_thresholds/qwen3_coder_30b_a3b_instruct_8bit.json`
+- **Task 13** (partial): DuoAttention two-storage-class KV cache scaffolding (2026-04-14)
+  - New `omlx/duo_kv_cache.py` — DuoKVCache class with StreamingKVCache (ring buffer) + QuantizedKVCache (retrieval)
+  - `--kv-mode duo` CLI flag wired into bench
+  - BLOCKED: QuantizedKVCache returns tuples, StreamingKVCache returns arrays — concatenation fails
+  - Needs: per-head attention dispatch that handles mixed cache types, or fp16-only retrieval heads
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
