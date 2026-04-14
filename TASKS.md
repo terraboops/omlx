@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 16**: ProMoE lazy-load probe for Qwen3-Coder expert weights
+_(none)_
 
 ## Completed
 
@@ -595,6 +595,12 @@ all in `## In Progress`.
   - Phase 3c: 25 questions (cs+math) in default mode, 100 across all categories in --full
   - Gate: mmlu_pro_cs_math >= 35%. Result: **48% (12/25) PASS** — first reasoning eval for Goal 2
   - Per-category breakdown in phase details. Runs after RULER, before HumanEval
+- **Task 16**: ProMoE lazy-load probe for Qwen3-Coder expert weights (2026-04-13)
+  - Experts stored as fused QuantizedSwitchLinear (128, H, W) — can't skip loading individual experts
+  - Gate-masking approach: bias cold expert logits by -1e9 before softmax
+  - Results: 50% FAIL, 75% borderline, 87.5% (112/128) PASS (saves 3.6 GB), 93.75% PASS (saves 1.8 GB)
+  - Quality degrades even at "PASS" levels (repetition artifacts at 87.5%)
+  - Verdict: ProMoE is MARGINAL for this model — 3.6 GB savings at 87.5% residency with quality risk. DuoAttention (Tasks 12-13) is a better path for memory reduction.
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
