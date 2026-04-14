@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 22** (continued): Try Option (c) — run full bench with loosened watchdog, document structural gap
+_(none)_
 
 ## Completed
 
@@ -579,6 +579,11 @@ all in `## In Progress`.
   - Native 2-bit: total quality collapse ("2+2=2+2=2+2=") — only TQ3 WHT viable at 2-bit
   - Conclusion: 2-bit fixes Goal 5 but regresses Goal 2 (NIAH). Trade-off documented.
   - Also fixed: warmup uses native KVCache (TQ3 crashes on short warmup), added fcntl benchmark lock (prevents concurrent instances from swamping 48GB)
+  - Option (c) full run with --max-swap-pct 40: ALL phases completed for first time ever
+  - HumanEval: 18/20 (90%) PASS — first time Phase 4 ran in 10+ benchmark runs
+  - RULER: multi_key@16K 90% PASS, 64K tasks cleanly SKIPped by headroom gate
+  - RULER gate FAIL from variable_tracking (reasoning task), not memory — separate issue
+  - Swap 9.3 GB (under loosened 20.6 GB limit), Metal 37.8 GB (under 41.2 GB limit)
 - **Task 30**: Survey mx.fast.scaled_dot_product_attention source for AMX binding (2026-04-13)
   - Written to `research/MLX_ATTN_DISPATCH.md` with line-level citations from MLX v0.31.1
   - Key findings: prefill (L>8) uses `steel_attention` with AMX (`simdgroup_matrix`); decode (L=1) uses `sdpa_vector` (scalar, no AMX)
