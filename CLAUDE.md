@@ -25,21 +25,23 @@ any of these — even to improve another — needs explicit justification.
 | 5 | **Swap pressure** | p90 sustained swap I/O < 100 MB/s (N≥8 runs) | Swap depth alone misses throughput; 100 MB/s leaves 4x headroom vs M4 Pro's ~430 MB/s floor |
 | 6 | **Machine fit** | Runs comfortably on the M4 Pro 48GB reference machine | Laptop stays usable while inference runs |
 
-### Current status against goals (as of 2026-04-13)
+### Current status against goals (as of 2026-04-14)
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), validated to 64K in practice | Need NIAH validation at 128K, 256K, 512K, 1M |
-| 2 | 4 independent evals beating GPT-4 | HumanEval 90%, Code Intel 5/5, RULER 100% (multi-key+VT+freq), MMLU-Pro 48% — **4 eval families, ALL GATES PASS** | Add: tau-bench (agentic), LiveCodeBench (contamination-free coding) |
-| 3 | 50 tok/s decode constant | **52.1 tok/s at 2K with fp16 KV — GOAL MET**. Native 3-bit: 47.5 tok/s (95%). TQ3 2-bit: 49.4 tok/s. | Goal met in fp16 mode. Native 3-bit gap is KV dequant overhead (5%). |
-| 4 | 500 tok/s prefill constant | 566 tok/s at 4K (**PASS**), 340 tok/s at 16K (68%, drops) — **not constant across context** | Prefill exceeds target at 4K but drops at 16K. MoE expert dispatch + KV allocation dominate at longer contexts. |
-| 5 | Swap p90 < 100 MB/s | N=8 measured p90 ~460 MB/s sustained — **4.6x over target, FAIL**. Swap depth (secondary): 50% of runs exceed 8GB. | Reduce KV memory (--kv-bits 2) or streaming heads (DuoAttention) to cut sustained pressure. Measured via `omlx/bench/aggregate.py --report HEAD`. |
-| 6 | 48GB M4 Pro fit | Load 32.4GB, peak 37.7GB — **PASS** | Maintain as optimizations land |
+| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), validated to 16K in practice | Need NIAH at 64K+ (headroom gate skips these on 8-bit model) |
+| 2 | 4 independent evals beating GPT-4 | HumanEval 90%, Code Intel 5/5, RULER 100%, **MMLU-Pro 64% (duo mode)** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
+| 3 | 50 tok/s decode constant | **52.4 tok/s with DuoKVCache — GOAL MET**. Native: 47.5, TQ3: 49.4. | Met in duo/fp16 mode. Drops to ~16 tok/s at 16K context (bandwidth bound). |
+| 4 | 500 tok/s prefill constant | 566 tok/s at 4K (**PASS**), 340 at 16K (drops) | O(n²) attention bottleneck (see research/PREFILL_SCALING.md) |
+| 5 | Swap p90 < 100 MB/s | **Duo mode: 0.0 GB swap** at default context. Native N=8: p90 ~460 MB/s. | Duo mode eliminates swap at default context. Need N=8 duo runs for p90. |
+| 6 | 48GB M4 Pro fit | Duo: 35.1 GB peak. Native: 37.8 GB. — **PASS** | Duo uses 2.7 GB more Metal (fp16 KV) but zero swap. |
 
-**Interpretation**: Goals 2, 3, 6 are MET. Goal 4 (prefill) passes at 4K but drops at 16K — the
-"constant across context" requirement is the remaining challenge. Goal 5 (swap) requires
-DuoAttention + ShadowKV to structurally reduce KV memory (see research/OPTIMIZATION_DECISION_MATRIX.md).
-ALL GATES PASS in both default and --full mode. Decode exceeds target in fp16 (52 tok/s).
+**Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 64% vs 48% native), zero swap,
+52.4 tok/s decode. DuoKVCache uses fp16 for all heads with ring-buffer trimming for streaming
+heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
+
+**Interpretation**: Goals 2, 3, 6 are MET. Goal 5 is likely met in duo mode (zero swap at default
+context, needs N=8 validation). Goal 4 passes at 4K but drops at 16K — O(n²) attention.
 
 ## Before Every Commit
 
