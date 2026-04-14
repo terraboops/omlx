@@ -176,7 +176,13 @@ class DuoKVCache(_BaseCache):
             if ht == "streaming":
                 self.sub_caches.append(StreamingKVCache(window=window, sink=sink))
             else:
-                self.sub_caches.append(QuantizedKVCache(group_size=group_size, bits=bits))
+                # Use fp16 KVCache for retrieval heads — QuantizedKVCache
+                # returns (data, scales, biases) tuples that can't concatenate
+                # with StreamingKVCache's mx.array outputs. fp16 uses more
+                # memory but enables mixed-type concatenation.
+                # TODO: Switch to QuantizedKVCache once per-head attention
+                # dispatch handles mixed types (avoids this dequant overhead).
+                self.sub_caches.append(KVCache())
 
         n_streaming = sum(1 for t in self.head_types if t == "streaming")
         logger.debug(f"Layer {layer_idx}: {n_streaming}/{n_kv_heads} streaming KV heads")

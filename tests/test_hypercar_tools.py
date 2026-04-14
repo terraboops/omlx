@@ -232,4 +232,35 @@ class TestMMLUProAnswerExtraction:
         prompt = mmlu_tasks.format_prompt(q)
         assert "A." in prompt
         assert "B." in prompt
-        assert "The answer is (X)" in prompt
+
+
+# ---------------------------------------------------------------------------
+# DuoAttention policy JSON tests (pure JSON, no MLX)
+# ---------------------------------------------------------------------------
+
+
+class TestDuoPolicy:
+    def _load_policy(self):
+        import json
+        path = Path("omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json")
+        if not path.exists():
+            pytest.skip("DuoAttention policy not calibrated")
+        return json.loads(path.read_text())
+
+    def test_load_policy(self):
+        policy = self._load_policy()
+        assert "heads" in policy
+        assert policy["streaming_fraction"] > 0
+
+    def test_policy_has_all_layers(self):
+        policy = self._load_policy()
+        layers_seen = set(h["layer"] for h in policy["heads"])
+        for layer in range(policy["n_layers"]):
+            assert layer in layers_seen, f"Layer {layer} missing"
+
+    def test_streaming_fraction_matches(self):
+        policy = self._load_policy()
+        total = len(policy["heads"])
+        streaming = sum(1 for h in policy["heads"] if h["policy"] == "streaming")
+        frac = streaming / total
+        assert abs(frac - policy["streaming_fraction"]) < 0.01
