@@ -891,14 +891,20 @@ def _project_prefill_memory_gb(ctx_tokens: int, model) -> float:
         hidden_size = hidden_size or 2048
     head_dim = hidden_size // n_heads
 
-    bytes_per_elem = 2  # fp16
+    # KV cache bytes: depends on quantization mode
+    if _KV_MODE in ("native", "tq3"):
+        bytes_per_kv_elem = KV_BITS / 8  # 3-bit = 0.375 bytes/elem
+    elif _KV_MODE == "duo":
+        bytes_per_kv_elem = 2  # fp16 (duo uses fp16 for retrieval heads)
+    else:
+        bytes_per_kv_elem = 2  # fp16
 
     # KV cache memory (both K and V, all layers)
-    kv_gb = (ctx_tokens * n_layers * 2 * n_kv_heads * head_dim * bytes_per_elem) / 1e9
+    kv_gb = (ctx_tokens * n_layers * 2 * n_kv_heads * head_dim * bytes_per_kv_elem) / 1e9
 
-    # Attention scores per chunk (chunked prefill uses PREFILL_CHUNK)
+    # Attention scores per chunk (always fp16 regardless of KV mode)
     chunk = min(ctx_tokens, PREFILL_CHUNK)
-    attn_gb = (chunk * ctx_tokens * n_heads * bytes_per_elem) / 1e9
+    attn_gb = (chunk * ctx_tokens * n_heads * 2) / 1e9  # fp16 scores
 
     safety_factor = 1.5  # MoE router, RMS norm, residuals
     return (kv_gb + attn_gb) * safety_factor
