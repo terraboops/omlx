@@ -689,10 +689,18 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         tokens = tokenizer.encode(prompt)[:ctx_len]
         cache = _make_cache(n_layers)
 
-        # Chunked prefill
+        # Chunked prefill — adaptive chunk size for long context.
+        # At 64K+, attention scores per chunk = chunk × accumulated × n_heads × 2.
+        # chunk=4096 at 64K = 16 GB scores (OOM). chunk=1024 = 4 GB (fits).
+        chunk = PREFILL_CHUNK
+        if ctx_len >= 65536:
+            chunk = 1024  # Prevent attention score OOM at 64K+
+        elif ctx_len >= 32768:
+            chunk = 2048
+
         prefill_t0 = time.perf_counter()
-        for chunk_start in range(0, len(tokens), PREFILL_CHUNK):
-            chunk_end = min(chunk_start + PREFILL_CHUNK, len(tokens))
+        for chunk_start in range(0, len(tokens), chunk):
+            chunk_end = min(chunk_start + chunk, len(tokens))
             x = mx.array([tokens[chunk_start:chunk_end]])
             logits = model(x, cache=cache)
             mx.eval(logits)
