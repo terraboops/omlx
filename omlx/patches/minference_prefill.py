@@ -301,9 +301,10 @@ def sparse_prefill_sdpa(
             if sparse_mask is not None:
                 additive_mask = mx.where(sparse_mask, 0.0, -1e9).astype(queries.dtype)
                 additive_mask = additive_mask[None, None, :, :]
-                if mask is not None:
+                if mask is not None and not isinstance(mask, str):
                     combined_mask = additive_mask + mask
                 else:
+                    # "causal" string or None — sparse mask already includes causality
                     combined_mask = additive_mask
             else:
                 combined_mask = mask
@@ -368,8 +369,10 @@ def apply_minference_prefill_patch(
         L = queries.shape[-2]
 
         # Only apply sparse dispatch during prefill with fp16 KV (L > 1)
-        # Skip if keys is a tuple (quantized KV state from QuantizedKVCache)
-        # Decode (L=1) is handled by TQ3 fused kernel or Quest
+        # Skip quantized KV (tuples from QuantizedKVCache) — dequant params
+        # are cache-object-specific and can't be inferred from the tuple alone.
+        # MInference works in fp16 mode (--kv-mode fp16) or with TQ3's
+        # short-history dequant path.
         if L > 1 and L > 128 and isinstance(keys, mx.array):
             return sparse_prefill_sdpa(queries, keys, values, scale, mask)
 
