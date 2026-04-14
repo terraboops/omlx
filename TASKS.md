@@ -2032,3 +2032,39 @@ _(none)_
 - **Verify**: on the M4 Pro reference machine, run `python -m omlx.bench.kv_mode_search` once. The output JSON must contain at least 4 Pareto-optimal configurations across the (decode, memory) plane, and the chosen default config (objective=balanced) must match the current hand-picked default on at least 2 of 3 metrics. Then: with `--objective memory`, `hypercar_bench` runs with the auto-selected config must show measurably lower Metal peak than the default (≥5% drop) without HumanEval regression.
 - **Effort**: M (2-3 days)
 - **Depends on**: Task 64 (two-tier TurboQuantKVCache) — Kareto's optimiser becomes most useful once there's an actual tier configuration to search over. Until then the search space is just (duo, native, tq3, fp16).
+
+## Research-derived tasks (from LIT_REVIEW.md pass 14, 2026-04-14)
+
+### 69. Block-Sparse Flash Attention: gate V-block loads in MLX flash attention (BSFA analogue)
+- **Goal**: 1 (1M context — directly closes the 64K NIAH intermediate-score-tensor bottleneck), 4 (prefill speed), 6 (M4 Pro fit at long context)
+- **Derived from**: Block Sparse Flash Attention (2512.07011)
+- **Motivation**: Commit `5d9d207` identified the 64K NIAH failure as the 16 GB `softmax(QK^T)` intermediate score tensor, *not* the KV cache. Every sparse-attention task currently on the backlog (Quest, MInference, DuoAttention) attacks cache footprint or per-step work. BSFA is the first cited paper that directly attacks the score tensor by staying inside the flash tile and gating V-block fetches.
+- **Change**:
+  - Add an attention patch `omlx/patches/bsfa_attention.py` that wraps MLX's `mx.fast.scaled_dot_product_attention` (or our existing specprefill attention path) with a tile-level gate. For each (query tile, key tile) pair, compute the exact tile-max score; if that max is below a calibrated per-layer/per-head threshold, skip loading the corresponding V tile entirely and contribute zero to the running softmax denominator.
+  - Build a calibration harness `omlx/bench/bsfa_calibrate.py` that runs one pass over a small validation set (the existing coherence + NIAH@4K prompts), records the per-layer-per-head tile-max distribution, and solves for thresholds that skip approximately 40-50% of V tiles while keeping per-layer attention reconstruction error below 1e-3. Persist thresholds to `bench/snapshots/bsfa_thresholds.json`.
+  - Gate behind a server flag `--bsfa` on `omlx.hypercar_server`, default off.
+- **Verify**: on hypercar_bench with `--bsfa`:
+  - NIAH@4K, @16K, @64K all pass (needle retrieved, no quality regression).
+  - Measured Metal peak at 64K NIAH drops by at least 4 GB vs the `--bsfa` off baseline (the score-tensor saving).
+  - Prefill speed at 16K increases by at least 10% (secondary effect of skipped V loads).
+  - HumanEval pass@1 within 2% of baseline.
+- **Effort**: M (3-4 days) — the algorithm is small but MLX has no native flash-sparse primitive, so implementation is in the mx.compile layer or a custom attention kernel path.
+- **Risk**: Apple Silicon's unified memory makes "skip V tile load" a smaller win than on CUDA (V is already in shared memory); the real benefit on MLX comes from avoiding the `mx.eval()` of the skipped tile's contribution to the score tensor. The measured Metal-peak drop is the metric that matters, not the raw speedup.
+- **Depends on**: none — self-contained. Can land before or in parallel with Task 3 (Quest).
+
+### 70. ButterflyQuant-style learnable butterfly rotation in TurboQuant KV codec
+- **Goal**: 5 (swap headroom at 1M), 6 (M4 Pro fit under load), 1 (1M context with headroom for Chrome+editor)
+- **Derived from**: ButterflyQuant — Ultra-low-bit LLM Quantization through Learnable Orthogonal Butterfly Transforms (2509.09679)
+- **Motivation**: `omlx/turboquant_kv.py` uses a fixed Walsh-Hadamard Transform for pre-quant rotation (per the CLAUDE.md warning that "Givens is broken"). ButterflyQuant proves that *learnable* Givens parameterised as butterfly networks beat fixed WHT at 2-bit quantization. The practical payoff is 2-bit KV quality matching our current 3-bit, which halves the 1M-context KV footprint from 22.5 GB to ~15 GB and gives 7 GB of headroom for Chrome+editor under sustained load.
+- **Change**:
+  - Add a new optional rotation path in `omlx/turboquant_kv.py`: `TurboQuantKVCache(rotation="wht")` (current default) vs `rotation="butterfly"` (new). The butterfly transform is O(d log d) with d log d / 2 Givens angle parameters per layer (where d is the head dim, typically 128), orthogonal by construction.
+  - Build `omlx/bench/butterfly_calibrate.py`: runs a small calibration loop over validation prompts, records KV distributions per layer, and optimises butterfly Givens angles against a reconstruction-loss objective on the Stiefel manifold (orthogonality-preserving). Reuses the existing calibration infrastructure from the TQ codec.
+  - Add a `--kv-rotation butterfly` flag to `omlx.hypercar_server`. Persist learned butterfly parameters to `bench/snapshots/butterfly_rotation_{layer}.npz`.
+  - Run the 3-bit → 2-bit sweep: with the learned butterfly in place, quantize KV to 2 bits and compare against the existing 3-bit WHT baseline on NIAH, RULER, and HumanEval.
+- **Verify**:
+  - At 3-bit KV with butterfly rotation: NIAH@16K, RULER@16K, HumanEval within 1% of WHT baseline (sanity check — butterfly should at worst match WHT at 3 bits).
+  - At 2-bit KV with butterfly rotation: NIAH@16K passes, RULER@16K within 3% of 3-bit baseline, HumanEval within 3% of 3-bit baseline. This is the real test — if 2-bit butterfly matches 3-bit WHT on quality, we ship.
+  - 1M-context memory projection: the Metal peak in duo mode at simulated 1M context must drop by at least 6 GB vs the 3-bit baseline (the expected 22.5 → ~15 GB saving).
+- **Effort**: L (4-5 days) — one day for the butterfly forward, two days for the calibration loop (on-manifold optimisation is the tricky part), one day for validation sweep, one day for debugging the 2-bit failure modes.
+- **Risk**: ButterflyQuant's published numbers are for *weight* quantization; KV cache distributions are token-varying and prompt-dependent, so the learned butterfly calibrated on validation prompts may not generalise to production KV patterns. Mitigation: verify per-layer reconstruction error stays bounded across a held-out diverse prompt set *before* committing to 2-bit.
+- **Depends on**: none directly, but best sequenced after Task 66 (Quest + LARU envelope) has landed so the 2-bit failure mode (if any) shows up against a stable top-K baseline rather than a moving target.

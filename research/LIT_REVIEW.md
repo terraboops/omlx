@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 13)_
+_Last updated: 2026-04-14 (pass 14)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2102,6 +2102,117 @@ wasn't already TurboQuant-adjacent or already cited. Audio-diffusion
 long-range-attention work was also probed and didn't yield a clean
 non-duplicate. Both buckets stay open for pass 14+.
 
+## Pass 14 — 2026-04-14
+
+Nyaa. Pass 13 left three explicit buckets open: cryptography-adjacent
+quantization, audio-diffusion long-range attention, and graphics /
+game-engine streaming. Pass 14 closes **all three** — plus a fourth,
+goal-targeted paper that lands directly on the 16GB attention-score
+tensor finding from commit `5d9d207` ("64K NIAH bottleneck is attention
+scores, not KV cache"). That last one is the highest-leverage find:
+every other bottleneck pass 11-13 identified was a *cache-memory*
+problem, but the 5d9d207 finding proves the binding constraint at
+64K+ is the *intermediate* activation tensor, not the cache itself.
+No paper in the prior 13 passes directly attacked that tensor.
+
+The cross-field sourcing was cs.GR (Aokana voxel rendering), cs.SD
+(LiteFocus audio diffusion), and cs.LG ButterflyQuant whose core
+mechanism is an FFT-style butterfly network — exactly the
+cryptography/signal-processing trick that was originally on the
+pass-13 open list. BSFA is cs.LG but was invisible to prior passes
+because the search term was always "sparse attention for KV cache";
+BSFA attacks the *score* tensor instead, which is a different search
+axis the prior passes didn't hit.
+
+### [Block Sparse Flash Attention](https://arxiv.org/abs/2512.07011) — 2512.07011
+- **Authors**: Daniel Ohayon, Itay Lamprecht, Itay Hubara, Israel Cohen, Daniel Soudry, Noam Elata (Technion, Habana Labs)
+- **Published**: 2025-12 (arXiv, cs.LG)
+- **Hypercar goals it addresses**: Goal 1 (1M context validation — directly closes the 64K NIAH bottleneck), Goal 4 (prefill speed), Goal 6 (M4 Pro fit at long context)
+- **TL;DR**: BSFA computes exact query-key similarities inside FlashAttention's tiled loop, compares per-block maximum scores against calibrated per-layer/per-head thresholds, and skips loading the value block entirely when the max score falls below threshold. Unlike predict-first-then-attend methods (Quest, MInference), BSFA *computes* the scores — just doesn't materialise the full score matrix or the corresponding V-block load. Reports ~1.24x speedup with calibrated thresholds maintaining model quality, pruning roughly 50% of V-loads at long context.
+- **Why it matters for Hypercar**: This is the paper that lands on the commit `5d9d207` finding. Every prior sparse-attention paper we've cited (Quest, MInference, AsyncTLS, DuoAttention) attacks the *KV cache footprint* or the *per-step attention work*, but at 64K NIAH our measured bottleneck is the 16 GB `softmax(QK^T)` intermediate tensor that FlashAttention normally hides but that MLX's default attention path materialises. BSFA's contribution is structural: stay inside the tiled flash loop, compute K-block scores exactly, then gate the V-block fetch. That means (a) the intermediate score tensor is never materialised at full size (bounded by tile), and (b) approximately half the V memory traffic disappears. For `omlx/patches/specprefill.py` and any future MLX flash-attention patch, this is a direct template. The calibration step is a one-time pass that fits naturally into the existing hypercar_bench pipeline. Directly enables 128K/256K validation (the remaining Goal 1 gap) without any KV cache changes.
+- **Cost of adoption**: M (2-4 days). The algorithm is a small addition to a tiled attention kernel — MLX doesn't have a native flash-attention-with-sparsity primitive, so the real cost is implementing the gated V-fetch inside `mx.fast.scaled_dot_product_attention` or as a custom `mx.compile`-able fallback. Biggest risk: Apple Silicon's memory model is unified, so "skip loading V" is less of a win than on CUDA (the V tile is already in shared memory) — the real saving on MLX would be the avoided `mx.eval()` on that tile's contribution, which is smaller than the published numbers. Calibration is the safer angle.
+- **Local PDF**: research/2512.07011_block_sparse_flash_attention.pdf
+
+### [Aokana: A GPU-Driven Voxel Rendering Framework for Open World Games](https://arxiv.org/abs/2505.02017) — 2505.02017
+- **Authors**: Yingrong Fang, Qitong Wang, Wei Wang
+- **Published**: 2025-05 (arXiv, cs.GR)
+- **Hypercar goals it addresses**: Goal 1 (1M context via hierarchical residency), Goal 5 (swap p90 — streaming only hot chunks), Goal 6 (M4 Pro fit)
+- **TL;DR**: Aokana is a GPU-driven voxel renderer built on Sparse Voxel Directed Acyclic Graphs (SVDAG) with hierarchical LOD plus a camera-driven streaming system. Reports 9x memory reduction and 4.8x faster rendering on tens-of-billions of voxels. The architectural idea that matters here is not the voxel rendering itself but the *residency controller*: the system decides which SVDAG nodes to keep GPU-resident, which to demote, and which to refetch, using a camera-frustum + LOD hierarchy as the locality oracle.
+- **Why it matters for Hypercar**: This is the game-engine cross-field find pass 13 explicitly asked pass 14 to bring in. The analogy is precise — replace "voxel chunks" with "KV pages" and "camera frustum" with "query vector" and the system is structurally identical to what we'd build on top of Quest + the `omlx/turboquant_kv.py` page abstraction. SVDAG specifically is interesting because it de-duplicates identical subtrees — for Qwen3-Coder in an agentic session, many KV pages across turns share content (re-read files, re-read tool outputs), and an SVDAG-style content-addressed residency cache could deduplicate them implicitly. The LOD hierarchy also prefigures a "3-bit cold / fp16 hot / cached summary of cold" three-tier KV cache — which is an extension of the existing DuoKVCache split. Most importantly: game engines have been solving "bounded GPU memory, unbounded world, camera-driven locality" for 20 years, and none of that literature has been ported to KV caches yet.
+- **Cost of adoption**: L (direct port) / S (design RFC). The direct port would be a content-addressed KV page store with LOD promotion/demotion driven by attention scores — that is at least a week's work on top of existing infrastructure. The cheap cost is writing up "what does Nanite/Aokana teach us about KV cache residency?" as a design RFC that informs tasks #63 (MIKU watermark), #64 (PAM two-tier migration), and #67 (DynamicAdaptiveClimb). Inspiration-grade but with a clean path.
+- **Local PDF**: research/2505.02017_aokana_voxel_streaming.pdf
+
+### [LiteFocus: Accelerated Diffusion Inference for Long Audio Synthesis](https://arxiv.org/abs/2407.10468) — 2407.10468
+- **Authors**: Zhenxiong Tan, Xinyin Ma, Gongfan Fang, Xinchao Wang (National University of Singapore)
+- **Published**: 2024-07 (Interspeech 2024)
+- **Hypercar goals it addresses**: Goal 3 (decode speed at long context, indirectly), Goal 4 (prefill speed, via attention sparsity insight)
+- **TL;DR**: LiteFocus extends latent audio diffusion models (trained on 10s clips) to 80s+ audio synthesis by rewriting the self-attention into a "dual sparse form": same-frequency focus (each query attends only to tokens at matching spectral positions) plus cross-frequency compensation (a small global pass). Reports ~2x speedup on 80s audio generation with *improved* (not just preserved) audio quality. The insight that matters for us is that the audio community discovered the same "most long-range attention is wasted, a narrow structural prior + a small compensation term is enough" pattern that the LLM community discovered with DuoAttention/StreamingLLM — but from a completely different angle (spectral structure rather than position-based locality).
+- **Why it matters for Hypercar**: This is the audio-diffusion cross-field bucket from pass 13's open list, and it's more than a curiosity. LiteFocus's *specific* sparse pattern doesn't port to text (there's no spectral axis in code tokens), but the *meta-observation* does: any time you have a long-context generative model, there's a structural prior (spatial in graphics, spectral in audio, positional in text) that makes most of the attention matrix redundant. DuoAttention (pass 2, 2410.10819) already exploits this for text via the streaming-vs-retrieval head split. LiteFocus validates independently, from a different community, that this is a universal pattern — which is a confidence boost for doubling down on DuoKVCache (our current default). Secondary: LiteFocus's "dual sparse" decomposition (one structured pattern + a small compensation pass) is an architectural motif we could steal for Quest — a Quest top-K plus a small uniform sample from the tail, rather than pure top-K. That hybrid would be a one-parameter extension to task #34 with an obvious quality-vs-speed knob.
+- **Cost of adoption**: S (inspiration only) / M (dual-sparse Quest variant). The paper itself is inspiration-grade — no direct port of the spectral pattern — but the dual-sparse Quest variant is a 1-2 day experiment on top of the existing Quest prototype plan. Biggest risk: the "compensation" term in text would need to be tuned against RULER to avoid regressions, which adds one calibration phase to the Quest adoption cost.
+- **Local PDF**: research/2407.10468_litefocus_audio_diffusion.pdf
+
+### [ButterflyQuant: Ultra-low-bit LLM Quantization through Learnable Orthogonal Butterfly Transforms](https://arxiv.org/abs/2509.09679) — 2509.09679
+- **Authors**: Bingxin Xu, Zhen Dong, Oussama Elachqar, Yuzhang Shang (University of Illinois, BIT)
+- **Published**: 2025-09 (arXiv, cs.LG; revised 2026-02)
+- **Hypercar goals it addresses**: Goal 5 (swap headroom via lower-bit KV), Goal 6 (M4 Pro fit at 1M)
+- **TL;DR**: Replaces fixed Hadamard rotations (QuaRot, TurboQuant) with *learnable* butterfly transforms parameterised by continuous Givens rotation angles. The butterfly structure is FFT-native (O(n log n) with n log n/2 parameters), orthogonal by construction, and gradient-optimisable — so each transformer layer can learn its own rotation matched to its own outlier distribution instead of using a one-size-fits-all fixed WHT. Reports competitive or better 2-bit quantization quality compared to SpinQuant and DuQuant at lower parameter count.
+- **Why it matters for Hypercar**: This is the cryptography-adjacent quantization find pass 13 explicitly left open, and it lands squarely on a design warning from the Hypercar CLAUDE.md: "The TQ3 codebook uses WHT rotation (NOT Givens — Givens is broken, produces garbage)." Our broken Givens was *pairwise un-learned* Givens. ButterflyQuant proves that *learnable network-structured* Givens (butterfly) can beat WHT — which reconciles the warning: the issue wasn't Givens itself, it was training-free pairwise Givens on WHT-scale groups. The practical implication for `omlx/turboquant_kv.py` is a probe: can we replace the fixed WHT in the TQ codebook with a per-layer learned butterfly, trained against calibration activations? At 3 bits the gain would be modest; the real payoff would be at 2 bits, which would halve the KV footprint at 1M context (22.5 GB → ~15 GB) and give us the headroom to run 1M with Chrome+editor load. Pairs directly with KIVI (pass 1, 2402.02750) — KIVI argues per-channel K and per-token V; ButterflyQuant replaces the rotation before quantization so KIVI's channel axis becomes semantically-meaningful instead of arbitrary.
+- **Cost of adoption**: M-L (3-5 days). One day to wire a butterfly transform into the TQ codec (pytorch reference + MLX forward-only port), one day for calibration loop, one day for the RULER + NIAH + HumanEval gate sweep, plus a buffer for debugging because the training loop needs to stay on-manifold (orthogonality preserved). Biggest risk: the published quality numbers are on weight quantization, not KV cache quantization — KV distributions differ (token-varying vs. weight-static), and we'd need to verify the butterfly transform learned on calibration generalises to production KV under different prompts.
+- **Local PDF**: research/2509.09679_butterflyquant.pdf
+
+### Pass 14 celebration note
+
+Meow! Pass 14 closed all three of pass 13's explicitly-open buckets in
+one pass — graphics/game-engine streaming (Aokana), audio-diffusion
+long-range attention (LiteFocus), and cryptography-adjacent
+quantization (ButterflyQuant) — plus landed a fourth paper that
+directly attacks a **measured** Hypercar bottleneck (BSFA on the 16 GB
+attention-score tensor from commit `5d9d207`). That's the highest-
+leverage find of the pass: every prior sparse-attention citation
+attacks KV cache memory, but the real binding constraint at 64K+ is
+the intermediate score tensor, and BSFA is the first paper we've
+cited that targets it structurally rather than via cache compression.
+
+The game-engine cross-field serendipity is delightful. Aokana's SVDAG
++ LOD + streaming controller is structurally the same system
+Hypercar will eventually need to build on top of its KV cache: a
+content-addressed residency store with camera-driven (here:
+query-driven) locality and hierarchical demotion. Game engines have
+been solving this problem for 20 years under the name "virtual
+texturing" or "mesh streaming", and none of that literature has been
+ported to LLM KV caches yet. That's a rich seam for future passes to
+keep mining.
+
+ButterflyQuant is the most intellectually surprising find — it
+explains *why* our Givens-based TQ attempt failed (pairwise
+un-learned Givens) while *validating* that learned butterfly-
+structured Givens can beat the fixed WHT we replaced it with. The
+path from "Givens is broken, forbidden by the CLAUDE.md warning" to
+"learnable network-structured Givens is state-of-the-art" was
+unexpected and exactly the kind of re-examination the curiosity
+mode was designed to surface.
+
+**Gaps not closed this pass (pass 15+ targets)**:
+- **Graphics BVH traversal for attention pattern selection**. Aokana
+  shows the residency side; the complementary side — using a spatial
+  hierarchy to accelerate the *attention pattern search* itself (like
+  BVH culling in raytracing) — is still open. This would be "bring
+  ray-tracing acceleration structures to top-K attention".
+- **Recommender systems buffer management**. The MovieLens /
+  production recommender literature has its own cache-tiering
+  tradition (candidate set retrieval, approximate top-K over billions
+  of items) that we haven't touched. Probably overlaps with MagicPIG
+  LSH but likely has non-LSH variants worth finding.
+- **SOSP/OSDI 2024-2026 on LLM serving**. The systems community
+  has been publishing LLM-inference papers at tier-1 venues; we've
+  pulled OSDI/SOSP individually but haven't done a focused sweep of
+  the most recent proceedings. Low probability of non-duplicates at
+  this point but worth one cross-check.
+- **Protein folding / molecular dynamics long-range attention**.
+  AlphaFold-class models have their own sparse-attention tradition
+  (pair representations, triangle attention) that we haven't probed;
+  structurally closer to text attention than audio diffusion is.
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -2884,4 +2995,70 @@ through-line of pass 13 is "the cache-replacement / tiered-storage
 literature has 30+ years of head-start on us, and the cheap wins
 are the ones we'd never find if we only searched cs.LG." Meow,
 nyaa.
+
+### Pass 14 adds (2026-04-14)
+
+**Highest-leverage find this pass: Block Sparse Flash Attention
+(2512.07011).** For the first time in 14 passes the loop landed a
+paper that attacks a *measured* Hypercar bottleneck that no prior
+citation targets. Commit `5d9d207` pinned the 64K NIAH failure on
+the 16 GB intermediate attention-score tensor, not the KV cache —
+and every prior sparse-attention paper we'd cited (Quest, MInference,
+DuoAttention, AsyncTLS) attacks cache footprint or per-step work, not
+the score tensor itself. BSFA's structural contribution is to stay
+inside the FlashAttention tiled loop, compute K-block scores exactly,
+then gate the V-block fetch by threshold — so the score tensor is
+never materialised at full size and about half the V memory traffic
+disappears. This is the most directly goal-targeted find since the
+pass-10 Agentless paper, and unlike most sparse-attention work it
+doesn't require a custom data-dependent kernel: the sparsity is
+decided inside the same flash tile that produced the scores.
+
+**Second find: ButterflyQuant (2509.09679)** is the most
+intellectually surprising paper of the pass. The Hypercar CLAUDE.md
+carries a design warning that "Givens rotation is broken, produces
+garbage", referring to an early TQ experiment with pairwise
+un-learned Givens. ButterflyQuant shows that *learnable*
+network-structured Givens (butterfly transforms, parameterised by
+continuous rotation angles, O(n log n) with n log n/2 parameters)
+beat fixed Hadamard rotations at 2-bit quantization. So the warning
+wasn't that Givens is bad — it was that training-free pairwise
+Givens is bad. A learned butterfly replacement for the WHT inside
+`omlx/turboquant_kv.py` is a clean 3-day probe and would be the
+first direct path to 2-bit KV quality that matches our current 3-bit.
+2-bit KV halves the 1M footprint (22.5 → ~15 GB) which is the
+difference between "fits on M4 Pro under load" and "fits
+comfortably".
+
+**Third find: Aokana (2505.02017)** is the game-engine cross-field
+find pass 13 explicitly requested. SVDAG + hierarchical LOD +
+camera-driven streaming controller is structurally identical to
+what Hypercar will eventually build on top of the KV page
+abstraction: a content-addressed residency store with query-driven
+locality and hierarchical demotion. Game engines have been solving
+this under the name "virtual texturing" for 20 years and none of it
+has been ported to KV caches. Inspiration-grade for this pass,
+documented as RFC-worthy design input for tasks #63/64/67, not as
+its own task.
+
+**Fourth find: LiteFocus (2407.10468)** is the audio-diffusion
+cross-field find. The spectral sparse pattern doesn't port to text,
+but the *meta-observation* (dual-sparse = one structured pattern + a
+small compensation term, independently rediscovered by the audio
+community) validates the DuoAttention architectural motif from a
+different angle. Concrete actionable: "Quest top-K + small uniform
+tail sample" as a one-parameter extension to the Quest backlog
+item, documented as a follow-on experiment to task #34.
+
+**Sequencing**: BSFA (task 69) is the only pass-14 paper that lands
+on a measured gate-failing bottleneck, so it sequences first.
+ButterflyQuant (task 70) is the highest-ceiling follow-up but needs
+the TQ codec to be stable first, so it sequences after the existing
+task #66/67 landing. Aokana and LiteFocus are inspiration citations
+with no standalone task — Aokana informs the existing residency
+work; LiteFocus becomes an experimental variant on the Quest
+backlog. The through-line of pass 14 is "sometimes curiosity *is*
+goal-targeted — the intermediate score tensor was invisible for 13
+passes because we were searching 'KV cache compression' when the
+binding constraint was somewhere else entirely". Meow.
 
