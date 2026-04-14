@@ -822,8 +822,18 @@ def _run_ruler_task(model, tokenizer, task_spec: dict,
     response = tokenizer.decode(generated).strip()
 
     # Score: check how many expected values appear in the response
+    # For multi-key NIAH: each expected value must be found (AND logic)
+    # For freq_word/variable_tracking: expected contains case variants of
+    # one answer — any match counts as correct (OR logic)
     expected = task["expected"]
-    found = sum(1 for exp in expected if exp in response)
+    task_type = task.get("task_type", "")
+    if task_type in ("frequent_word", "variable_tracking"):
+        # OR logic: any variant matching = 100% accuracy
+        any_found = any(exp in response for exp in expected)
+        found = len(expected) if any_found else 0
+    else:
+        # AND logic: each expected value must appear (multi-key NIAH)
+        found = sum(1 for exp in expected if exp in response)
     accuracy = found / len(expected) if expected else 0.0
 
     del cache
