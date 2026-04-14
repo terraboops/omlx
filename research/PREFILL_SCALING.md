@@ -52,7 +52,19 @@ The attention scores tensor is the real memory wall at 64K+.
 The KV cache compression (3-bit, ~1.4 GB at 64K) is already excellent.
 The problem is the O(n²) attention computation itself.
 
-**Solutions for Goal 1 at 64K+:**
+## 64K NIAH: PASS with Adaptive Chunking (Run 56)
+
+After implementing adaptive chunk=1024, 64K NIAH passes:
+  4K:  PASS — 548 tok/s prefill, 32.5 GB Metal
+  16K: PASS — 163 tok/s prefill, 32.8 GB Metal
+  64K: PASS —  29 tok/s prefill, 33.9 GB Metal
+
+The smaller chunk (1024 vs 4096) reduces attention scores from 16 GB
+to 4 GB per call, fitting within the remaining Metal headroom.
+Prefill speed drops (29 tok/s at 64K) due to more kernel launches
+and the O(n²) attention cost, but correctness is preserved.
+
+**Solutions for Goal 1 at 128K+:**
 1. Smaller prefill chunks: 1024 → attention = 4 GB (fits)
 2. FlashAttention (MLX steel already avoids materialization for some paths)
 3. Streaming attention (TQ3 mode already has this)
