@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 38** (calibration only): LayerSkip per-layer exit confidence profiling
+_(none)_
 
 ## Completed
 
@@ -617,6 +617,12 @@ all in `## In Progress`.
   - Layer 3 is most streaming (24/32 heads), late layers (44-47) are mostly retrieval
   - Policy JSON at `omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json`
   - Potential KV savings at 1M: ~6.5 GB (59% of K cache uses 256-token ring buffer instead of full cache)
+- **Task 38** (calibration): LayerSkip per-layer exit confidence profiling (2026-04-13)
+  - Depth 44 (4 layers skipped): 55% agreement — best but only 1.05x speedup
+  - Depth 40 (8 layers skipped): 17% agreement — not viable
+  - Depth 16-32: 2-3% agreement — MoE routing makes every layer critical
+  - Verdict: **LayerSkip NOT VIABLE** for this MoE model. Expert selection per-layer prevents early exit.
+  - Results at `omlx/patches/layerskip_thresholds/qwen3_coder_30b_a3b_instruct_8bit.json`
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)

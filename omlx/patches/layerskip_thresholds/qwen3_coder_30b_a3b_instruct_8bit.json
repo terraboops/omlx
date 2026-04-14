@@ -1,0 +1,40 @@
+{
+  "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+  "n_layers": 48,
+  "n_tokens": 64,
+  "context_len": 34,
+  "timestamp": "2026-04-13T20:35:35.356434",
+  "best_draft_depth": 44,
+  "results": {
+    "16": {
+      "depth": 16,
+      "agree": 2,
+      "total": 64,
+      "rate": 0.0312
+    },
+    "24": {
+      "depth": 24,
+      "agree": 2,
+      "total": 64,
+      "rate": 0.0312
+    },
+    "32": {
+      "depth": 32,
+      "agree": 1,
+      "total": 64,
+      "rate": 0.0156
+    },
+    "40": {
+      "depth": 40,
+      "agree": 11,
+      "total": 64,
+      "rate": 0.1719
+    },
+    "44": {
+      "depth": 44,
+      "agree": 35,
+      "total": 64,
+      "rate": 0.5469
+    }
+  }
+}
