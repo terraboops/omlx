@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 11)_
+_Last updated: 2026-04-14 (pass 12)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -1946,6 +1946,75 @@ action is to commit another zero-paper saturation update and
 move on — this is cheap, honest, and preserves the review's
 signal-to-noise ratio.
 
+## Pass 12 — 2026-04-14
+
+Meow. Pass 12 runs under a new loop prompt that explicitly rejects
+saturation as a stopping condition and mandates cross-field search
+when the obvious ML-systems corners look dry. The old loop retired
+at pass 11 with an honest zero-paper commit; this new loop comes
+back hungry. Nyaa. This pass deliberately pulls from systems-systems
+literature (hardware architecture, CXL, processing-near-memory) —
+the kind of papers LLM researchers don't usually read but that have
+been living in the "strict memory budget, latency is everything"
+regime longer than LLMs have existed.
+
+The pass-11 rejection of "cascade routing" as architecturally
+incompatible does not generalise to all systems-land work. Cascade
+routing required a second model in the deployment, which violates
+our memory budget. The three papers below all treat the single
+Qwen3-Coder-30B-A3B deployment as given, and attack the memory
+*hierarchy* around it — exactly what our 48GB unified-memory M4 Pro
+cares about. All three are cross-field finds pulled from hardware
+architecture and memory systems rather than cs.CL, and none was in
+any earlier pass's search window.
+
+### [Architectural and System Implications of CXL-enabled Tiered Memory (MIKU)](https://arxiv.org/abs/2503.17864) — 2503.17864
+- **Authors**: Yujie Yang, Lingfeng Xiang, Peiran Du, Zhen Lin, Weishu Deng, Ren Wang, Andrey Kudryavtsev, Louis Ko, Hui Lu, Jia Rao (University of Texas at Arlington, Intel)
+- **Published**: 2025-03 (arXiv, cs.AR)
+- **Hypercar goals it addresses**: Goal 5 (swap <8GB p90), Goal 6 (fit on M4 Pro 48GB under load)
+- **TL;DR**: The paper diagnoses an under-studied failure mode in tiered memory systems: when LLM inference overfills local DRAM and spills onto slower (CXL) memory, the *local* DRAM bandwidth collapses — up to 81% — because of unfair request queuing between fast and slow tiers. MIKU is a dynamic control mechanism that throttles CPU-issued requests to the slow tier (via CPU quota limits) so the fast tier's bandwidth is preserved, recovering 89% of the optimal decode performance an uncongested system would hit.
+- **Why it matters for Hypercar**: This is the weirdest cross-field find of the pass, and the analogy is exact: **the M4 Pro's unified-memory swap tier is our CXL tier**. When the working set exceeds Metal's effective budget and macOS starts swapping, our DRAM-level bandwidth doesn't just pay the swap latency — it *also* pays a queuing-unfairness penalty where legitimate in-budget memory requests stall behind swap-induced ones. The current benchmark's sustained p90 swap rate (Goal 5) is almost certainly measuring this combined penalty, not pure swap I/O. MIKU's fix — bound the rate of slow-tier requests at the scheduler level — is conceptually transportable to `omlx/bench/profiler.py` and (more ambitiously) to the KV allocator: set a watermark on Metal residency, and if the allocator would cross it, throttle the *producer* (e.g. chunked prefill rate, background TTT steps) rather than letting the fast-tier bandwidth collapse. Goal 5 failures become *recoverable* instead of cliff-shaped.
+- **Cost of adoption**: M — one day to build a Metal-residency watermark probe in `omlx/bench/profiler.py`, one day to add a throttle hook that back-pressures the producer during chunked prefill. Biggest risk: macOS doesn't expose CXL-style tier-separated bandwidth counters, so the watermark has to be inferred from swap page-out rate and Metal peak memory, which is noisier than MIKU's instrumentation.
+- **Local PDF**: research/2503.17864_miku.pdf
+
+### [PAM: Processing Across Memory Hierarchy for Efficient KV-centric LLM Serving System](https://arxiv.org/abs/2602.11521) — 2602.11521
+- **Authors**: Lian Liu, Shixin Zhao, Yutian Zhou, Yintao He, Mengdi Wang, Yinhe Han, Ying Wang (ICT, Chinese Academy of Sciences)
+- **Published**: 2026-02 (arXiv, cs.AR)
+- **Hypercar goals it addresses**: Goal 1 (1M context), Goal 3 (decode at long context), Goal 5 (swap headroom)
+- **TL;DR**: PAM proposes distributing KV tokens across a hierarchical memory system (HBM → DDR → PIM-device fabric) by exploiting *context locality* — the observation that "nearby" attention queries hit "nearby" KV tokens, making LRU-like policies a poor fit and locality-aware migration a much better one. The paper pairs this with PAMattention, a fine-grained parallel attention kernel that runs across heterogeneous memory devices, plus a dynamic migration scheduler that shuffles hot KV segments toward faster tiers at runtime.
+- **Why it matters for Hypercar**: This is the paper that *most directly* confronts the question we've been dancing around for five passes: when KV overflows the fast tier, where does it go, and by what policy? Quest picks top-K pages per query, DuoAttention halves the heads, InfiniGen prefetches, SnapKV evicts, ProMoE caches experts — but none of them answers "given a 1M-token KV that's larger than Metal's comfortable budget, how do we stage it across Metal / wired DRAM / swap-backed DRAM / SSD, and how does the migration policy track the query stream?" PAM's locality-aware migration policy is the first cross-field answer. The analogy for `omlx/turboquant_kv.py`: instead of one monolithic TurboQuantKVCache, we have **tiers** (hot: fp16 in Metal, warm: 3-bit on Metal, cold: 3-bit in wired DRAM, frozen: swap-backed) and a migration policy that tracks the decode query stream. Composes cleanly with DuoAttention (task #12/#13) — retrieval heads stay hot, streaming heads sink to warm/cold tiers automatically.
+- **Cost of adoption**: L — this is a multi-week refactor of the KV cache abstraction. Biggest risk: PAM's evaluation is on PIM hardware with explicit bandwidth tiers, and macOS swap doesn't expose an equivalent tier model to user-space — we'd be managing residency via Metal buffer lifecycle and `madvise` hints, which is coarser than PAM's scheduler assumes.
+- **Local PDF**: research/2602.11521_pam.pdf
+
+### [AsyncTLS: Efficient Generative LLM Inference with Asynchronous Two-level Sparse Attention](https://arxiv.org/abs/2604.07815) — 2604.07815
+- **Authors**: Yuxuan Hu, Jianchao Tan, Jiaqi Zhang, Wen Zan, Pingwei Sun, Yifan Lu, Yerui Sun, Yuchen Xie, Xunliang Cai, Jing Zhang (Meituan)
+- **Published**: 2026-04 (arXiv, cs.LG — two days ago, cold off the press)
+- **Hypercar goals it addresses**: Goal 3 (decode at long context), Goal 1 (1M context validation)
+- **TL;DR**: AsyncTLS is two-level sparse attention (coarse block filtering → fine token selection) paired with an *asynchronous offload engine* that overlaps KV-cache transfers with compute by exploiting the fact that consecutive decode steps share most of their important tokens (temporal locality). The async engine prefetches the KV pages a future decode step will likely need while the current decode step is still running. Reports 1.2-10x operator speedups and 1.3-4.7x throughput gains on 48K-96K contexts, accuracy matching full attention.
+- **Why it matters for Hypercar**: This is the paper that closes the "InfiniGen is cool but what about the *producer* side?" gap. InfiniGen (task #54) is a prefetch predictor; AsyncTLS is a prefetch *scheduler* — it explicitly overlaps transfers with compute in a producer-consumer pipeline, which is the shape the M4 Pro wants (Metal compute and memory-hint operations run on disjoint hardware paths, so overlap is free if scheduled right). The temporal-locality observation is also the clearest articulation of *why* per-query top-K on a 1M-page KV can be cached across decode steps — if step t's top-K has 90% overlap with step t-1's, we're paying for the argpartition once per window not once per step. Task 56 (argpartition speed probe, already landed per pass 9) informs whether this pipelining is even needed, but if it is, AsyncTLS gives the recipe.
+- **Cost of adoption**: M-L — two days to build an async KV-page prefetch queue, three days to wire it into decode and verify no ordering regressions. Biggest risk: Metal's command-buffer scheduler is eager about in-order completion, and the async overlap pattern AsyncTLS uses assumes a true multi-stream runtime. We'd need to check whether `mx.stream` (if it exists at all) or command-buffer fences give us the concurrency, or whether the async engine collapses to sequential on Apple Silicon.
+- **Local PDF**: research/2604.07815_async_tls.pdf
+
+### Pass 12 celebration note
+
+Meow! All three papers came from systems-systems / hardware-architecture
+literature, not cs.CL. None was findable via the "pick a recent long-context
+paper from NeurIPS" search pattern that drove passes 1-9. The serendipity
+trail worked: we searched for "CXL tiered memory LLM inference", "KV
+hierarchical memory management", and "asynchronous sparse attention temporal
+locality" — none of which are phrases any prior pass used. The prompt's
+"look weirder, not less" mandate paid out immediately. Nyaa.
+
+The pass-11 claim of "saturation" was honest for the ML-systems search
+surface it had explored, but incorrect as a universal statement about the
+literature. The fix wasn't to search harder in the same buckets — it was to
+widen the buckets. Five of eight previously-declared-closed directions are
+still closed (KV compression, speculative decoding, evals, Apple Silicon
+arxiv, cascade routing), and we respected all five. The newly-opened
+direction is "memory hierarchy management for LLM inference treated as a
+systems-architecture problem" — which nobody had been searching for because
+it doesn't sit under cs.CL or cs.LG.
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -2614,3 +2683,65 @@ the correct response is another zero-paper saturation update — this
 is cheap and preserves signal-to-noise. The research-derived
 backlog sits at 61 items against a goal set where 5 of 6 goals are
 MET; the bottleneck is execution, not literature coverage.
+
+### Pass 12 adds (2026-04-14)
+
+**Highest-leverage find this pass: PAM (2602.11521).** PAM is the first
+paper in the entire 12-pass review that treats the KV cache as a
+*memory-hierarchy management problem* rather than as a compression,
+eviction, or selection problem. Passes 1-11 attacked KV from every
+direction we knew how to think about — bits (KIVI, QuaRot, MLA),
+heads (DuoAttention), layers (YOCO), pages (Quest), eviction (SnapKV),
+reuse (CacheBlend), prefetch (InfiniGen), layout (vAttention) — but
+always within a single-tier model. PAM is orthogonal to all of them:
+it asks "given that the KV is already compressed and selected as well
+as possible, where does it *live* across the physical memory
+hierarchy, and by what migration policy?" The answer — locality-aware
+migration tracking the query stream — is exactly what the M4 Pro's
+unified memory wants, because on Apple Silicon the "tier" boundary
+isn't discrete (HBM vs DRAM) but soft (Metal-resident vs wired vs
+swap-backed), and a soft boundary makes migration cheaper than the
+paper's PIM target assumed. PAM sits at the layer where every prior
+backlog item (Quest, DuoAttention, InfiniGen, ProMoE) becomes the
+*producer* of hot-vs-cold classification signals that PAM's migration
+policy can consume. It's the missing abstraction layer the backlog
+has been implicitly reaching toward.
+
+**Second find: MIKU (2503.17864)** reframes Goal 5's p90 swap rate
+failure. The current assumption is that swap rate is a direct
+reflection of working-set overflow: if we swap, we're paying the
+swap latency. MIKU shows the actual failure mode is worse —
+*unfair queuing between fast and slow memory tiers can collapse
+the fast tier's bandwidth by 81%* even when most of the working
+set is still in-budget. The fix is producer-side throttling. This
+changes Task 22 (the existing Goal 5 swap mitigation task) from
+"reduce swap volume" to "reduce producer rate when swap starts" —
+a much cheaper and more principled mitigation. Drop-in composition
+with the InfiniGen prefetcher (Task 54): InfiniGen decides *what*
+to prefetch, MIKU decides *when to throttle the producer* when
+prefetching falls behind.
+
+**Third find: AsyncTLS (2604.07815)** is the async-scheduler
+counterpart to InfiniGen's prediction. InfiniGen says what to load;
+AsyncTLS says when to overlap the load with compute. For the M4
+Pro, where Metal compute and memory-hint operations run on disjoint
+paths, getting the overlap right is free throughput. Directly
+informs how Task 54 (InfiniGen implementation) should be
+structured — not just a predictor, but a producer-consumer
+pipeline.
+
+**Pass 12 celebrates serendipity.** All three papers came from
+cs.AR and systems-systems sources, not cs.CL. None would have been
+found by passes 1-11's search patterns. The saturation declared at
+pass 11 was real for the corner of arxiv that had been searched,
+and *not* real for the corner that hadn't been touched. The
+"insatiable curiosity" prompt fix worked on the first pass where
+it was in effect. Meow. The review is now 40 papers across 12
+passes, and the next pass's starting point is "which *other*
+systems-land bucket haven't we scraped yet?" — candidates include
+compiler autotuning (IOPS.rs, TVM-adjacent work), database buffer
+pool research (LeanStore, Umbra's contributions to KV eviction
+policies that predate the LLM KV cache literature by a decade),
+and game-engine streaming asset management (BVH-style hierarchical
+residency for KV pages, by analogy to visibility-driven tile
+streaming).

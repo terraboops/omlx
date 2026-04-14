@@ -1957,3 +1957,40 @@ _(none)_
 - **Verify**: `git log --oneline HEAD~50..HEAD | grep -i "run [0-9]"` cleanly separates analyst from devloop runs (either by prefix or by the commit also touching BENCHMARKS.md). A new devloop internal-sample commit that uses "Run N" without touching BENCHMARKS.md should fail the pre-commit hook.
 - **Effort**: S (2-3 hours: write the README update, decide policy, add the hook script, test)
 
+
+
+## Research-derived tasks (from LIT_REVIEW.md pass 12, 2026-04-14)
+
+### 63. Build Metal-residency watermark probe with producer back-pressure (MIKU analogue)
+- **Goal**: 5 (swap <8GB p90)
+- **Derived from**: MIKU / Architectural and System Implications of CXL-enabled Tiered Memory (2503.17864)
+- **Change**:
+  - New `omlx/bench/metal_watermark.py` — reads Metal peak memory via the existing `mlx.metal.get_peak_memory()` path and swap-out pages via `sysctl vm.swapusage`, at configurable sample rate. Exports a `current_watermark_ratio()` function returning `metal_peak / metal_load_limit` in [0.0, 1.0].
+  - Patch `omlx/hypercar_server.py` chunked-prefill loop: between prefill chunks, if `current_watermark_ratio() > 0.92`, inject a 50ms sleep on the producer side (the chunk dispatcher), preventing the producer from saturating ahead of a soon-to-swap consumer. This is MIKU's throttle transplanted to an LLM serving loop.
+  - Add a `--watermark-throttle` CLI flag on `omlx.hypercar_server` (default off until benchmarked).
+- **Verify**: run `omlx.bench.hypercar_bench --full --kv-mode tq3 --watermark-throttle` and compare p90 swap rate vs. the same run without throttling. Success: p90 swap rate drops at least 30% with no more than 5% loss on NIAH@16K decode tok/s. Also: run without throttling must still pass memory gates (the throttle is opt-in and must not affect the default baseline).
+- **Effort**: M (2 days)
+- **Depends on**: none
+
+### 64. Prototype two-tier TurboQuantKVCache with locality-aware migration (PAM analogue)
+- **Goal**: 1 (1M context), 5 (swap headroom at long context)
+- **Derived from**: PAM / Processing Across Memory Hierarchy for Efficient KV-centric LLM Serving System (2602.11521)
+- **Change**:
+  - Extend `omlx/turboquant_kv.py` with a `TieredTurboQuantKVCache` wrapper that holds two underlying caches: a **hot** tier (existing TurboQuant 3-bit) and a **cold** tier (same format but with `mx.metal.clear_cache()` called after writes, encouraging pages to be evicted from Metal-resident memory toward wired/swap-backed DRAM).
+  - Add a migration policy: at decode step t, every K steps (start with K=32), scan the last window's attention scores from the hot tier. Any page whose cumulative attention weight is below a threshold migrates to cold. Any cold page that gets attended to above a threshold migrates back to hot.
+  - Expose a `--kv-tiered` flag on `omlx.hypercar_server` and on `omlx.bench.hypercar_bench`.
+  - Compose with DuoAttention (Task 12/13): retrieval heads always stay hot, streaming heads always cold. The PAM-style migration policy applies within each head group.
+- **Verify**: on a 128K-token NIAH run with `--kv-tiered --kv-mode tq3` vs. baseline `--kv-mode tq3`, measure (a) Metal peak memory (target: at least 20% drop) and (b) NIAH retrieval accuracy (must stay within 2%). If both hold, the two-tier cache is worth productionising for 128K+. The test sits in Phase 3b of hypercar_bench — add a `phase3c_tiered_kv` subphase guarded by the new flag.
+- **Effort**: L (multi-day — 4-6 days)
+- **Depends on**: Task 13 (DuoAttention two-storage-class KV cache) landed; Task 54 (InfiniGen prefetcher) optional but ideal as the cold→hot migration trigger
+
+### 65. Build async KV-page prefetch queue with compute/transfer overlap (AsyncTLS analogue)
+- **Goal**: 3 (decode speed constant across context)
+- **Derived from**: AsyncTLS / Efficient Generative LLM Inference with Asynchronous Two-level Sparse Attention (2604.07815)
+- **Change**:
+  - New `omlx/patches/async_kv_prefetch.py` — an async queue sitting between the decode loop and the KV cache. When decode step t runs, the queue (running in a background Python thread) consumes InfiniGen's predicted-next-needed page list for step t+1 and issues Metal residency hints (`mx.eval` on dummy accesses, or the MLX equivalent of `madvise(WILLNEED)` if it lands) to pre-warm those pages.
+  - Hook into the existing Task 54 InfiniGen infrastructure when available; until then, use a simple 1-step lookahead policy that re-uses the previous step's top-K page set (AsyncTLS's own baseline).
+  - Expose as `--kv-prefetch-async` on `omlx.hypercar_server`. Off by default.
+- **Verify**: on a 64K-token decode workload with `--kv-prefetch-async`, measure decode tok/s variance across the last 500 tokens and compare to baseline. Target: latency variance drops by at least 25% (meaning the overlap is real) with mean tok/s unchanged or improved. Also run with MLX's `MLX_PROFILE_STREAM=1` env var (if available in this version) to confirm the prefetch thread and decode stream aren't serializing on the same command buffer.
+- **Effort**: M (2-3 days)
+- **Depends on**: Task 54 (InfiniGen prefetcher) preferred but not strictly required
