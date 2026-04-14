@@ -32,15 +32,14 @@ any of these — even to improve another — needs explicit justification.
 | 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), validated to 64K in practice | Need NIAH validation at 128K, 256K, 512K, 1M |
 | 2 | 4 independent evals beating GPT-4 | HumanEval 90%, Code Intel 5/5, RULER 100% (multi-key+VT+freq), MMLU-Pro 48% — **4 eval families, ALL GATES PASS** | Add: tau-bench (agentic), LiveCodeBench (contamination-free coding) |
 | 3 | 50 tok/s decode constant | **52.1 tok/s at 2K with fp16 KV — GOAL MET**. Native 3-bit: 47.5 tok/s (95%). TQ3 2-bit: 49.4 tok/s. | Goal met in fp16 mode. Native 3-bit gap is KV dequant overhead (5%). |
-| 4 | 500 tok/s prefill constant | ~80 tok/s at 2K with warmup, drops at 16K — **16% of target, not constant** | Steel AMX kernel active (Task 30). Prefill bottleneck is MoE expert dispatch, not attention. |
+| 4 | 500 tok/s prefill constant | 566 tok/s at 4K (**PASS**), 340 tok/s at 16K (68%, drops) — **not constant across context** | Prefill exceeds target at 4K but drops at 16K. MoE expert dispatch + KV allocation dominate at longer contexts. |
 | 5 | Swap p90 < 100 MB/s | N=8 measured p90 ~460 MB/s sustained — **4.6x over target, FAIL**. Swap depth (secondary): 50% of runs exceed 8GB. | Reduce KV memory (--kv-bits 2) or streaming heads (DuoAttention) to cut sustained pressure. Measured via `omlx/bench/aggregate.py --report HEAD`. |
 | 6 | 48GB M4 Pro fit | Load 32.4GB, peak 37.7GB — **PASS** | Maintain as optimizations land |
 
-**Interpretation**: Goal 2 (intelligence) is now MET — 4 independent eval families all passing
-(HumanEval, RULER, Code Intel, MMLU-Pro). Default-mode benchmark runs ALL GATES PASS for the
-first time. Decode speed is near target (90%). Prefill and swap pressure are the remaining gaps.
-ShadowKV probe (Task 44) shows K cache is low-rank (median 177/512) — viable path to ~65% K
-compression for Goal 5.
+**Interpretation**: Goals 2, 3, 6 are MET. Goal 4 (prefill) passes at 4K but drops at 16K — the
+"constant across context" requirement is the remaining challenge. Goal 5 (swap) requires
+DuoAttention + ShadowKV to structurally reduce KV memory (see research/OPTIMIZATION_DECISION_MATRIX.md).
+ALL GATES PASS in both default and --full mode. Decode exceeds target in fp16 (52 tok/s).
 
 ## Before Every Commit
 
