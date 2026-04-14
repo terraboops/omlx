@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 13**: Two-storage-class KV cache (DuoAttention runtime)
 
 ## Completed
 
