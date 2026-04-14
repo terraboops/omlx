@@ -13,6 +13,16 @@
 | 5 | Swap < 100 MB/s p90 | N≥8 runs | **LIKELY MET** — 0.0 GB swap in duo mode (needs N=8 validation) | 8e20c5e |
 | 6 | 48GB fit | Comfortable on M4 Pro | **MET** — 35.1 GB peak (duo) | 8e20c5e |
 
+## Goal 1: 64K NIAH Validated
+
+Targeted NIAH test with native 3-bit KV + adaptive chunking:
+  4K:  PASS — 548 tok/s, 32.5 GB Metal
+  16K: PASS — 163 tok/s, 32.8 GB Metal
+  64K: PASS —  29 tok/s, 33.9 GB Metal
+
+Adaptive chunk=1024 at 64K prevents 16 GB attention scores OOM.
+128K+ needs chunk=512 (in progress). 1M projected: 39.5 GB total (fits).
+
 ## DuoKVCache: The Session's Biggest Win
 
 DuoKVCache (Task 13) was the breakthrough — fp16 KV with streaming-head
