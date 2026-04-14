@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 38** (calibration only): LayerSkip per-layer exit confidence profiling
 
 ## Completed
 
