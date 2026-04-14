@@ -199,13 +199,37 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
         try:
             apply_prefill_last_logit_patch(model)
             if kv_mode == "tq3":
-                # TQ3 streaming needs vertical_eval to prevent graph hoarding
                 apply_vertical_eval_patch(model)
                 logging.info("TQ3 mode: vertical_eval ENABLED")
             elif kv_mode == "native":
                 logging.info("Native mode: vertical_eval disabled (not needed)")
         except Exception as e:
             logging.warning(f"Some hypercar patches failed: {e}")
+
+        # Warmup: prime Metal kernel cache to eliminate first-request JIT penalty
+        # (Task 20/25: Metal JIT cold-start adds ~9s to first forward pass)
+        try:
+            import time as _time
+            from mlx_lm.models.cache import KVCache
+            _t0 = _time.perf_counter()
+            _warmup_cache = [KVCache() for _ in range(len(model.layers))]
+            _warmup_tokens = tokenizer.encode("Hello")
+            _x = mx.array([_warmup_tokens])
+            _logits = model(_x, cache=_warmup_cache)
+            mx.eval(_logits)
+            # Generate a few tokens to prime decode kernels too
+            for _ in range(4):
+                _tok = mx.argmax(_logits[:, -1, :], axis=-1)
+                mx.eval(_tok)
+                _x = _tok.reshape(1, 1)
+                _logits = model(_x, cache=_warmup_cache)
+                mx.eval(_logits)
+            del _warmup_cache, _logits, _x
+            import gc; gc.collect(); mx.clear_cache()
+            logging.info(f"Metal kernel warmup done in {_time.perf_counter() - _t0:.1f}s")
+        except Exception as e:
+            logging.warning(f"Warmup failed (non-fatal): {e}")
+
         return model, tokenizer
 
     mlx_utils.load = hypercar_load
