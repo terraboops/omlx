@@ -1,13 +1,17 @@
 {
   "git_commit": "20df582",
-  "N": 3,
+  "N": 7,
   "runs": [
     "run47_duo_default",
     "run48_duo_default",
-    "run49_duo_default"
+    "run49_duo_default",
+    "run50_duo_default",
+    "run51_duo_default",
+    "run52_duo_default",
+    "run53_duo_default"
   ],
   "total_elapsed": {
-    "N": 3,
+    "N": 7,
     "mean": 428.13,
     "std": 0.0,
     "median": 428.13,
@@ -19,7 +23,7 @@
     "max": 428.13
   },
   "metal_peak": {
-    "N": 3,
+    "N": 7,
     "mean": 35.14,
     "std": 0.0,
     "median": 35.14,
@@ -31,7 +35,7 @@
     "max": 35.14
   },
   "swap_peak": {
-    "N": 3,
+    "N": 7,
     "mean": 0.0,
     "std": 0.0,
     "median": 0.0,
@@ -45,7 +49,7 @@
   "phases": {
     "Phase 0: Smoke": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 0.28,
         "std": 0.0,
         "median": 0.28,
@@ -57,7 +61,7 @@
         "max": 0.28
       },
       "decode_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 53.1,
         "std": 0.0,
         "median": 53.1,
@@ -69,7 +73,7 @@
         "max": 53.1
       },
       "prefill_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 93.3,
         "std": 0.0,
         "median": 93.3,
@@ -83,7 +87,7 @@
     },
     "Phase 1: Coherence": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 1.46,
         "std": 0.0,
         "median": 1.46,
@@ -95,7 +99,7 @@
         "max": 1.46
       },
       "decode_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 53.4,
         "std": 0.0,
         "median": 53.4,
@@ -107,7 +111,7 @@
         "max": 53.4
       },
       "prefill_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 159.9,
         "std": 0.0,
         "median": 159.9,
@@ -121,7 +125,7 @@
     },
     "Phase 2: Code Intelligence": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 4.2,
         "std": 0.0,
         "median": 4.2,
@@ -135,7 +139,7 @@
     },
     "Phase 3: Needle in Haystack": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 51.09,
         "std": 0.0,
         "median": 51.09,
@@ -147,7 +151,7 @@
         "max": 51.09
       },
       "decode_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 34.8,
         "std": 0.0,
         "median": 34.8,
@@ -159,7 +163,7 @@
         "max": 34.8
       },
       "prefill_toks": {
-        "N": 3,
+        "N": 7,
         "mean": 802.6,
         "std": 0.0,
         "median": 802.6,
@@ -173,7 +177,7 @@
     },
     "Phase 3b: RULER": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 122.99,
         "std": 0.0,
         "median": 122.99,
@@ -187,7 +191,7 @@
     },
     "Phase 3c: MMLU-Pro": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 236.36,
         "std": 0.0,
         "median": 236.36,
@@ -201,7 +205,7 @@
     },
     "Phase 5: Memory Profile": {
       "elapsed": {
-        "N": 3,
+        "N": 7,
         "mean": 0.0,
         "std": 0.0,
         "median": 0.0,
