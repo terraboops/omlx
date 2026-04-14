@@ -1863,3 +1863,80 @@ _(none)_
   effectively Quest-as-self-draft, still a strict improvement over plain
   autoregressive at long context per MagicDec's cost model).
 
+## Research-derived tasks (from LIT_REVIEW.md pass 10, 2026-04-14)
+
+### 59. OPLoRA orthogonal-projection safety rail for the TTT optimizer
+- **Goal**: 2 (intelligence — continual learning without regression)
+- **Derived from**: OPLoRA: Orthogonal Projection LoRA Prevents Catastrophic
+  Forgetting during Parameter-Efficient Fine-Tuning (2510.13003)
+- **Change**:
+  - Add `omlx/oplora.py` implementing the double-sided orthogonal
+    projection: given a frozen weight `W` and a LoRA pair `(A, B)`, project
+    the gradients `dA` and `dB` onto the subspace orthogonal to the top-k
+    right and left singular vectors of `W` (k=8 default, configurable).
+    Expose a single entry point `project_lora_grads(W, A, B, dA, dB, k) -> (dA', dB')`.
+  - At server/TTT startup, compute and cache a truncated SVD (top-k) for
+    every frozen linear layer `omlx/ttt.py` adapts. Use randomised
+    truncated SVD (`mx.linalg.svd` on a random-projected 2k×2k subspace)
+    to avoid the full-matrix SVD transient memory blow-up on Qwen3-Coder's
+    larger matmuls. Cache file: `omlx/ttt_svd_cache.npz`.
+  - Wire `project_lora_grads` into the TTT optimizer step in `omlx/ttt.py`
+    behind a `--oplora` CLI flag (default on once validated).
+  - Add `tests/test_oplora.py` verifying (a) projected gradient has zero
+    inner product with the top-k singular vectors to numerical tolerance,
+    (b) un-projected gradient's projection recovers the original when k=0,
+    (c) round-trip through `save_lora`/`load_lora` preserves the SVD
+    cache's bit identity.
+- **Verify**: `pytest tests/test_oplora.py` passes. Running the existing
+  TTT demo for N=20 hot-update rounds with `--oplora on` shows code-intel
+  eval stays at 5/5 and MMLU-Pro drops by ≤ 1 point versus the frozen
+  baseline, whereas the same run with `--oplora off` shows the usual
+  ≥ 3-point regression the project_online_finetuning memory note
+  describes. `.venv/bin/python -m omlx.bench.hypercar_bench --full` passes
+  all gates with `--oplora on` as default.
+- **Effort**: S (1 day for the projection + plumbing, +1 day for the
+  randomised SVD if the direct SVD blows Metal memory)
+- **Depends on**: None (the TTT loop is already live; Tasks 15 and 52
+  benefit from this being landed first but do not block it)
+
+### 60. Agentless three-stage SWE-bench Lite eval as the 5th Goal-2 eval family
+- **Goal**: 2 (intelligence — 5th independent eval family)
+- **Derived from**: Agentless: Demystifying LLM-based Software Engineering
+  Agents (2407.01489)
+- **Change**:
+  - Add `omlx/bench/agentless_bench.py` implementing the three-stage
+    pipeline as pure prompts against the running `hypercar_server.py`
+    endpoint: (1) hierarchical file-level localization (one prompt per
+    repository-level summarisation pass, then one prompt per file-level
+    ranking), (2) patch generation (one prompt with the localised hunk +
+    issue description), (3) patch validation (apply the diff, run the
+    existing test suite shipped with SWE-bench Lite, record pass/fail).
+    No tool-use loop, no function calling, no ReAct.
+  - Port the SWE-bench Lite harness subset (300 instances) as a
+    read-only data directory under `research/swe_bench_lite/`. Reuse the
+    validation subprocess already in Task 35's SWE-agent scaffolding
+    where possible, but strictly no agent loop — the Agentless pipeline
+    is deterministic.
+  - Wire the bench as a `--full`-only gate in `omlx/bench/hypercar_bench.py`
+    with a threshold of `resolved >= 0.15` (conservative — Agentless
+    paper reports 32% with a stronger backbone, we gate at 15% to allow
+    headroom for Qwen3-Coder-30B being smaller).
+  - Record per-instance cost (prompt tokens, decode tokens, wall time)
+    so that future prompt-cache and decode optimisations can be
+    regression-checked against this workload too.
+- **Verify**: `.venv/bin/python -m omlx.bench.agentless_bench --limit 30`
+  runs 30 SWE-bench Lite instances end-to-end, with all three stages
+  emitting valid outputs (localisation ranks are non-empty, patches
+  parse as unified-diff format, validation subprocess exits cleanly
+  even on failed instances). `.venv/bin/python -m omlx.bench.hypercar_bench --full`
+  passes with the Agentless gate enabled at `resolved >= 0.15` on the
+  30-instance smoke subset. On the full 300-instance run (not required
+  for every commit), `resolved >= 0.10` is the floor for pass.
+- **Effort**: M (2-3 days for pipeline + harness + gate; +1 day for the
+  300-instance full run)
+- **Depends on**: Task 35 (SWE-agent harness) if the validation
+  subprocess can be reused; otherwise independent. XGrammar (Task 45)
+  is *not* a dependency because Agentless uses plain text prompts, not
+  structured tool calls — this is one of the reasons it is cheaper
+  than SWE-agent.
+

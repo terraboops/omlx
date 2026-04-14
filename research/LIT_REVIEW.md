@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 9)_
+_Last updated: 2026-04-14 (pass 10)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -1695,7 +1695,125 @@ QuaRot at the 4-bit level. No strong 2024-2026 retrofit paper found in
 the sub-4-bit weight bucket. Parked until a post-hoc NF3 retrofit
 appears.
 
-## Synthesis
+## Pass 10 — 2026-04-14
+
+Pass 10 is a deliberately thin pass. KV-cache compression is saturated
+(pass 9 flagged this); pass 10 biases toward the three directions that
+pass 9's saturation note called out as still productive: (a) agentic
+orchestration above the single-inference layer, (b) online /
+inference-time training beyond TTT, and (c) Apple Silicon hardware
+work. Two strong papers found, one in (a), one in (b). Bucket (c) is
+filed as "Gap not closed" — confirming pass 2 and pass 9's assessment
+that the M4 / MLX literature is not on arxiv.
+
+### [Agentless: Demystifying LLM-based Software Engineering Agents](https://arxiv.org/abs/2407.01489) — 2407.01489
+- **Authors**: Chunqiu Steven Xia, Yinlin Deng, Soren Dunn, Lingming Zhang (UIUC)
+- **Published**: 2024-07 (revised 2024-10)
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth — 5th agentic eval family), indirectly Goal 4 (prefill — smaller, more cache-friendly prompts)
+- **TL;DR**: A three-stage deterministic pipeline — hierarchical file-level
+  localization, then patch generation with a fixed prompt template, then
+  patch validation via regression tests — beats every open-source agent on
+  SWE-bench Lite (32.0% resolved, $0.70/instance) while using no tool-use
+  loop, no ReAct-style planner, and no training. The paper's claim is that
+  most "agentic" SWE-bench gains come from the localization step, not from
+  emergent tool-use reasoning.
+- **Why it matters for Hypercar**: Goal 2's current 4-eval set (HumanEval,
+  Code-Intel, RULER, MMLU-Pro) has zero coverage of multi-file repository
+  repair, which is the workload OpenCode actually submits to
+  `omlx/hypercar_server.py`. Pass 4's SWE-agent task (Task 35) added that
+  coverage but routed through a complex tool-use stack that is a
+  regression-test nightmare against our endpoint. Agentless gives the
+  *same* signal at ~1/3 the prompt token count and with no tool-call
+  parsing — making it the lowest-risk way to add repository-repair as a
+  5th eval family, and a natural regression gate for XGrammar (Task 45),
+  MagicDec (Task 56), and any future server-path optimisation. It is also
+  the first paper in the review that empirically *refutes* a class of
+  agentic complexity we would otherwise have to implement: the "do we need
+  a ReAct loop in the server?" question becomes "no, localize-repair-
+  validate is sufficient at our scale", which cuts at least two plausible
+  retrofit tasks from future backlog growth.
+- **Cost of adoption**: S (1 day). Localization + repair + validation are
+  three prompt templates and a patch-apply subroutine; SWE-bench Lite
+  harness is already ported for Task 35. The biggest risk is the cost
+  axis — each SWE-bench Lite run is 300 instances × ~3 prompts each =
+  ~900 forward passes, which at Hypercar's 52 tok/s decode is ~45 minutes
+  per bench run. We ship it as `--full`-only, not quick.
+- **Local PDF**: research/2407.01489_agentless.pdf
+
+### [OPLoRA: Orthogonal Projection LoRA Prevents Catastrophic Forgetting during Parameter-Efficient Fine-Tuning](https://arxiv.org/abs/2510.13003) — 2510.13003
+- **Authors**: Yifeng Xiong, Xiaohui Xie (UC Irvine)
+- **Published**: 2025-10 (revised 2025-11)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — continual learning without regression), indirectly Goal 6 (memory — no extra adapters stored)
+- **TL;DR**: A closed-form modification to LoRA's update rule that
+  projects each LoRA gradient onto the subspace orthogonal to the top-k
+  singular vectors of the *frozen* pre-trained weight matrix it adapts.
+  The projection is double-sided (on both the `A` and `B` factors) and
+  has an analytical solution — no extra training loss, no replay buffer,
+  no additional memory beyond one SVD per adapter computed once at
+  startup. Reports catastrophic-forgetting reduction to near zero on
+  continual-learning benchmarks (GLUE, domain-incremental) while
+  preserving single-task accuracy to within 0.5%.
+- **Why it matters for Hypercar**: `omlx/ttt.py` already does online
+  LoRA updates from the three-signal verifier (HumanEval-style pass/fail,
+  SimPO preference contrast per Task 15, and rStar-Math step verification
+  per Task 52), but the project memory note
+  `project_online_finetuning.md` explicitly flags "catastrophic
+  forgetting after N hot-reloads" as the open risk that has kept the
+  online-update path gated to a dev flag rather than default-on. OPLoRA
+  is the first paper in this review that gives a *closed-form* fix
+  (not a regularizer, not replay, not a second loss head) that can be
+  dropped directly into the TTT optimizer step, which makes it the
+  cheapest path to turning TTT from a research toy into a production-
+  default feature. Crucially, it composes with every TTT-adjacent task
+  already on the backlog — SimPO (Task 15) provides the gradient signal,
+  rStar-Math (Task 52) provides the step-level supervision, and OPLoRA
+  provides the *safety rail* that keeps all those updates from silently
+  eroding the frozen-model behaviour MMLU-Pro and HumanEval measure.
+  This is also the first paper in bucket (b) that is genuinely
+  retrofit-capable on Qwen3-Coder without any architectural change —
+  Titans (pass 8) and Text-to-LoRA (pass 1) both required new modules;
+  OPLoRA is a three-line patch to the LoRA optimizer.
+- **Cost of adoption**: S (1 day) for the projection math + SVD cache
+  plumbing, then an N≥4 ablation run of the TTT loop with vs without
+  OPLoRA on the code-intel + MMLU-Pro gate. Biggest risk: the SVD is on
+  the full 8-bit weight matrix, which for Qwen3-Coder's larger linear
+  layers is ~128MB per matrix × ~400 matrices ≈ 50GB transient during
+  one-time SVD — we may need blocked / randomised SVD rather than
+  `mx.linalg.svd` direct.
+- **Local PDF**: research/2510.13003_oplora.pdf
+
+### Gap not closed: Apple Silicon / MLX hardware work (bucket c)
+
+This is the third pass in a row that has tried and failed to find a
+strong 2024-2026 arxiv paper specifically targeting Apple Silicon
+unified memory, AMX matmul scheduling, or MLX kernel optimisation. Pass
+2, pass 5, and pass 10 have all searched this bucket; the literature
+continues to live in MLX repo issues, Apple's MLX blog posts, and
+informal engineering writeups (allenpike.com, arxiviq.substack.com)
+rather than on arxiv. **Recommendation: stop searching this bucket in
+future passes.** The productive next step for bucket (c) is a direct
+read-the-source engineering task on `mx.fast.scaled_dot_product_attention`,
+`mlx.core.matmul`, and the AMX binding layer, *not* another arxiv pass.
+Task 48 (vAttention-style MTLHeap allocator note) already captures the
+memory-allocator half of this; the kernel-dispatch half should be a
+separate engineering spike, not a literature search.
+
+### Gap not closed: reflection loops beyond Agentless (bucket a)
+
+I considered ReVeal (2506.11442) and various Reflexion-derivative
+papers but none cleared the bar of "composes with `omlx/ttt.py` or
+`omlx/hypercar_server.py` *without* a new training run". Agentless is
+the only 2024-2026 agentic paper this pass that matches the Hypercar
+constraint of "training-free, retrofit-capable on a frozen Qwen3-Coder
+server endpoint". The broader reflection-loop literature has real
+results but almost all of them either require fine-tuning (rejection-
+sampling supervised fine-tune, DPO on trajectories) or require a
+stronger base model than Qwen3-Coder-30B as the verifier. For Hypercar,
+the right composition is Agentless-style deterministic pipeline +
+TTT-style online LoRA updates (now safe thanks to OPLoRA) rather than a
+new reflection loop.
+
+
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
 largest absolute gap — 20 tok/s vs 50 tok/s target, degrading with context.
@@ -2252,3 +2370,82 @@ none yet, but also almost none is published), (b) online / inference-
 time training beyond TTT, and (c) agentic orchestration above the
 single-inference layer. Pass 10 should bias toward one of those if it
 runs at all.
+
+### Pass 10 adds (2026-04-14)
+
+**Highest-leverage find this pass: OPLoRA (2510.13003).** The entire
+TTT stack — `omlx/ttt.py`, SimPO (Task 15), rStar-Math (Task 52) — has
+been gated on a dev flag rather than default-on for one reason:
+catastrophic forgetting after repeated hot-reloads has no principled
+fix in the current code. OPLoRA is the first paper in this review that
+gives a *closed-form* answer (project LoRA gradients onto the
+orthogonal complement of the pre-trained weight's top-k singular
+vectors) requiring no replay buffer, no second loss head, and no
+architectural change. It composes multiplicatively with every existing
+TTT-adjacent backlog item — SimPO supplies the gradient, rStar-Math
+supplies step-level supervision, OPLoRA supplies the safety rail —
+and makes the combined loop cheap enough to ship default-on. This is
+the single most leveraged "unlock" in pass 10 because it converts a
+parked research feature into a production one.
+
+**Second: Agentless (2407.01489).** The agentic bucket has been
+dominated by SWE-agent, τ-bench, and ReAct-derivative work that
+assume complex tool-use loops. Agentless refutes that assumption
+empirically on SWE-bench Lite (32% resolved with a three-prompt
+deterministic pipeline) and gives us the cheapest possible path to a
+5th eval family (repository repair) using the frozen
+`omlx/hypercar_server.py` endpoint with zero new tool-parse surface.
+Together with OPLoRA, pass 10's net contribution is a *minimal*
+composition: Agentless gives us the repository-repair benchmark,
+OPLoRA keeps the TTT loop honest when we start updating the model on
+Agentless failure cases.
+
+**Updated saturation assessment.** With 37 papers reviewed over 10
+passes:
+- **KV-cache compression: EXHAUSTED.** Pass 9 already flagged this,
+  pass 10 confirms it. Every axis (bits, heads, layers, pages,
+  eviction, sharing, rank, budget shape) has a cited paper. Future
+  passes should treat a new KV-compression paper as presumptively
+  noise unless it clears a very high bar (e.g., empirically flat
+  throughput at 1M on unified memory).
+- **Speculative decoding / draft models: SATURATED.** MagicDec
+  (Task 56) closed the decision framework; EAGLE-2, LayerSkip,
+  Lookahead, TriForce, MTP cover the implementation axes.
+- **Evals: SATURATED for Hypercar's needs.** Goal 2's 4-eval claim is
+  empirically met (MMLU-Pro, HumanEval, RULER, Code-Intel); a 5th
+  (Agentless/SWE-bench Lite) is the only sensible addition and does
+  not need a new paper.
+- **Online fine-tuning / test-time training: STILL LIVE.** OPLoRA
+  this pass is a concrete retrofit win; Titans, rStar-Math, SimPO
+  from prior passes are complementary. This bucket has produced
+  usable retrofit-capable work in 3 of the last 4 passes and should
+  be searched again in ~6 months once online-fine-tune benchmarks
+  stabilise.
+- **Agentic orchestration: STILL LIVE but thin.** Agentless this pass
+  is one strong find; the rest of the bucket is either too
+  training-heavy or too complex for a frozen-server retrofit. One
+  more pass in this direction in ~3 months is justified if a
+  Reflexion-class training-free paper appears.
+- **Apple Silicon / MLX: ARXIV DEAD.** Third pass confirming the
+  literature is not on arxiv. **Stop searching this bucket in future
+  passes.** Redirect the effort to `mx.fast.scaled_dot_product_attention`
+  source reading.
+
+**Recommendation for next steps.** The research loop should **pause
+for at least 2-3 weeks** and pivot to execution. Rationale: (1) 37
+papers is well above what the current execution stream can consume —
+Tasks 56-58 from pass 9 haven't landed yet, and Tasks 59-61 from pass
+10 will bring the research-derived backlog to 61 items against a goal
+set where 5 of 6 goals are already MET. (2) The highest-leverage
+*unlocks* at this point are not new papers but rather consolidation of
+the existing backlog — specifically, a priority-scoring pass that
+cross-references each open task against (goal gap size × cost of
+adoption × blocker depth) would produce more execution clarity than
+another literature pass. (3) If the execution stream hits a
+surprise blocker on Goal 1 (1M context NIAH validation) or Goal 5
+(swap p90 under N=8 duo-mode load), those are specific enough targets
+that a *focused* 1-paper pass could close them — but a general "pass
+11" with no specific failing goal is unlikely to return anything
+retrofit-capable that isn't already covered. **Pivot mode:
+execution-priority scoring on the 58-task backlog, then resume
+research only on specific failing goal gaps.**
