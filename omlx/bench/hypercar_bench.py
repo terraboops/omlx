@@ -1103,7 +1103,7 @@ def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
         except Exception:
             chat_prompt = prompt + "\n"
 
-        text, _, _ = _generate(model, tokenizer, chat_prompt, max_tokens=512)
+        text, _, _ = _generate(model, tokenizer, chat_prompt, max_tokens=256)
         predicted = extract_answer(text)
         is_correct = predicted == q["answer"]
 
