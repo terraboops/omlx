@@ -41,8 +41,8 @@ any of these — even to improve another — needs explicit justification.
 heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
 
 **Interpretation**: Goals 2, 3, 4, 6 are **MET** in duo mode. Goal 5 is likely met (0.8 GB swap,
-needs N=8 validation). 5 of 6 goals achieved. Only Goal 1 (1M context validation) remains
-unverified — the math works but no NIAH test beyond 16K has been run in duo mode yet.
+needs N=8 validation). 5 of 6 goals achieved. Goal 1 (1M context) requires native/tq3 mode —
+duo's fp16 KV is too large beyond 16K. For 1M context: use `--kv-mode native` (39.7 GB KV fits).
 
 ## Before Every Commit
 
