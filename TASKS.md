@@ -601,6 +601,10 @@ _(none)_
   - Results: 50% FAIL, 75% borderline, 87.5% (112/128) PASS (saves 3.6 GB), 93.75% PASS (saves 1.8 GB)
   - Quality degrades even at "PASS" levels (repetition artifacts at 87.5%)
   - Verdict: ProMoE is MARGINAL for this model — 3.6 GB savings at 87.5% residency with quality risk. DuoAttention (Tasks 12-13) is a better path for memory reduction.
+- **VT prompt fix**: Improved RULER variable_tracking question prompt to ask for "resolved string value" instead of just "value" (2026-04-13)
+  - variable_tracking@4K: 0% → **100%** — model now resolves the chain instead of returning variable names
+  - RULER gate: FAIL → **PASS** — first time RULER passes in default mode
+  - ALL GATES PASSED for the first time ever in a default-mode run (Phases 0-3c + memory)
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)

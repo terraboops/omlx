@@ -263,8 +263,11 @@ def generate_variable_tracking(
 
     question = (
         f"Based on the variable assignments in the text above, "
-        f"what is the final value of {var_names[-1]}? "
-        f"Respond with ONLY the value, nothing else."
+        f"trace the chain of assignments to find what {var_names[-1]} "
+        f"ultimately resolves to. The first variable in the chain was "
+        f"assigned a literal string value like 'XXXX-1234'. "
+        f"What is that string value? Respond with ONLY the string value "
+        f"(e.g. ABCD-5678), nothing else."
     )
 
     return {
