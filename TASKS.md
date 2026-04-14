@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 12**: DuoAttention retrieval/streaming head calibration (script written, needs solo GPU run)
 
 ## Completed
 
