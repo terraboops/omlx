@@ -1,0 +1,307 @@
+02:37:56 omlx.bench.hypercar INFO KV mode: duo, bits: 3
+02:37:56 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+02:37:56 omlx.bench.hypercar INFO System memory: 51.5 GB
+02:37:56 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+02:37:56 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+02:37:56 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+02:37:56 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+02:37:56 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 29319.41it/s]
+02:38:04 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+02:38:04 omlx.bench.hypercar INFO Model loaded in 8.3s (lazy — first forward will materialize)
+02:38:04 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+02:38:07 omlx.bench.hypercar INFO   Warmup done in 3.3s (Metal cache primed, memory cleared)
+02:38:07 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+02:38:07 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+02:38:07 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:08 omlx.bench.hypercar INFO   Smoke output: ' This is my first post on this blog. I'
+02:38:08 omlx.bench.hypercar INFO   Prefill: 94 tok/s  Decode: 52.9 tok/s
+02:38:08 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+02:38:08 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:08 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+02:38:08 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:09 omlx.bench.hypercar INFO   Code check: PASS — '\nprint("Hello, World!")\n\nprint("Hello, World!")<|endoftext|>'
+02:38:09 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+02:38:09 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:10 omlx.bench.hypercar INFO   PASS: factorial
+02:38:10 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:10 omlx.bench.hypercar INFO   PASS: reverse_string
+02:38:10 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:11 omlx.bench.hypercar INFO   PASS: is_palindrome
+02:38:11 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:12 omlx.bench.hypercar INFO   PASS: fibonacci
+02:38:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:13 omlx.bench.hypercar INFO   PASS: flatten_list
+02:38:13 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+02:38:13 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+02:38:13 omlx.bench.hypercar INFO   NIAH @ 4K context...
+02:38:13 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:38:23 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Here is some code:\n'
+02:38:23 omlx.bench.hypercar INFO   NIAH @ 16K context...
+02:38:23 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:39:04 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+02:39:04 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+02:39:04 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+02:39:04 omlx.bench.hypercar INFO   [1/15] multi_key_niah@4K keys=2
+02:39:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:39:12 omlx.bench.hypercar INFO     PASS: 2/2 (acc=100%) — 'Looking through the code for references to `key_1` and `key_'
+02:39:12 omlx.bench.hypercar INFO   [2/15] multi_key_niah@4K keys=4
+02:39:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:39:19 omlx.bench.hypercar INFO     PASS: 4/4 (acc=100%) — 'key_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4: WJ'
+02:39:19 omlx.bench.hypercar INFO   [3/15] multi_key_niah@16K keys=3
+02:39:19 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:39:58 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'Looking through the code for references to the keys, I can f'
+02:39:58 omlx.bench.hypercar INFO   [4/15] multi_key_niah@16K keys=5
+02:39:58 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:40:34 omlx.bench.hypercar INFO     PASS: 5/5 (acc=100%) — 'key_1: ZLST-2061\nkey_2: YWTF-3780\nkey_3: WJUY-3731\nkey_4: SX'
+02:40:34 omlx.bench.hypercar INFO   [5/15] multi_key_niah@64K keys=3 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+02:40:34 omlx.bench.hypercar INFO   [6/15] variable_tracking@4K chain=3
+02:40:34 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:40:39 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'PIAJ-8451<|im_end|>'
+02:40:39 omlx.bench.hypercar INFO   [7/15] variable_tracking@4K chain=4
+02:40:39 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:40:45 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'DLWL-2635<|im_end|>'
+02:40:45 omlx.bench.hypercar INFO   [8/15] variable_tracking@16K chain=4
+02:40:45 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:41:19 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'KUML-2629<|im_end|>'
+02:41:19 omlx.bench.hypercar INFO   [9/15] variable_tracking@16K chain=8
+02:41:19 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:41:52 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'LNET-2736<|im_end|>'
+02:41:52 omlx.bench.hypercar INFO   [10/15] variable_tracking@64K chain=4 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+02:41:52 omlx.bench.hypercar INFO   [11/15] variable_tracking@64K chain=8 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+02:41:52 omlx.bench.hypercar INFO   [12/15] frequent_word@4K words=4
+02:41:52 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:41:57 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'AXIOM<|im_end|>'
+02:41:57 omlx.bench.hypercar INFO   [13/15] frequent_word@16K words=5
+02:41:57 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:42:29 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'ZENITH<|im_end|>'
+02:42:29 omlx.bench.hypercar INFO   [14/15] frequent_word@16K words=7
+02:42:29 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:02 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'VORTEX<|im_end|>'
+02:43:02 omlx.bench.hypercar INFO   [15/15] frequent_word@64K words=5 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+02:43:02 omlx.bench.hypercar INFO   Skipped 4 tasks due to memory headroom
+02:43:02 omlx.bench.hypercar INFO   RULER summary: {'multi_key_niah@4K': 1.0, 'multi_key_niah@16K': 1.0, 'variable_tracking@4K': 1.0, 'variable_tracking@16K': 1.0, 'frequent_word@4K': 1.0, 'frequent_word@16K': 1.0}
+02:43:02 omlx.bench.hypercar INFO   Gate (multi_key@16K): 100% (need 80%) — PASS
+02:43:02 omlx.bench.hypercar INFO   Gate (ruler_vt@4K):   100% (need 70%) — PASS
+02:43:02 omlx.bench.hypercar INFO 
+=== Phase 3c: MMLU-Pro ===
+02:43:02 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+02:43:02 httpx INFO HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/TIGER-Lab/MMLU-Pro/54611cde22c74cca43dd78732198de6abe971398/README.md "HTTP/1.1 200 OK"
+02:43:03 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/MMLU-Pro.py "HTTP/1.1 404 Not Found"
+02:43:03 httpx INFO HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/TIGER-Lab/MMLU-Pro/TIGER-Lab/MMLU-Pro.py "HTTP/1.1 404 Not Found"
+02:43:03 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/revision/54611cde22c74cca43dd78732198de6abe971398 "HTTP/1.1 200 OK"
+02:43:03 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/.huggingface.yaml "HTTP/1.1 404 Not Found"
+02:43:04 httpx INFO HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=TIGER-Lab/MMLU-Pro "HTTP/1.1 200 OK"
+02:43:04 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/tree/54611cde22c74cca43dd78732198de6abe971398/data?recursive=true&expand=false "HTTP/1.1 200 OK"
+02:43:04 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/tree/54611cde22c74cca43dd78732198de6abe971398?recursive=false&expand=false "HTTP/1.1 200 OK"
+02:43:04 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/dataset_infos.json "HTTP/1.1 404 Not Found"
+02:43:04 omlx.eval.mmlu_pro.tasks INFO MMLU-Pro: loaded 100 questions from 14 categories
+02:43:04 omlx.bench.hypercar INFO   Running MMLU-Pro (100 questions)...
+02:43:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:14 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:26 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:33 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:44 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:43:55 omlx.bench.hypercar INFO   [5/100] 3/5 correct (60%)
+02:43:55 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:13 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:25 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:36 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:42 omlx.bench.hypercar INFO   [10/100] 5/10 correct (50%)
+02:44:42 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:44:54 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:17 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:24 omlx.bench.hypercar INFO   [15/100] 10/15 correct (67%)
+02:45:24 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:34 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:47 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:52 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:45:57 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:04 omlx.bench.hypercar INFO   [20/100] 14/20 correct (70%)
+02:46:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:06 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:23 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:32 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:39 omlx.bench.hypercar INFO   [25/100] 16/25 correct (64%)
+02:46:39 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:48 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:46:57 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:09 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:20 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:29 omlx.bench.hypercar INFO   [30/100] 18/30 correct (60%)
+02:47:29 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:38 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:49 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:47:55 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:07 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:15 omlx.bench.hypercar INFO   [35/100] 20/35 correct (57%)
+02:48:15 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:21 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:31 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:39 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:49 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:48:57 omlx.bench.hypercar INFO   [40/100] 23/40 correct (57%)
+02:48:57 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:09 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:18 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:25 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:35 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:44 omlx.bench.hypercar INFO   [45/100] 26/45 correct (58%)
+02:49:44 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:49:53 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:01 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:16 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:18 omlx.bench.hypercar INFO   [50/100] 30/50 correct (60%)
+02:50:18 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:29 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:38 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:48 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:50:56 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:05 omlx.bench.hypercar INFO   [55/100] 34/55 correct (62%)
+02:51:05 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:17 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:24 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:32 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:40 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:51:52 omlx.bench.hypercar INFO   [60/100] 36/60 correct (60%)
+02:51:52 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:03 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:24 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:31 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:42 omlx.bench.hypercar INFO   [65/100] 38/65 correct (58%)
+02:52:42 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:52:51 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:03 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:13 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:24 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:36 omlx.bench.hypercar INFO   [70/100] 41/70 correct (59%)
+02:53:36 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:43 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:53:53 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:01 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:10 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:20 omlx.bench.hypercar INFO   [75/100] 44/75 correct (59%)
+02:54:20 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:29 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:54:51 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:00 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:12 omlx.bench.hypercar INFO   [80/100] 49/80 correct (61%)
+02:55:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:20 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:29 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:47 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:55:56 omlx.bench.hypercar INFO   [85/100] 53/85 correct (62%)
+02:55:56 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:02 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:08 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:16 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:26 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:37 omlx.bench.hypercar INFO   [90/100] 57/90 correct (63%)
+02:56:37 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:44 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:56:56 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:02 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:14 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:22 omlx.bench.hypercar INFO   [95/100] 59/95 correct (62%)
+02:57:22 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:34 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:57:49 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:01 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:08 omlx.bench.hypercar INFO   [100/100] 62/100 correct (62%)
+02:58:08 omlx.bench.hypercar INFO   MMLU-Pro: 62/100 (62%) — gate PASS
+02:58:08 omlx.bench.hypercar INFO     biology: 2/3 (67%)
+02:58:08 omlx.bench.hypercar INFO     business: 5/7 (71%)
+02:58:08 omlx.bench.hypercar INFO     chemistry: 8/15 (53%)
+02:58:08 omlx.bench.hypercar INFO     economics: 4/5 (80%)
+02:58:08 omlx.bench.hypercar INFO     engineering: 4/10 (40%)
+02:58:08 omlx.bench.hypercar INFO     health: 6/8 (75%)
+02:58:08 omlx.bench.hypercar INFO     history: 2/5 (40%)
+02:58:08 omlx.bench.hypercar INFO     law: 7/12 (58%)
+02:58:08 omlx.bench.hypercar INFO     math: 3/5 (60%)
+02:58:08 omlx.bench.hypercar INFO     other: 4/5 (80%)
+02:58:08 omlx.bench.hypercar INFO     philosophy: 3/7 (43%)
+02:58:08 omlx.bench.hypercar INFO     physics: 8/12 (67%)
+02:58:08 omlx.bench.hypercar INFO     psychology: 6/6 (100%)
+02:58:08 omlx.bench.hypercar INFO 
+=== Phase 4: HumanEval Lite ===
+02:58:08 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:09 omlx.bench.hypercar INFO   PASS: HE/0 (has_close_elements)
+02:58:09 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:10 omlx.bench.hypercar INFO   FAIL: HE/1 (separate_paren_groups)
+02:58:10 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:10 omlx.bench.hypercar INFO   PASS: HE/2 (truncate_number)
+02:58:10 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:11 omlx.bench.hypercar INFO   PASS: HE/3 (below_zero)
+02:58:11 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:11 omlx.bench.hypercar INFO   PASS: HE/4 (mean_absolute_deviation)
+02:58:11 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:12 omlx.bench.hypercar INFO   PASS: HE/5 (intersperse)
+02:58:12 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:14 omlx.bench.hypercar INFO   PASS: HE/6 (parse_nested_parens)
+02:58:14 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:15 omlx.bench.hypercar INFO   PASS: HE/7 (filter_by_substring)
+02:58:15 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:16 omlx.bench.hypercar INFO   PASS: HE/8 (sum_product)
+02:58:16 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:17 omlx.bench.hypercar INFO   PASS: HE/9 (rolling_max)
+02:58:17 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:17 omlx.bench.hypercar INFO   PASS: HE/10 (is_palindrome)
+02:58:18 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:19 omlx.bench.hypercar INFO   PASS: HE/11 (string_xor)
+02:58:19 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:20 omlx.bench.hypercar INFO   PASS: HE/12 (longest)
+02:58:20 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:20 omlx.bench.hypercar INFO   PASS: HE/13 (greatest_common_divisor)
+02:58:20 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:21 omlx.bench.hypercar INFO   PASS: HE/14 (all_prefixes)
+02:58:21 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:21 omlx.bench.hypercar INFO   PASS: HE/15 (string_sequence)
+02:58:21 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:22 omlx.bench.hypercar INFO   PASS: HE/16 (count_distinct_characters)
+02:58:22 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:23 omlx.bench.hypercar INFO   PASS: HE/17 (parse_music)
+02:58:23 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:25 omlx.bench.hypercar INFO   PASS: HE/18 (how_many_times)
+02:58:25 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+02:58:28 omlx.bench.hypercar INFO   PASS: HE/19 (sort_numbers)
+02:58:28 omlx.bench.hypercar INFO   HumanEval Lite: 19/20 (95%) — gate PASS
+02:58:28 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+02:58:28 omlx.bench.hypercar INFO   Metal peak: 35.1 GB (limit 41.2GB) PASS
+02:58:28 omlx.bench.hypercar INFO   Swap peak:  0.0 GB (limit 12.9GB) PASS
+02:58:28 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+02:58:28 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+02:58:28 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (0.3s)
+     [PASS] Phase 1: Coherence                       (1.5s)
+     [PASS] Phase 2: Code Intelligence               (4.2s)
+     [PASS] Phase 3: Needle in Haystack              (51.1s)
+     [PASS] Phase 3b: RULER                          (237.2s)
+     [PASS] Phase 3c: MMLU-Pro                       (906.6s)
+     [PASS] Phase 4: HumanEval Lite                  (19.8s)
+     [PASS] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+     [ALL GATES PASSED]  Total: 1232.3s
+============================================================
+
