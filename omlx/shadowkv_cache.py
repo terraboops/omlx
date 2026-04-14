@@ -99,9 +99,18 @@ class ShadowKVCache:
                     rank_for_energy = 1
                 rank = min(self.target_rank, rank_for_energy, len(S))
 
-                batch_U.append(mx.array(U[:, :rank].astype(np.float16)))
-                batch_S.append(mx.array(S[:rank].astype(np.float32)))
-                batch_Vt.append(mx.array(Vt[:rank, :].astype(np.float16)))
+                # Pad to target_rank so all heads have same rank dimension
+                pad_rank = self.target_rank
+                U_padded = np.zeros((U.shape[0], pad_rank), dtype=np.float16)
+                U_padded[:, :rank] = U[:, :rank].astype(np.float16)
+                S_padded = np.zeros(pad_rank, dtype=np.float32)
+                S_padded[:rank] = S[:rank].astype(np.float32)
+                Vt_padded = np.zeros((pad_rank, Vt.shape[1]), dtype=np.float16)
+                Vt_padded[:rank, :] = Vt[:rank, :].astype(np.float16)
+
+                batch_U.append(mx.array(U_padded))
+                batch_S.append(mx.array(S_padded))
+                batch_Vt.append(mx.array(Vt_padded))
 
             all_U.append(mx.stack(batch_U))    # (H, T, rank)
             all_S.append(mx.stack(batch_S))    # (H, rank)
@@ -134,50 +143,43 @@ class ShadowKVCache:
         return K
 
     def update_and_fetch(self, keys: mx.array, values: mx.array):
-        """Store new KV. Compress K via SVD after prefill.
+        """Store new KV. Uses fp16 until context is large enough for SVD.
 
-        During prefill (T_new > 1): accumulate fp16, compress at end.
-        During decode (T_new = 1): append to overflow buffer.
+        All tokens are stored in fp16 overflow buffers. When the overflow
+        exceeds 512 tokens, K is SVD-compressed. During decode, new tokens
+        append to the overflow; periodic recompression merges them.
         """
         B, H, T_new, D = keys.shape
         self.offset += T_new
 
-        if T_new > 1:
-            # Prefill: accumulate then compress
-            if self._k_overflow is None:
-                self._k_overflow = keys
-                self._values = values
-            else:
-                self._k_overflow = mx.concatenate([self._k_overflow, keys], axis=2)
-                self._values = mx.concatenate([self._values, values], axis=2)
-
-            # Compress after prefill accumulation
-            if self._k_overflow.shape[2] >= 512:  # Min tokens for meaningful SVD
-                self._compress_keys(self._k_overflow)
-                self._k_overflow = None
+        # Accumulate keys in overflow (always fp16)
+        if self._k_overflow is None:
+            self._k_overflow = keys
         else:
-            # Decode: append to overflow
-            if self._k_overflow is None:
-                self._k_overflow = keys
-                self._v_overflow = values
-            else:
-                self._k_overflow = mx.concatenate([self._k_overflow, keys], axis=2)
-                self._v_overflow = mx.concatenate([self._v_overflow, values], axis=2)
+            self._k_overflow = mx.concatenate([self._k_overflow, keys], axis=2)
 
-            # Append values
-            if self._values is None:
-                self._values = values
-            else:
-                self._values = mx.concatenate([self._values, values], axis=2)
+        # Accumulate values (always fp16, never compressed)
+        if self._values is None:
+            self._values = values
+        else:
+            self._values = mx.concatenate([self._values, values], axis=2)
 
-            # Recompress if overflow is large
-            if (self._compressed and self._k_overflow is not None
-                    and self._k_overflow.shape[2] >= self.recompress_threshold):
-                full_K = self._reconstruct_keys()
-                self._compress_keys(full_K)
-                self._k_overflow = None
+        # Compress K once overflow is large enough
+        if (not self._compressed
+                and self._k_overflow is not None
+                and self._k_overflow.shape[2] >= 512):
+            self._compress_keys(self._k_overflow)
+            self._k_overflow = None
 
-        # Return reconstructed K + full V for attention
+        # Recompress if overflow grew during decode
+        if (self._compressed
+                and self._k_overflow is not None
+                and self._k_overflow.shape[2] >= self.recompress_threshold):
+            full_K = self._reconstruct_keys()
+            self._compress_keys(full_K)
+            self._k_overflow = None
+
+        # Return K (reconstructed or raw) + V
         K = self._reconstruct_keys() if self._compressed else self._k_overflow
         return K, self._values
 
