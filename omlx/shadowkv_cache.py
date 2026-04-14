@@ -164,8 +164,10 @@ class ShadowKVCache:
         else:
             self._values = mx.concatenate([self._values, values], axis=2)
 
-        # Compress K once overflow is large enough
-        if (not self._compressed
+        # Compress K only when decode starts (T_new == 1) and context is large.
+        # During prefill (T_new > 1), keep fp16 — SVD during prefill loses
+        # fine-grained token information needed for retrieval tasks (NIAH).
+        if (T_new == 1 and not self._compressed
                 and self._k_overflow is not None
                 and self._k_overflow.shape[2] >= 512):
             self._compress_keys(self._k_overflow)
