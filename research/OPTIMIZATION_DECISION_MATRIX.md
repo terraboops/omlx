@@ -8,7 +8,7 @@ All measurements on Qwen3-Coder-30B-A3B-Instruct-8bit, M4 Pro 48GB.
 | Technique | Task | Viable? | Savings | Quality Impact | Priority |
 |-----------|------|---------|---------|---------------|----------|
 | **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
-| **ShadowKV** (K low-rank compression) | 44 | **YES** | ~65% K cache | <1% info loss | HIGH (for 64K+) |
+| **ShadowKV** (K low-rank compression) | 44 | **VALIDATED** | ~65% K cache | NIAH PASS, MMLU-Pro 24% (reasoning drops) | For 64K+ only |
 | **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
 | **Metal warmup** | 25 | **SHIPPED** | 2.25x decode, no cold-start | None | **DONE** |
 | **Quest** (page selection) | 3, 24b | **YES** | 1.55x decode speedup | Fails NIAH (norm-based scoring) | MEDIUM |
