@@ -1497,7 +1497,7 @@ def main():
                         help="Phase 0+1 only (~30s)")
     parser.add_argument("--full", action="store_true",
                         help="All phases including HumanEval (~15min)")
-    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16", "duo"], default="native",
+    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16", "duo"], default="duo",
                         help="KV cache: native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
     parser.add_argument("--kv-bits", type=int, default=3, choices=[2, 3, 4],
                         help="KV cache quantization bits (default: 3). 2-bit saves ~33%% memory.")
