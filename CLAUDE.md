@@ -82,7 +82,8 @@ Gate summary:
 
 | Mode | Cache Type | Compression | Features | Use Case |
 |------|-----------|-------------|----------|----------|
-| `native` (default) | MLX QuantizedKVCache(bits=3, group_size=64) | 5.3x | Fast decode, battle-tested | Production serving |
+| **`duo` (default)** | DuoKVCache (fp16 retrieval + ring-buffer streaming) | ~2x at 16K+ | Best quality (MMLU-Pro 62%, HumanEval 95%), zero swap | **Recommended for all use** |
+| `native` | MLX QuantizedKVCache(bits=3, group_size=64) | 5.3x | Battle-tested, long context | Very long context (64K+) |
 | `tq3` | TurboQuantKVCache (WHT rotation + codebook) | 5.3x | save/load, rewind, fork | Agentic workflows |
 | `fp16` | Standard KVCache | 1x | Baseline quality | Testing, ~75K max |
 
@@ -98,22 +99,25 @@ TQ3 mode uses Walsh-Hadamard Transform (per arXiv:2504.19874) for full dimension
 | 256K | 5.6 GB | 22.8 GB |
 | 1M | 22.5 GB | 39.7 GB |
 
-## Performance Targets
+## Performance Targets (with duo mode + warmup)
 
-- Decode: >40 tok/s at 2K context, >10 tok/s at 16K
-- Prefill: >300 tok/s
-- Memory: <42% system RAM at load, <80% peak
-- Quality: 3/5 coding problems must pass
-- TTFT (cached prompt): <1s
+- Decode: >50 tok/s at 2K context (**52.4 achieved**), >10 tok/s at 16K
+- Prefill: >500 tok/s at 4K (**566 achieved**), drops to 340 at 16K
+- Memory: <42% system RAM at load, <80% peak, **zero swap in duo mode**
+- Quality: 5/5 coding, HumanEval 95%, MMLU-Pro 62%, RULER 100%
+- TTFT (cached prompt): <1s (warmup eliminates Metal JIT cold-start)
 
 ## Server Usage
 
 ```bash
-# Standard (fast, proven)
-python -m omlx.hypercar_server --kv-mode native --port 8080
+# Recommended (best quality, zero swap, 52 tok/s decode)
+python -m omlx.hypercar_server --port 8080
 
 # With agentic features (session persistence, rewind, fork)
 python -m omlx.hypercar_server --kv-mode tq3 --fp16-layers 1 --port 8080
+
+# Long context (64K+, lower quality but fits more tokens)
+python -m omlx.hypercar_server --kv-mode native --port 8080
 
 # OpenCode connection
 export OPENAI_API_BASE=http://localhost:8080/v1
