@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 44**: ShadowKV SVD-rank probe on Qwen3-Coder K cache
+_(none)_
 
 ## Completed
 
@@ -605,6 +605,12 @@ all in `## In Progress`.
   - variable_tracking@4K: 0% → **100%** — model now resolves the chain instead of returning variable names
   - RULER gate: FAIL → **PASS** — first time RULER passes in default mode
   - ALL GATES PASSED for the first time ever in a default-mode run (Phases 0-3c + memory)
+- **Task 44**: ShadowKV SVD-rank probe on Qwen3-Coder K cache (2026-04-13)
+  - K cache is LOW-RANK: median rank@99% = 177/512 (35% of max) across 48 layers
+  - Verdict: **ShadowKV VIABLE** — SVD-based K compression can save ~65% K memory with <1% info loss
+  - Layer 3 outlier: rank 10 (nearly all energy in first 10 SVs). Most layers 150-210.
+  - Recommends ShadowKV over InfLLM (Task 43) for K cache tiering
+  - Results at `research/shadowkv_rank_20260413.json`
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
