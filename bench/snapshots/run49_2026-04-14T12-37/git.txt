@@ -1,0 +1,10 @@
+5d9d20759ef8f1e4810f2e7e9e36e3b73f5f61a9
+ M omlx/bench/agentic_bench.py
+ M omlx/bench/hypercar_bench.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run49_2026-04-14T12-37/console.txt
+?? bench/snapshots/run49_2026-04-14T12-37/git.txt
+?? omlx/bench/ttt_bench.py
+ omlx/bench/agentic_bench.py  |  2 +-
+ omlx/bench/hypercar_bench.py | 14 +++++++++++---
+ 2 files changed, 12 insertions(+), 4 deletions(-)
