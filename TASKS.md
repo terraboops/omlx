@@ -1994,3 +1994,41 @@ _(none)_
 - **Verify**: on a 64K-token decode workload with `--kv-prefetch-async`, measure decode tok/s variance across the last 500 tokens and compare to baseline. Target: latency variance drops by at least 25% (meaning the overlap is real) with mean tok/s unchanged or improved. Also run with MLX's `MLX_PROFILE_STREAM=1` env var (if available in this version) to confirm the prefetch thread and decode stream aren't serializing on the same command buffer.
 - **Effort**: M (2-3 days)
 - **Depends on**: Task 54 (InfiniGen prefetcher) preferred but not strictly required
+
+
+## Research-derived tasks (from LIT_REVIEW.md pass 13, 2026-04-14)
+
+### 66. Add graceful-degradation envelope around Quest top-K page selection (LARU analogue)
+- **Goal**: 3 (decode speed, constant across context — robust to predictor failure)
+- **Derived from**: LCR / LARU — Toward Robust and Efficient ML-Based GPU Caching for Modern Inference (2509.20979)
+- **Change**:
+  - Add a per-page reuse-distance counter to `omlx/turboquant_kv.py` page metadata: each time a page is selected by Quest (Task 3 / 24), bump its counter and remember the decode step at which it was last touched.
+  - In the Quest top-K dispatch path, mix two scores: Quest's existing per-query bound score, and a moving-average reuse-distance score (smaller distance = more likely to be reused). Combine via a learned (or, for v0, fixed) weight `alpha` in [0, 1]; `alpha=0` falls back to plain Quest, `alpha=1` falls back to LRU-K.
+  - Add a runtime safety check: every 256 decode steps, compare the current top-K page set's expected hit rate against an LRU baseline computed offline from the trace. If the predictive policy is *underperforming* LRU by >10%, automatically reset `alpha=0` and log a warning. This is LARU's "graceful degradation envelope" — the predictor cannot do worse than baseline LRU.
+  - Expose as `--quest-laru` on `omlx.hypercar_server` (off by default initially).
+- **Verify**: build a synthetic adversarial workload in `omlx/bench/hypercar_bench.py` Phase 3c that flips between two disjoint NIAH needles every 1K tokens (forcing Quest's predictor to mispredict). With `--quest-laru`, decode tok/s under that workload must stay within 5% of the standalone LRU baseline. With Quest alone (no envelope) for comparison, the regression should be visible. Also: the standard NIAH@16K run must show no decode regression with the envelope enabled (proving the safety check doesn't trigger on benign workloads).
+- **Effort**: M (3 days)
+- **Depends on**: Task 3 (Quest query-aware page selection) — task 66 is an enhancement layered on top of Quest, so Quest must land first
+
+### 67. Prototype DynamicAdaptiveClimb promotion-distance counters in TurboQuantKVCache
+- **Goal**: 5 (swap headroom via better cache hit rate), 3 (decode speed indirectly)
+- **Derived from**: DynamicAdaptiveClimb — Adaptive Cache Replacement with Dynamic Resizing (2511.21235)
+- **Change**:
+  - Add a `promotion_distance` field to TurboQuantKVCache page metadata (8-bit unsigned counter per page, default 0).
+  - On every page hit during decode, increment that page's counter by 1 (saturating at 255). On every page miss, the migration logic uses the counter to decide whether the newly-loaded page should be placed at the "front" (hot) or "middle" (warm) of an LRU-style eviction list.
+  - Add the dynamic-resizing variant: track recent hit-rate over a 1K-step sliding window. If hit-rate drops below 70%, expand the hot ring by 10% (up to a configurable cap); if hit-rate exceeds 90%, shrink the hot ring by 10% (down to a configurable floor). This is DynamicAdaptiveClimb's "automatically size the cache to match workload demand" applied to the hot/cold KV partition.
+  - Build a 50-line trace simulator in `omlx/bench/cache_replay.py` that records page-access traces from a real `hypercar_bench` Phase 3 run, then replays them through (a) plain LRU, (b) ARC, (c) DynamicAdaptiveClimb, and reports hit rates. This is the validation harness — we ship the algorithm only if it beats LRU and ARC on real Hypercar traces.
+- **Verify**: `omlx/bench/cache_replay.py` reports DynamicAdaptiveClimb hit rate >= ARC hit rate on at least 3 of 4 recorded NIAH/agentic traces. If yes, wire the algorithm into TurboQuantKVCache behind `--kv-promote-climb` and verify Phase 3 hypercar_bench passes (no quality regression).
+- **Effort**: S (prototype: 1 day) / M (production wiring + validation: 2-3 days)
+- **Depends on**: none — this is a self-contained algorithmic improvement on the existing cache abstraction
+
+### 68. Build offline tier-cut-point auto-tuner for KV-mode selection (Kareto analogue)
+- **Goal**: 5 (swap p90), 6 (M4 Pro fit), 3 (decode speed at the right cut-over)
+- **Derived from**: Kareto — Adaptive Multi-Objective Tiered Storage Configuration for KV Cache in LLM Service (2603.08739)
+- **Change**:
+  - Currently `omlx/hypercar_server.py` picks `duo` vs `native` vs `tq3` via a hard-coded heuristic (context length, server flag). Replace this with a configuration-search step: a new `omlx/bench/kv_mode_search.py` module that runs the existing benchmark Phase 1-3 across a small grid (duo, native, tq3, plus the cut-over thresholds), records (decode_tok_s, prefill_tok_s, metal_peak, p90_swap), and dumps a Pareto front to `bench/snapshots/kv_mode_pareto.json`.
+  - At server startup, `hypercar_server.py` reads the Pareto JSON and picks the configuration that satisfies a CLI-specified objective (`--objective throughput`, `--objective latency`, `--objective memory`). If no JSON is present, fall back to the current hard-coded heuristic.
+  - The optimiser uses Kareto's diminishing-return-guided pruning to avoid evaluating every grid point — once the marginal improvement from one more sample drops below 2%, stop.
+- **Verify**: on the M4 Pro reference machine, run `python -m omlx.bench.kv_mode_search` once. The output JSON must contain at least 4 Pareto-optimal configurations across the (decode, memory) plane, and the chosen default config (objective=balanced) must match the current hand-picked default on at least 2 of 3 metrics. Then: with `--objective memory`, `hypercar_bench` runs with the auto-selected config must show measurably lower Metal peak than the default (≥5% drop) without HumanEval regression.
+- **Effort**: M (2-3 days)
+- **Depends on**: Task 64 (two-tier TurboQuantKVCache) — Kareto's optimiser becomes most useful once there's an actual tier configuration to search over. Until then the search space is just (duo, native, tq3, fp16).

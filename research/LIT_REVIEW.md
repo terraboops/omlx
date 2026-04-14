@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 12)_
+_Last updated: 2026-04-14 (pass 13)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2015,6 +2015,93 @@ direction is "memory hierarchy management for LLM inference treated as a
 systems-architecture problem" — which nobody had been searching for because
 it doesn't sit under cs.CL or cs.LG.
 
+## Pass 13 — 2026-04-14
+
+Meow. Pass 12 widened into hardware architecture; pass 13 widens into
+**database systems and compiler/PL** — two more fields that have been
+solving "strict resource budget under stochastic workloads" for decades
+before LLMs existed. The four picks below cluster around a single
+question: *the cache replacement / tier management literature has 50+
+years of head start on us; what does it know that we don't?*
+
+Database buffer pools have always lived in the regime LLM KV caches now
+inhabit — a fast tier (BP page slots), a slow tier (disk pages), and a
+workload-dependent residency policy (LRU, LRU-K, ARC, CLOCK, 2Q, ...).
+The cache-replacement community publishes in SIGMOD/VLDB/FAST and uses
+trace-driven evaluation against well-known benchmarks. None of that
+literature shows up in the cs.LG KV-cache search results — but the
+moment we look in cs.OS / cs.PF / cs.DB, we find papers explicitly
+porting these algorithms to KV cache tiering. Three of four picks below
+came from that combined search. The fourth (Flashlight) is the
+compiler/PL angle: an attention kernel autotuner that fuses arbitrary
+attention variants without static templates — a different lever for
+Goal 4 prefill, sourced from cs.PL not cs.LG.
+
+### [Adaptive Multi-Objective Tiered Storage Configuration for KV Cache in LLM Service](https://arxiv.org/abs/2603.08739) — 2603.08739
+- **Authors**: Xianzhe Zheng, Rui Wang, et al. (20 authors)
+- **Published**: 2026-02 (arXiv, cs.DC)
+- **Hypercar goals it addresses**: Goal 5 (swap p90), Goal 6 (M4 Pro fit), Goal 1 (1M context)
+- **TL;DR**: Kareto frames KV cache placement across heterogeneous storage tiers as a multi-objective optimisation problem (cost / throughput / latency) and uses simulation plus diminishing-return-guided pruning to find Pareto-optimal configurations rather than analytical heuristics. Reports up to 9.3% throughput, 58.3% latency reduction, or 20.2% cost savings over fixed-tier baselines depending on objective weighting, and incorporates adaptive eviction tuning driven by access pattern analysis.
+- **Why it matters for Hypercar**: This is the database-side complement to PAM (pass 12, 2602.11521). PAM gave us the migration *policy* (locality-aware shuffle); Kareto gives us the *configuration search* — for a given workload mix (interactive vs. NIAH vs. agentic batch), how much budget should each tier get? On the M4 Pro the tiers are: Metal-resident fp16, Metal-resident 3-bit, wired-DRAM 3-bit, swap-backed. Right now we pick those by hand and recompile the server. Kareto's contribution is "you can simulate the workload offline and have an optimiser pick the cut-points." For `omlx/hypercar_server.py` this would manifest as a startup-time auto-tuner that profiles the next N requests and adjusts the duo-vs-native cut-over context length — currently a hard-coded heuristic in the kv-mode selection logic. Composes orthogonally with task #64 (PAM-style two-tier TQ cache).
+- **Cost of adoption**: M — three days for a config-search harness on top of the existing benchmark traces, one day to expose the resulting cut-points as server flags. Biggest risk: Kareto's evaluation assumes an A100/H100 cluster with PCIe tiers; on unified memory the tier boundaries are softer (Metal residency vs. swap pressure rather than discrete devices), so the optimiser's search space needs reformulating around residency watermarks instead of capacity slots.
+- **Local PDF**: research/2603.08739_kareto.pdf
+
+### [Toward Robust and Efficient ML-Based GPU Caching for Modern Inference](https://arxiv.org/abs/2509.20979) — 2509.20979
+- **Authors**: Peng Chen, Jiaji Zhang, Hailiang Zhao, Yirong Zhang, Jiahong Yu, Xueyan Tang, Yixuan Wang, Hao Li, Jianping Zou, Gang Xiong, Kingsum Chow, Shuibing He, Shuiguang Deng (Zhejiang University et al.)
+- **Published**: 2025-09 (arXiv, cs.DC)
+- **Hypercar goals it addresses**: Goal 3 (decode speed at long context), Goal 5 (swap headroom)
+- **TL;DR**: LCR is a learning-augmented LRU framework whose core algorithm LARU mixes ML predictions of future reuse distance with classical LRU, and crucially includes online error estimation so that when predictions go wrong the system gracefully degrades to plain LRU instead of catastrophically mispredicting. Reports up to 24.2% throughput improvement and 28.3% P99 TTFT reduction on DLRM and LLM serving workloads, with the robustness story validated against adversarial trace patterns.
+- **Why it matters for Hypercar**: Every prior eviction paper we've cited (SnapKV, PyramidKV, CAKE) chooses a fixed policy at design time and accepts whatever miss rate it produces in the field. LCR's contribution isn't the ML predictor (the literature has plenty of those) — it's the **graceful-degradation envelope** around it, which is the property that lets you actually ship an ML-augmented cache in production without a catastrophic-tail-latency story. For Hypercar this is the missing piece on top of Quest (top-K page selection): right now Quest is a stateless per-query top-K, but if we layer LARU-style learned reuse-distance prediction on top, frequently-revisited pages can stay hot in a small Metal-resident "L1" subset while cold pages stay 3-bit. The robustness envelope means we don't have to bet correctness on the predictor being perfect — failure mode is just "decode runs at LRU baseline speed." Maps onto `omlx/turboquant_kv.py` page metadata as a reuse-distance counter per page.
+- **Cost of adoption**: M-L — one day for the LRU baseline page metadata, two days for the predictor (a small MLP or even a moving-average heuristic), two days for the gracefully-degrading envelope and the regression tests proving worst-case behaviour matches LRU. Biggest risk: graceful-degradation only works if the cost-of-mispredict is observable cheaply at runtime — on Metal the cache miss cost is a Metal/wired-DRAM bandwidth event we can't directly probe, so we'd have to detect via decode-throughput drift instead.
+- **Local PDF**: research/2509.20979_lcr_laru.pdf
+
+### [DynamicAdaptiveClimb: Adaptive Cache Replacement with Dynamic Resizing](https://arxiv.org/abs/2511.21235) — 2511.21235
+- **Authors**: Daniel Berend, Shlomi Dolev, Sweta Kumari, Dhruv Mishra, Marina Kogan-Sadetsky, Archit Somani (Ben-Gurion University, IIT)
+- **Published**: 2025-11 (arXiv, cs.OS / cs.DS)
+- **Hypercar goals it addresses**: Goal 5 (swap headroom), Goal 3 (decode at long context, indirectly via cache hit rate)
+- **TL;DR**: Pure cache-replacement-theory paper, the kind of work LLM researchers don't read. Introduces AdaptiveClimb (dynamic promotion-distance based on recent hit/miss patterns) and DynamicAdaptiveClimb (adds runtime cache resizing to match workload demands). Evaluated on >1000 real-world traces, reports up to 29% hit-ratio improvement over FIFO baseline and 10-15% over SIEVE/ARC, with the biggest wins on workloads with fluctuating phase behaviour.
+- **Why it matters for Hypercar**: This is the "older field cross-pollinates in" find of the pass — cache-replacement theory has been refining LRU successors for 50 years (LRU-K, 2Q, ARC, SIEVE, S3-FIFO) and almost none of that literature has been ported to LLM KV cache. The agentic workload Hypercar serves is *exactly* the fluctuating-phase pattern these algorithms were designed for: a chat session bursts on one file's KV pages, then jumps to a different file, then returns. Static eviction policies (SnapKV, PyramidKV) have no notion of phase change. DynamicAdaptiveClimb's promotion-distance adaptation maps directly onto a "hot ring + cold ring" duo-style KV cache where the ring boundary moves based on observed reuse. Files: `omlx/turboquant_kv.py` for the page metadata, `omlx/duo_kv_cache.py` for the existing fp16/streaming split that already prefigures this. Inspiration-grade rather than a clean implementation path — the paper is on synthetic traces, not LLM workloads — but the algorithm is a fifty-line Python prototype.
+- **Cost of adoption**: S (prototype) / M (production). One afternoon to wire promotion-distance counters into TurboQuantKVCache and run a unit-test simulation against a recorded NIAH trace. Real production cost is the trace-collection harness needed to verify the algorithm beats fixed policies on Qwen3-Coder workloads, not the algorithm itself. Biggest risk: cache-replacement algorithms are tuned for object-granularity caches (pages of fixed size); KV pages already are fixed-size, so this risk is unusually low.
+- **Local PDF**: research/2511.21235_dynamic_adaptive_climb.pdf
+
+### [Flashlight: PyTorch Compiler Extensions to Accelerate Attention Variants](https://arxiv.org/abs/2511.02043) — 2511.02043
+- **Authors**: Bozhi You, Irene Wang, Zelal Su Mustafaoglu, Abhinav Jangda, Angélica Moreira, Roshan Dathathri, Divya Mahajan, Keshav Pingali (Georgia Tech, Microsoft Research, UT Austin)
+- **Published**: 2025-11 (arXiv, cs.PL / cs.DC)
+- **Hypercar goals it addresses**: Goal 4 (prefill speed at long context), Goal 3 (decode speed for sparse-attention variants)
+- **TL;DR**: Flashlight is a compiler-native framework integrated into PyTorch that automatically generates fused, FlashAttention-style kernels for arbitrary attention variants — including data-dependent patterns beyond what FlexAttention can express — without relying on static templates. Performance is competitive with or better than FlexAttention on standard variants, and the framework opens the door to attention shapes that previously required hand-written CUDA.
+- **Why it matters for Hypercar**: This is the compiler/PL find of the pass and it lands directly on a real Hypercar gap: every sparse-attention paper we've reviewed (Quest, MInference, DuoAttention, AsyncTLS) requires a custom kernel for the data-dependent index pattern, and that's precisely the workload where Apple Silicon historically struggles because MLX doesn't have an answer for "compile a fused kernel from a tensor expression with dynamic indices." Flashlight isn't directly portable to MLX, but its compilation strategy — lower the attention variant to a tile-based DSL, fuse, then code-generate — is the recipe MLX would need to support things like Quest's gather-then-attend pattern as a single kernel instead of three eager ops. Cross-field analogy: this is *Halide/TVM for attention*, and the same scheduling-language idea that Apple's CoreML compiler already uses internally for the Neural Engine. The paper itself is inspiration rather than direct adoption (PyTorch-only, no Metal backend), but it's a strong pointer for an MLX RFC: "what would FlexAttention-equivalent compilation look like on top of `mx.compile`?" Files: would inform `omlx/patches/minference_prefill.py` and any future Quest kernel work.
+- **Cost of adoption**: L (full port) / S (read-and-RFC). The paper is too PyTorch-coupled to lift directly, so the realistic adoption is an RFC against MLX upstream pointing at this work as the design target for first-class fused attention compilation. The S-cost task is the RFC writeup; the L-cost would be a real prototype against `mx.compile` — out of scope for the Hypercar codebase but worth tracking as an upstream dependency.
+- **Local PDF**: research/2511.02043_flashlight.pdf
+
+### Pass 13 celebration note
+
+Nyaa! Pass 13 keeps the cross-field streak alive. Pass 12 went to
+hardware architecture (cs.AR); pass 13 went to database systems
+(cs.DC / cs.DB) and compiler/PL (cs.PL). Three of four papers
+explicitly port classical cache-replacement or tiered-storage ideas
+into LLM KV cache management — work that was only findable by
+searching from the database side, not the LLM side. The fourth
+(Flashlight) crosses in from the compiler community and gives us a
+concrete RFC target for first-class fused attention compilation in
+MLX, which is the missing piece behind every sparse-attention task on
+the backlog (Quest, MInference, AsyncTLS, DuoAttention).
+
+The pattern that's emerged across passes 11-13 is that the LLM-systems
+literature has independently rediscovered ideas that database, OS,
+and compiler communities settled decades ago, and the cross-field
+papers are usually the cleanest articulation of *why* the idea
+matters. ARC and LRU-K have papers from 1993 and 2003; the LLM
+community is publishing rediscoveries of those algorithms in
+2024-2026. We should keep checking the older fields first when a
+problem feels like it should already have an answer.
+
+**Gap not closed this pass**: cryptography-adjacent quantization
+(originally on the pass-13 plan as the fifth angle to check). I
+searched briefly and found nothing in the 2024-2026 window that
+wasn't already TurboQuant-adjacent or already cited. Audio-diffusion
+long-range-attention work was also probed and didn't yield a clean
+non-duplicate. Both buckets stay open for pass 14+.
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -2745,3 +2832,56 @@ policies that predate the LLM KV cache literature by a decade),
 and game-engine streaming asset management (BVH-style hierarchical
 residency for KV pages, by analogy to visibility-driven tile
 streaming).
+
+### Pass 13 adds (2026-04-14)
+
+**Highest-leverage find this pass: LCR / LARU (2509.20979).** Of the
+four pass-13 picks, LCR is the only one that closes a gap the existing
+backlog *cannot* close on its own: graceful-degradation when an
+ML-augmented cache predictor goes wrong. Every prior backlog item
+that ships predictive policy (Quest's per-query top-K, InfiniGen's
+prefetcher, ProMoE's expert hot-set) currently has the implicit
+assumption that the predictor is approximately right; none of them
+has a story for the case where it isn't, and any of them could
+silently regress decode speed under an adversarial workload. LARU's
+contribution isn't the predictor itself — the literature has plenty
+of those — it's the *envelope* around the predictor that bounds
+worst-case behaviour at LRU baseline. Adding that envelope to Quest
++ InfiniGen turns them from "promising under benign workloads" into
+"safe to ship by default," which is the difference between pass-13
+backlog items and pass-13 production code.
+
+**Second find: DynamicAdaptiveClimb (2511.21235)** is the most
+directly transportable algorithm of the four — a fifty-line Python
+prototype that drops into the existing TurboQuantKVCache page metadata
+and gives us a phase-aware promotion-distance counter for free. The
+agentic chat workload Hypercar serves *is* the fluctuating-phase
+workload these algorithms target, and no static eviction policy
+(SnapKV, PyramidKV, CAKE) handles phase change well. Inspiration-grade
+because the paper is on synthetic traces, but the implementation cost
+is so low it's worth a one-afternoon prototype.
+
+**Third find: Kareto (2603.08739)** is the configuration-search
+complement to PAM (pass 12). PAM gave us the migration policy;
+Kareto gives us the offline optimiser that picks the tier cut-points.
+Together they form a complete tiered-storage plan: PAM at runtime,
+Kareto at startup. Composes with task #64 (PAM-style two-tier TQ
+cache) by giving it a principled way to choose the tier boundary
+instead of hand-coding it.
+
+**Fourth find: Flashlight (2511.02043)** is the cs.PL angle and is
+inspiration-only — PyTorch-coupled, no Metal port — but it's a
+strong RFC target for a future MLX upstream conversation about
+first-class fused attention compilation. Tracked as a research
+note, not a task.
+
+**Sequencing**: Tasks 67 (DynamicAdaptiveClimb prototype) and 66
+(LARU graceful-degradation envelope around Quest top-K) are the two
+paths that should land in Hypercar code; Kareto influences how task
+#64 should be designed but doesn't need its own task; Flashlight
+stays in the literature notes pending an MLX upstream RFC. The
+through-line of pass 13 is "the cache-replacement / tiered-storage
+literature has 30+ years of head-start on us, and the cheap wins
+are the ones we'd never find if we only searched cs.LG." Meow,
+nyaa.
+
