@@ -1,0 +1,10 @@
+=== HEAD ===
+ef194a45f707bf0c079b3224d0dc2ecf6e743fdc
+
+=== log -6 ===
+ef194a4 docs: Goal 4 prefill — 566 tok/s at 4K (PASS), 340 at 16K (drops)
+6f46912 docs: Goal 3 MET — 52.1 tok/s decode in fp16 mode
+450cf9f fix: MInference skips quantized KV — prevents tuple-as-array crash
+e0de8d5 research: pass 8 — InfiniGen + MLA + MagicPIG + Titans + 3 tasks
+46b0b77 bench: MILESTONE — first --full ALL GATES PASS (Run 41)
+0e9a6bf bench: Run 41 — [ALL GATES PASSED] first clean green run; Goal 2 MET empirically

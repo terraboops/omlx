@@ -1,0 +1,4 @@
+WARNING: GPU-heavy processes detected:
+  PID 68343: .venv/bin/python -m omlx.bench.hypercar_bench --force --kv-mode tq3
+Running the benchmark concurrently with these may cause catastrophic swap pressure on 48GB.
+Aborting. Kill the above processes first, or pass --force to override.
