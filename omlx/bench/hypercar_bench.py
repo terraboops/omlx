@@ -56,6 +56,10 @@ MIN_HUMANEVAL_PASS_RATE = 0.35  # 4-bit MoE model scores ~40-45% on these proble
 MIN_RULER_MK_ACCURACY = 0.8  # multi_key_retrieval@16K must hit 80%
 MIN_RULER_VT_ACCURACY = 0.7  # variable_tracking@4K must hit 70%
 MIN_MMLU_PRO_ACCURACY = 0.35  # MMLU-Pro cs+math must hit 35%
+# MMLU-Pro needs ≥512 max_tokens for CoT reasoning. Cutting to 256 caused
+# a 64%→24% silent regression (commits 1e803b6→20df582) because reasoning
+# was truncated before emitting the final answer letter.
+MMLU_PRO_MIN_MAX_TOKENS = 512
 
 PROFILE_PATH = Path("/tmp/hypercar_profile.json")
 DEFAULT_RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
@@ -1080,6 +1084,11 @@ def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
     """
     from omlx.eval.mmlu_pro.tasks import load_mmlu_pro, format_prompt, extract_answer
 
+    assert MMLU_PRO_MIN_MAX_TOKENS >= 512, (
+        f"MMLU-Pro needs ≥512 max_tokens — 256 caused a 64→24% silent "
+        f"regression (commits 1e803b6→20df582). Got {MMLU_PRO_MIN_MAX_TOKENS}."
+    )
+
     t0 = time.perf_counter()
 
     if full:
@@ -1121,7 +1130,8 @@ def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
         except Exception:
             chat_prompt = prompt + "\n"
 
-        text, _, _ = _generate(model, tokenizer, chat_prompt, max_tokens=512)
+        text, _, _ = _generate(model, tokenizer, chat_prompt,
+                               max_tokens=MMLU_PRO_MIN_MAX_TOKENS)
         predicted = extract_answer(text)
         is_correct = predicted == q["answer"]
 

@@ -498,6 +498,12 @@ _(none)_
 
 ## Completed
 
+- **Task 61**: MMLU-Pro max_tokens hard floor guardrail (2026-04-14)
+  - Added `MMLU_PRO_MIN_MAX_TOKENS = 512` constant in hypercar_bench.py with comment documenting the 1e803b6→20df582 incident
+  - Wired constant into phase3c_mmlu_pro generate call (replaces hardcoded 512)
+  - Added runtime assertion `assert MMLU_PRO_MIN_MAX_TOKENS >= 512` that forces future engineers to explicitly acknowledge the trade-off
+  - New test file `tests/test_eval_mmlu_pro.py` with 7 tests: constant floor, constant usage, assertion existence, answer extraction, truncated reasoning detection
+
 - **Task 1**: Add RULER retrieval + tracing tasks to hypercar_bench (2026-04-12)
   - Added `omlx/eval/ruler/` module with 3 synthetic generators (multi-key NIAH, variable tracking, frequent-word aggregation)
   - Added Phase 3b (RULER) to hypercar_bench: quick suite (4 tasks at 4K/16K) in default mode, full suite (13 tasks at 4K/16K/64K) in --full mode
