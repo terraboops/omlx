@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 36**: MMLU-Pro reasoning gate in hypercar_bench
+_(none)_
 
 ## Completed
 
@@ -590,6 +590,11 @@ all in `## In Progress`.
   - Qwen3 D=64 gets BQ=32, BK=32 tile sizes (favorable: 2x more K/tile than D=128 models)
   - No quantized KV support inside any SDPA kernel — dequant must happen upstream (confirms TQ3 design)
   - MInference risk: per-head additive masks work but may prevent efficient head batching
+- **Task 36**: MMLU-Pro reasoning gate in hypercar_bench (2026-04-13)
+  - New `omlx/eval/mmlu_pro/` module — loads TIGER-Lab/MMLU-Pro from HuggingFace, chain-of-thought prompting, answer extraction
+  - Phase 3c: 25 questions (cs+math) in default mode, 100 across all categories in --full
+  - Gate: mmlu_pro_cs_math >= 35%. Result: **48% (12/25) PASS** — first reasoning eval for Goal 2
+  - Per-category breakdown in phase details. Runs after RULER, before HumanEval
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)

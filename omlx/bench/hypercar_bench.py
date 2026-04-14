@@ -9,6 +9,7 @@ Memory watchdog runs continuously and aborts immediately on breach.
   Phase 2: Code Intel     — 5 coding problems, exec + assert, >=60%     (<5min)
   Phase 3: NIAH           — needle retrieval at 4K context (ChatML)      (<5min)
   Phase 3b: RULER         — multi-key retrieval + aggregation (RULER)    (<5min)
+  Phase 3c: MMLU-Pro      — reasoning gate (cs + math, >=35%)           (<3min)
   Phase 4: HumanEval Lite — 20 curated problems, >=50% pass@1           (<10min)
   Phase 5: Memory         — watchdog summary (breach = already aborted)
   Phase 6: Summary        — write results JSON
@@ -54,6 +55,7 @@ MIN_CODE_PASS_RATE = 0.6
 MIN_HUMANEVAL_PASS_RATE = 0.35  # 4-bit MoE model scores ~40-45% on these problems
 MIN_RULER_MK_ACCURACY = 0.8  # multi_key_retrieval@16K must hit 80%
 MIN_RULER_VT_ACCURACY = 0.7  # variable_tracking@4K must hit 70%
+MIN_MMLU_PRO_ACCURACY = 0.35  # MMLU-Pro cs+math must hit 35%
 
 PROFILE_PATH = Path("/tmp/hypercar_profile.json")
 DEFAULT_RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
@@ -1031,6 +1033,113 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
 
 
 # ---------------------------------------------------------------------------
+# Phase 3c: MMLU-Pro (reasoning gate for Goal 2)
+# ---------------------------------------------------------------------------
+
+def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
+                     full: bool = False) -> PhaseResult:
+    """MMLU-Pro reasoning evaluation.
+
+    Default mode: 25 questions from cs + math.
+    --full mode: 100 questions across all categories.
+
+    Gate: mmlu_pro_cs_math >= 0.35 accuracy.
+    """
+    from omlx.eval.mmlu_pro.tasks import load_mmlu_pro, format_prompt, extract_answer
+
+    t0 = time.perf_counter()
+
+    if full:
+        questions = load_mmlu_pro(categories=None, n=100, seed=42)
+    else:
+        questions = load_mmlu_pro(categories=["computer_science", "math"], n=25, seed=42)
+
+    if not questions:
+        logger.warning("  MMLU-Pro: no questions loaded — skipping")
+        return PhaseResult(
+            name="Phase 3c: MMLU-Pro", passed=True,
+            elapsed_s=time.perf_counter() - t0,
+            details={"skipped": True, "reason": "dataset not available"},
+        )
+
+    n_layers = len(model.layers)
+    correct = 0
+    total = 0
+    results = []
+
+    logger.info(f"  Running MMLU-Pro ({len(questions)} questions)...")
+
+    for i, q in enumerate(questions):
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 3c: MMLU-Pro", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
+        prompt = format_prompt(q)
+
+        # Use ChatML formatting
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            chat_prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+        except Exception:
+            chat_prompt = prompt + "\n"
+
+        text, _, _ = _generate(model, tokenizer, chat_prompt, max_tokens=512)
+        predicted = extract_answer(text)
+        is_correct = predicted == q["answer"]
+
+        if is_correct:
+            correct += 1
+        total += 1
+
+        results.append({
+            "category": q["category"],
+            "predicted": predicted,
+            "expected": q["answer"],
+            "correct": is_correct,
+        })
+
+        if (i + 1) % 5 == 0 or i == len(questions) - 1:
+            logger.info(f"  [{i+1}/{len(questions)}] {correct}/{total} correct "
+                        f"({correct/total*100:.0f}%)")
+
+    accuracy = correct / total if total > 0 else 0.0
+    gate_passed = accuracy >= MIN_MMLU_PRO_ACCURACY
+
+    # Per-category breakdown
+    by_cat = {}
+    for r in results:
+        cat = r["category"]
+        by_cat.setdefault(cat, {"correct": 0, "total": 0})
+        by_cat[cat]["total"] += 1
+        if r["correct"]:
+            by_cat[cat]["correct"] += 1
+
+    logger.info(f"  MMLU-Pro: {correct}/{total} ({accuracy:.0%}) — "
+                f"gate {'PASS' if gate_passed else 'FAIL'}")
+    for cat, stats in sorted(by_cat.items()):
+        cat_acc = stats["correct"] / stats["total"] if stats["total"] > 0 else 0
+        logger.info(f"    {cat}: {stats['correct']}/{stats['total']} ({cat_acc:.0%})")
+
+    return PhaseResult(
+        name="Phase 3c: MMLU-Pro",
+        passed=gate_passed,
+        elapsed_s=time.perf_counter() - t0,
+        details={
+            "accuracy": accuracy,
+            "correct": correct,
+            "total": total,
+            "by_category": by_cat,
+            "gate_threshold": MIN_MMLU_PRO_ACCURACY,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 4: HumanEval Lite (20 curated problems)
 # ---------------------------------------------------------------------------
 
@@ -1643,6 +1752,16 @@ def main():
                 "Phase 3b FAILED (quality gate) — memory clean, "
                 "continuing to Phase 4 HumanEval for independent eval coverage"
             )
+
+        # Phase 3c: MMLU-Pro (reasoning gate — runs in both default and --full)
+        logger.info("\n=== Phase 3c: MMLU-Pro ===")
+        p3c = phase3c_mmlu_pro(model, tokenizer, watchdog, full=args.full)
+        phases.append(p3c)
+        if not p3c.passed:
+            if watchdog.breached.is_set():
+                logger.error("Phase 3c FAILED (memory breach) — aborting")
+                return _finish(phases, watchdog, limits, total_t0, results_path)
+            logger.warning("Phase 3c FAILED (MMLU-Pro gate) — continuing")
 
         if not args.full:
             logger.info("\nDefault mode: skipping Phase 4 (HumanEval). Use --full to include.")
