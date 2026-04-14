@@ -498,6 +498,13 @@ _(none)_
 
 ## Completed
 
+- **Task 71**: Add `--niah-only --niah-context` escape hatch for Goal 1 validation (2026-04-14)
+  - New `--niah-only` flag: runs only Phase 0 (smoke) + Phase 3 (NIAH), skips Code Intel, RULER, MMLU-Pro, HumanEval
+  - New `--niah-context` flag: comma-separated context specs like `4K,16K,64K,128K`, overrides default [4K,16K]
+  - `_parse_context_list()` helper handles K/M suffixes and raw integers
+  - Updated `--help` epilog with NIAH escape hatch section and examples
+  - Tests: 6 parser tests + 3 flag existence tests in test_hypercar_tools.py
+  - Usage: `hypercar_bench --niah-only --niah-context 64K,128K --kv-mode native`
 - **Task 61**: MMLU-Pro max_tokens hard floor guardrail (2026-04-14)
   - Added `MMLU_PRO_MIN_MAX_TOKENS = 512` constant in hypercar_bench.py with comment documenting the 1e803b6→20df582 incident
   - Wired constant into phase3c_mmlu_pro generate call (replaces hardcoded 512)

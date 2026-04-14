@@ -69,6 +69,20 @@ NIAH_QUESTION = "What is the secret code?"
 NIAH_ANSWER = "ALPHA-7749"
 
 
+def _parse_context_list(s: str) -> list[int]:
+    """Parse comma-separated context specs like '4K,16K,64K' into token counts."""
+    result = []
+    for part in s.split(","):
+        part = part.strip().upper()
+        if part.endswith("K"):
+            result.append(int(part[:-1]) * 1024)
+        elif part.endswith("M"):
+            result.append(int(part[:-1]) * 1024 * 1024)
+        else:
+            result.append(int(part))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # System memory detection
 # ---------------------------------------------------------------------------
@@ -660,9 +674,16 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
     n_layers = len(model.layers)
     results = {}
 
-    niah_contexts = [4096, 16384]
-    if getattr(args_ref, 'niah_500k', False):
-        niah_contexts.extend([65536, 131072, 262144, 524288])
+    # --niah-context overrides default context list
+    niah_context_str = getattr(args_ref, 'niah_context', None)
+    if niah_context_str:
+        niah_contexts = _parse_context_list(niah_context_str)
+        logger.info(f"  NIAH contexts from --niah-context: "
+                    f"{[f'{c//1024}K' for c in niah_contexts]}")
+    else:
+        niah_contexts = [4096, 16384]
+        if getattr(args_ref, 'niah_500k', False):
+            niah_contexts.extend([65536, 131072, 262144, 524288])
 
     for ctx_len in niah_contexts:
         if watchdog.breached.is_set():
@@ -1533,12 +1554,18 @@ KV cache modes:
   tq3           WHT codebook, save/load/rewind, best RULER quality
   fp16          Baseline quality, highest memory, ~75K max
 
+NIAH escape hatch (Goal 1 validation):
+  --niah-only               Run only smoke + NIAH (skip RULER, MMLU-Pro, HumanEval)
+  --niah-context 4K,64K     Set specific context lengths (bypasses headroom gate)
+
 Examples:
   %(prog)s                          # standard pre-commit check
   %(prog)s --quick                  # fast smoke test
   %(prog)s --full                   # full validation with HumanEval
   %(prog)s --kv-mode native         # test with 3-bit KV (for long context)
   %(prog)s --full --max-swap-pct 40 # loosened swap for full run on 48GB
+  %(prog)s --niah-only --niah-context 4K,16K,64K  # focused Goal 1 probe
+  %(prog)s --niah-only --niah-context 128K --kv-mode native  # 128K validation
 """,
     )
     parser.add_argument("--quick", action="store_true",
@@ -1559,6 +1586,13 @@ Examples:
                         help="Override model path (e.g. /tmp/granite-4.0-h-small-TQ3.5-wht)")
     parser.add_argument("--niah-500k", action="store_true",
                         help="Add 500K token NIAH test (requires hybrid model with low KV overhead)")
+    parser.add_argument("--niah-only", action="store_true",
+                        help="Run ONLY Phase 0 (smoke) + Phase 3 (NIAH). "
+                        "Skips Code Intel, RULER, MMLU-Pro, HumanEval. "
+                        "Use with --niah-context for focused Goal 1 validation.")
+    parser.add_argument("--niah-context", type=str, default=None,
+                        help="Comma-separated context lengths for NIAH, e.g. '4K,16K,64K,128K'. "
+                        "Overrides default [4K,16K]. Bypasses headroom gate with WARNING.")
     parser.add_argument("--quest-topk", type=int, default=0,
                         help="Quest page selection: attend to top-K pages during decode (0=off)")
     parser.add_argument("--prefill-sparse", type=str, default=None,
@@ -1785,6 +1819,18 @@ Examples:
 
         if args.quick:
             logger.info("\n--quick mode: skipping Phase 2+")
+            return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        # --niah-only: skip Code Intel, go straight to NIAH, then finish
+        if getattr(args, 'niah_only', False):
+            logger.info("\n--niah-only mode: skipping Phase 2 (Code Intel)")
+            logger.info("\n=== Phase 3: Needle in Haystack ===")
+            p3 = phase3_niah(model, tokenizer, watchdog, args_ref=args)
+            phases.append(p3)
+            if p3.passed:
+                logger.info("Phase 3 PASSED — NIAH-only run complete")
+            else:
+                logger.error("Phase 3 FAILED")
             return _finish(phases, watchdog, limits, total_t0, results_path)
 
         # Phase 2: Code Intelligence

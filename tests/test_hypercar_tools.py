@@ -351,3 +351,64 @@ class TestAdaptiveChunking:
         bytes_per_elem = 2
         attn_gb = (chunk * ctx * n_heads * bytes_per_elem) / 1e9
         assert attn_gb > 10.0, f"Default chunk at 64K should OOM: {attn_gb:.1f} GB"
+
+
+# ---------------------------------------------------------------------------
+# Context list parser tests (--niah-context flag)
+# ---------------------------------------------------------------------------
+
+# Extract _parse_context_list from source (avoids MLX import)
+import re as _re
+
+_src = Path("omlx/bench/hypercar_bench.py").read_text()
+_func_match = _re.search(
+    r'(def _parse_context_list\(s[^)]*\)[^:]*:.*?)(?=\ndef |\nclass |\n# ---)',
+    _src, _re.DOTALL
+)
+if _func_match:
+    _ns = {}
+    exec(_func_match.group(1).replace("list[int]", "list"), _ns)
+    _parse_context_list = _ns["_parse_context_list"]
+else:
+    _parse_context_list = None
+
+
+@pytest.mark.skipif(_parse_context_list is None,
+                    reason="_parse_context_list not found in source")
+class TestParseContextList:
+    """Test the --niah-context parser."""
+
+    def test_basic_k_suffix(self):
+        assert _parse_context_list("4K,16K,64K") == [4096, 16384, 65536]
+
+    def test_single_value(self):
+        assert _parse_context_list("128K") == [131072]
+
+    def test_spaces_tolerated(self):
+        assert _parse_context_list("4K, 16K, 64K") == [4096, 16384, 65536]
+
+    def test_m_suffix(self):
+        assert _parse_context_list("1M") == [1048576]
+
+    def test_raw_integer(self):
+        assert _parse_context_list("4096") == [4096]
+
+    def test_mixed_formats(self):
+        assert _parse_context_list("4K,8192,1M") == [4096, 8192, 1048576]
+
+
+class TestNIAHOnlyFlags:
+    """Test --niah-only and --niah-context CLI flags exist in source."""
+
+    def test_niah_only_flag_defined(self):
+        src = Path("omlx/bench/hypercar_bench.py").read_text()
+        assert "--niah-only" in src
+
+    def test_niah_context_flag_defined(self):
+        src = Path("omlx/bench/hypercar_bench.py").read_text()
+        assert "--niah-context" in src
+
+    def test_niah_only_skip_logic_exists(self):
+        src = Path("omlx/bench/hypercar_bench.py").read_text()
+        assert "niah_only" in src
+        assert "skipping Phase 2" in src
