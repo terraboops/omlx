@@ -498,6 +498,10 @@ _(none)_
 
 ## Completed
 
+- **Task 62**: Namespace run numbering between analyst cron and implementation loop (2026-04-14)
+  - Convention: analyst runs use "Run N", devloop runs use "devloop-N" or "sample-N" in commit messages
+  - Documented in bench/snapshots/README.md and CLAUDE.md "Before Every Commit" section
+  - Prevents namespace collisions in `git log` between analyst and devloop benchmark runs
 - **Task 71**: Add `--niah-only --niah-context` escape hatch for Goal 1 validation (2026-04-14)
   - New `--niah-only` flag: runs only Phase 0 (smoke) + Phase 3 (NIAH), skips Code Intel, RULER, MMLU-Pro, HumanEval
   - New `--niah-context` flag: comma-separated context specs like `4K,16K,64K,128K`, overrides default [4K,16K]

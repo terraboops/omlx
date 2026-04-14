@@ -45,6 +45,21 @@ bench/snapshots/
 .venv/bin/python omlx/bench/aggregate.py --report HEAD --baseline 11fe743
 ```
 
+## Run Numbering Convention
+
+Two agents operate on this repository: the **analyst cron** (periodic benchmark runs)
+and the **implementation loop** (devloop, autonomous task execution with validation runs).
+To avoid namespace collisions in commit messages and `git log`:
+
+- **Analyst runs**: Use `Run N` in commit messages (e.g., `bench: Run 47 — duo ALL GATES PASS`).
+  These are the canonical benchmark records tracked in BENCHMARKS.md.
+- **Devloop runs**: Use `devloop-N` or `sample-N` in commit messages (e.g.,
+  `bench: devloop-3 — NIAH 64K PASS`). These are internal validation runs
+  during implementation, not tracked in BENCHMARKS.md.
+
+This avoids confusion when searching `git log --oneline | grep -i run` — analyst
+runs and devloop runs are visually distinct.
+
 ## Session Progress (Run 23 → Run 45)
 
 | Metric | Start | End | Change |

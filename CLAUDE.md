@@ -57,6 +57,9 @@ For full validation including HumanEval (~15min):
 
 ALL gates must pass before committing. Fix any failures first.
 Do not use --no-verify to skip hooks.
+
+Run numbering: analyst cron uses "Run N", devloop uses "devloop-N" or "sample-N"
+in commit messages. See bench/snapshots/README.md for details.
 ```
 
 Memory limits are percentage-based (auto-detected from system RAM):
