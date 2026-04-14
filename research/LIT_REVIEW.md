@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-12 (pass 7)_
+_Last updated: 2026-04-13 (pass 8)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -1324,6 +1324,189 @@ paper above covers the same axis via *self*-distillation through MCTS, which
 is a strictly cheaper path on our target hardware. Documenting here so we
 don't re-open the bucket without new evidence.
 
+## Pass 8 — 2026-04-13
+
+Every prior pass has attacked KV memory *within* a single layer's attention
+(per-layer quant, page selection, retrieval/streaming split, cross-layer
+sharing). The one axis nothing in the backlog touches is the *projection*
+itself — the fact that every head independently allocates full K and V
+projections into d_head dimensions. Pass 8 goes there, plus three unrelated
+fresh directions: external memory at test time (composes with TTT), KV
+offload to system RAM with compute-overlapped prefetch (direct attack on
+Goal 5 swap pressure), and LSH-sampled attention (a query-side sparsity
+mechanism that does *not* depend on page-level min/max like Quest).
+
+### [DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model](https://arxiv.org/abs/2405.04434) — 2405.04434
+- **Authors**: DeepSeek-AI (Aixin Liu, Bei Feng, Bin Wang, Bingxuan Wang, Bo Liu et al.)
+- **Published**: 2024-05 (technical report)
+- **Hypercar goals it addresses**: Goal 5 (swap headroom), Goal 1 (1M context
+  in same budget), Goal 6 (M4 Pro fit)
+- **TL;DR**: Introduces **Multi-head Latent Attention (MLA)**. Instead of
+  storing per-head K and V projections, MLA projects the residual stream into
+  a single small **latent c_kv** vector (e.g. d_c = 512 for a 7168-dim model)
+  and reconstructs per-head K/V on the fly via absorbed up-projection
+  matrices. At inference only c_kv (plus a tiny per-token RoPE key slice) is
+  cached, shrinking the KV footprint to ~6% of GQA and ~1.5% of MHA while
+  matching or exceeding full-attention quality on the paper's evals. The
+  RoPE-split trick — applying rotary only to a dedicated non-absorbed key
+  slice — is the bit that makes the absorption algebra work cleanly with
+  position encoding.
+- **Why it matters for Hypercar**: Every per-layer KV optimization on the
+  backlog — Quest (Task 24), KIVI 2-bit axis (already in TurboQuant),
+  DuoAttention (Task 12/13), SnapKV (Task 46), InfLLM (Task 43), ShadowKV
+  (Task 44), YOCO-lite (Task 50), QuaRot (Task 41) — attacks the KV bill
+  *after* projection. MLA attacks the projection *itself*, so it is strictly
+  orthogonal to every one of them: even a training-free probe that fits a
+  low-rank c_kv regression onto Qwen3-Coder's existing K and V projections
+  (per layer, on a small calibration set) would tell us the effective rank of
+  our GQA cache and put a hard floor on how much KV memory 3-bit + sparse +
+  streaming *cannot* reach. Qwen3-Coder is already GQA, not MHA, so the
+  ceiling win is smaller than DeepSeek's 1.5%-of-MHA number — but if the
+  probe reveals that 8 KV heads × 128 d_head really live on a rank-256
+  subspace, that's still a 2x cut on top of everything else. This belongs
+  behind `omlx/turboquant_kv.py` as an alternative storage class ("latent
+  mode") selectable per layer.
+- **Cost of adoption**: M (2-4 days) for the probe; L (multi-week) for a
+  full retrofit with quality gates. The probe itself is just SVD of stacked
+  K/V projection outputs and a reconstruction-loss gate — no training. The
+  retrofit is where it gets expensive because the absorbed up-projections
+  mean changing the attention forward pass, not just the cache. Biggest risk:
+  MLA's quality story is for models *trained* with MLA. A pure post-hoc
+  rank truncation on a GQA model will lose some quality; how much is an
+  empirical question the probe answers in a day.
+- **Local PDF**: research/2405.04434_deepseek_v2_mla.pdf
+
+### [Titans: Learning to Memorize at Test Time](https://arxiv.org/abs/2501.00663) — 2501.00663
+- **Authors**: Ali Behrouz, Peilin Zhong, Vahab Mirrokni (Google Research)
+- **Published**: 2025-01
+- **Hypercar goals it addresses**: Goal 1 (context beyond window), Goal 2
+  (intelligence breadth via persistent memory)
+- **TL;DR**: Proposes a neural long-term memory module trained to memorize
+  surprising tokens at inference time via a small MLP whose weights are
+  updated with an online gradient step per token. Combines with attention in
+  three architectural variants (Memory as Context, Memory as Gate, Memory as
+  Layer). Outperforms Transformers, linear-attention baselines, and Mamba on
+  needle-in-a-haystack and long-context reasoning at 2M+ tokens while using
+  far less KV cache, because the compressed state lives in the MLP's weights
+  rather than a growing key-value table.
+- **Why it matters for Hypercar**: We already have `omlx/ttt.py` running
+  gradient-based online updates on LoRA-style down_proj weights — Titans is
+  the closest published design to "what is TTT supposed to be doing at
+  inference?", and it reframes the loop from outcome-supervised optimization
+  (our current HumanEval signal) to a per-token memorization loss on the
+  residual stream itself. The "Memory as Context" variant is a drop-in
+  retrofit for an existing transformer: at each decode step you prepend a
+  small set of tokens recovered from the memory module's associative recall
+  to the actual attention context. That composes exactly with our existing
+  prompt-caching path in `omlx/hypercar_server.py` — the memory is effectively
+  a learnable compressed prefix. A 2M-token effective context without growing
+  the KV cache is the only paper in the review that promises to beat the
+  22.5GB 1M-context KV ceiling *without* quantization or sharing.
+- **Cost of adoption**: L (multi-week). Would require a Titans-style memory
+  module bolted onto our existing TTT infrastructure, a per-token update
+  schedule that does not slow decode below the Hypercar target, and honest
+  NIAH validation at 2M+ to prove the claim holds on Qwen3-Coder. The
+  highest risk is decode-speed: Titans' memory update is O(d^2) per token —
+  on a 3B-active MoE that's probably fine, but we have to measure.
+- **Local PDF**: research/2501.00663_titans.pdf
+
+### [InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management](https://arxiv.org/abs/2406.19707) — 2406.19707
+- **Authors**: Wonbeom Lee, Jungi Lee, Junghwan Seo, Jaewoong Sim (Seoul National University)
+- **Published**: 2024-06 (OSDI 2024)
+- **Hypercar goals it addresses**: Goal 5 (swap pressure), Goal 1 (context in
+  same budget), Goal 3 (decode constancy under memory pressure)
+- **TL;DR**: Keeps the full KV cache on CPU/host memory, and for each decode
+  step **speculatively prefetches only the KV entries that will actually
+  matter for that step's attention**. The prefetch signal comes from a
+  cheap per-layer forecast: the hidden state of layer i-1 plus a small
+  learned projection predicts the attention pattern of layer i well enough
+  to prefetch the right pages before layer i runs. Reports up to 3x speedup
+  on long-context decode vs a naive offloaded baseline with no accuracy
+  loss, at 2-4x smaller GPU memory footprint.
+- **Why it matters for Hypercar**: Goal 5 is our worst failing gate — p90
+  sustained swap I/O at 460 MB/s vs a 100 MB/s target. Every other KV paper
+  in the review tries to *shrink* the cache so it fits entirely in-core;
+  InfiniGen is the only one that says "accept the cache doesn't fit, make
+  swap *predictable* instead." On an M4 Pro the unified memory model makes
+  this particularly attractive because "host" and "GPU" memory are the same
+  DRAM — prefetching is really about controlling *which pages are resident*
+  and avoiding the mmap backing store. The prefetch predictor is a tiny
+  per-layer linear head that we can fit in hours on calibration data, and
+  it slots into `omlx/turboquant_kv.py` as a per-page residency hint that
+  drives `madvise(MADV_WILLNEED)` on the KV pages we expect to touch. Task
+  31's allocator fragmentation diagnostic (from Pass 6) is the prerequisite
+  measurement — InfiniGen is the *fix* that diagnostic points toward.
+- **Cost of adoption**: M (3-5 days). Calibration-time per-layer predictor
+  (linear regression, ~1 hour on a capture), per-decode prefetch call that
+  issues `madvise` on the predicted pages, an honest 1M-context NIAH +
+  memory-throughput gate. The tricky part is deciding what granularity to
+  predict at: InfiniGen uses per-token on a flat KV; our pages-of-32 layout
+  is coarser, which probably *helps* the predictor rather than hurts it.
+  Biggest risk: macOS's mmap prefetch heuristics may already do most of
+  this, in which case the predictor adds no signal over the OS — we need
+  a measurement before committing.
+- **Local PDF**: research/2406.19707_infinigen.pdf
+
+### [MagicPIG: LSH Sampling for Efficient LLM Generation](https://arxiv.org/abs/2410.16179) — 2410.16179
+- **Authors**: Zhuoming Chen, Ranajoy Sadhukhan, Zihao Ye, Yang Zhou, Jianyu Zhang, Niklas Nolte, Yuandong Tian, Matthijs Douze, Leon Bottou, Zhihao Jia, Beidi Chen (CMU, Princeton, Meta, Yandex)
+- **Published**: 2024-10
+- **Hypercar goals it addresses**: Goal 3 (decode, constant across context),
+  Goal 5 (indirect, same cache less work)
+- **TL;DR**: Frames decode attention as *Monte Carlo estimation of a
+  softmax-weighted sum over keys*, and shows that **locality-sensitive
+  hashing gives an unbiased sampler with provably lower variance than uniform
+  or top-K**. Implements a CPU-resident LSH table keyed on K vectors; per
+  query, a few LSH lookups return a small (sampled, not top-K) set of keys
+  whose attention contribution dominates the sum. Reports 1.9-3.9x decode
+  speedup vs full attention at long context with near-zero accuracy loss on
+  LongBench, RULER, and needle tests — and crucially *the accuracy profile
+  is flat in context length*, which is exactly the "constant across context"
+  requirement in Goal 3.
+- **Why it matters for Hypercar**: Quest (Task 24) is the fastest path we
+  have to Goal 3, but its page min/max bound is a heuristic that can miss
+  keys inside a page that dominate attention for rare queries — and the
+  bound's tightness depends on key-vector clustering which we don't control.
+  MagicPIG is the statistically-principled cousin: instead of pruning pages,
+  it samples keys with probability proportional to their exponential inner
+  product via LSH, which gives an *unbiased* attention estimator. The two
+  are composable — MagicPIG can run on the pages Quest selects — but
+  MagicPIG also stands alone, and its LSH table maps directly onto the
+  unified-memory model on Apple Silicon (the table is just another flat
+  buffer). This is the first sparsity paper in the review whose correctness
+  guarantee is statistical rather than heuristic; for the Hypercar Goal-2
+  intelligence contract it is the paper that lets us promise "constant
+  decode quality across context length" with a number attached instead of
+  just an empirical RULER sweep.
+- **Cost of adoption**: M (3-5 days). LSH table builder for K vectors, a
+  per-query sampling path in the attention forward, an accuracy gate vs
+  full attention at 16K and 64K. Biggest risk: LSH tables are notoriously
+  hyperparameter-sensitive (number of hash functions, bucket width) — the
+  paper gives good defaults but our 3-bit quantized K vectors may have
+  degraded the clustering structure, in which case we need to build the
+  LSH on pre-quant K (during prefill) and pay a small extra buffer.
+
+- **Local PDF**: research/2410.16179_magicpig.pdf
+
+**Gap not closed this pass**: *Byte Latent Transformer / tokenizer-free
+inference.* I looked for a 2024-2026 paper that lets us drop the BPE
+tokenizer in favour of dynamic byte-patching at inference time — BLT
+(2412.09871) is the strongest candidate, but it is a *training-time*
+architecture that would require a full model retrain. There is no
+post-hoc retrofit path to Qwen3-Coder, so it collides with the abandoned
+work list (Granite distillation, TQ3.5 weight quantization). Documenting
+here so we don't re-open the bucket without a retrofit-capable paper.
+
+**Gap not closed this pass**: *Fine-grained MoE expert pruning at inference
+time.* Pass 4 added ProMoE (Task 16) for lazy-loading expert weights, but
+that is a *caching* play, not a *pruning* play. I looked for a 2024-2026
+paper that selects a subset of experts per layer at inference time based on
+some cheap online signal and drops the rest (lower memory, fewer dispatches).
+The closest candidates (expert-choice routing variants, Mixtral-DP) are
+either training-time only or depend on specific routing architectures Qwen3
+does not use. No concrete retrofit path for our model — parked until a
+paper explicitly targets post-hoc expert sparsification on an off-the-shelf
+fine-grained MoE like Qwen3.
+
 ## Synthesis
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -1722,3 +1905,79 @@ landing first so we have a tree-attention primitive to plug the heads
 into. rStar-Math process-supervision loop on TTT (Task 52) lands last,
 gated on MMLU-Pro (Task 36) being live so we have a measurement
 target for the rollouts.
+
+### Pass 8 adds (2026-04-13)
+
+**Highest-leverage find this pass: InfiniGen (2406.19707).** Every
+other KV paper on the backlog, across seven prior passes, attacks
+Goal 5 by *shrinking* the KV cache so it fits in-core: Quest page
+selection (Task 24), KIVI 2-bit asymmetry, DuoAttention streaming
+heads (Tasks 12/13), SnapKV eviction (Task 46), InfLLM two-tier (Task
+43), ShadowKV low-rank K (Task 44), YOCO-lite layer sharing (Task
+50), QuaRot weight 4-bit (Task 41). InfiniGen is the only paper in
+the review that accepts the cache will not fit, and makes *swap
+predictable* via a cheap per-layer prefetch predictor. This matters
+specifically for the Hypercar reference machine because the M4 Pro's
+unified memory model erases the "GPU vs host" distinction that
+InfiniGen originally targeted — on our box, prefetch is just
+`madvise(MADV_WILLNEED)` on the right KV pages at the right time, and
+the observed p90 460 MB/s sustained swap I/O (4.6x over target) is
+the exact pathology the prefetch predictor addresses. It composes
+with *every* compression paper already on the backlog (the predictor
+runs on whatever KV representation is in use) and is the first paper
+in the review whose success criterion is a *throughput* metric
+matching our actual failing gate. Task 31's allocator diagnostic
+(Pass 6) is the prerequisite measurement; InfiniGen is the fix that
+diagnostic points toward.
+
+**Second highest: MLA probe (DeepSeek-V2, 2405.04434).** Seven passes
+of per-layer KV compression have implicitly assumed the per-head K/V
+projections are fixed — we only ever attack the cache *after*
+projection. MLA attacks the projection itself by exposing that K and
+V live on a low-rank latent. Qwen3-Coder is already GQA (8 KV heads ×
+128 d_head = 1024 KV dims/layer), so DeepSeek's dramatic MHA->MLA
+headline number (~1.5% of MHA) won't translate directly, but the
+training-free rank probe is two days of work and it gives us a hard
+floor on how much KV every other paper on the backlog *cannot* reach.
+If the effective rank is ~256 we get a 4x ceiling win that composes
+with TurboQuant's 3-bit codec (net ~20x vs fp16 GQA) and with
+DuoAttention head-class routing (retrieval heads carry the full
+latent, streaming heads carry a bounded window of the same latent).
+The probe is the right first step — an empirical rank number unlocks
+the planning for the full retrofit, and the retrofit itself stays
+parked with Text-to-LoRA training as a future cloud item.
+
+**MagicPIG (2410.16179)** is the statistical upgrade path for Quest
+(Task 24). Quest's page min/max is a *heuristic* upper bound that can
+miss the key-inside-a-page-that-dominates case for rare queries;
+MagicPIG's LSH sampler is *unbiased*, with provable variance control
+that is flat in context length. Sequencing: land Quest first
+(already on the backlog), then measure where Quest's accuracy
+degrades vs full attention on RULER/LongBench, then replace those
+failure cases with MagicPIG sampling. The two mechanisms are
+composable (MagicPIG within the pages Quest selects), and the
+composition is genuinely the first path to "decode quality constant
+in context length *with a statistical guarantee attached*," which is
+a stronger form of Goal 3 than any other paper in the review
+promises.
+
+**Titans (2501.00663)** is a test-time learning paper that reframes
+our own TTT loop, but it is *not* a near-term implementation task.
+The "memory as context" variant is the only retrofit-capable design,
+and even that requires a new memory module trained into the model,
+which collides with the abandoned training-from-scratch work. The
+right move is to capture it as a design reference for `omlx/ttt.py`
+— specifically the per-token surprise-driven update rule, which is a
+more principled loss than our current outcome-supervised HumanEval
+signal — and revisit after rStar-Math (Task 52) gives us a richer
+reward signal to plug into a memory module. Listed here so the
+conceptual vocabulary is in the literature record; no task derived.
+
+Sequencing for Pass 8 tasks: MLA probe (Task 53) lands first — it is
+the cheapest and its output (effective rank number) gates whether the
+full MLA retrofit ever becomes worth pursuing. InfiniGen prefetch
+predictor (Task 54) lands second, gated on Task 31 (allocator
+diagnostic) being complete so we have a clean measurement baseline.
+MagicPIG (Task 55) lands third, gated on Quest (Task 24) being live
+so we have the page-selection substrate to sample within. No Titans
+task this pass — it stays a literature-reference item.

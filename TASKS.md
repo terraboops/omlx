@@ -1677,3 +1677,80 @@ _(none)_
 - **Effort**: L (multi-day, possibly 1-2 weeks)
 - **Depends on**: Task 36 (MMLU-Pro gate) and Task 15 (SimPO contrast in TTT) and Task 45
   (XGrammar constrained decoding) all land first.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 8, 2026-04-13)
+
+### 53. Multi-head Latent Attention (MLA) rank probe on Qwen3-Coder KV
+- **Goal**: 5 (swap), 1 (context in same budget), 6 (M4 Pro fit)
+- **Derived from**: DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model (2405.04434)
+- **Change**: Add `omlx/bench/mla_rank_probe.py` — a read-only calibration tool that:
+  - Runs prefill on a 16K-token representative context (pick a LiveCodeBench problem plus
+    surrounding file) through Qwen3-Coder with `--kv-mode fp16` so we see raw K and V
+    projection outputs, not 3-bit decoded ones.
+  - For each layer, stacks the per-head K and V outputs into matrices K ∈ R^(T × d_k) and
+    V ∈ R^(T × d_v), runs SVD, and records the rank needed to capture 99% and 99.9% of the
+    spectral energy.
+  - Writes `research/mla_rank_YYYYMMDD.json` with per-layer rank numbers, plus a markdown
+    summary appended to `research/OPTIMIZATION_DECISION_MATRIX.md` that translates the ranks
+    into a projected KV memory number at 1M context (vs our current 22.5GB 3-bit GQA
+    baseline).
+  - Reads from `omlx/turboquant_kv.py`'s capture hooks only — no changes to the cache itself.
+- **Verify**: `python -m omlx.bench.mla_rank_probe` produces a JSON file and an appended
+  section to OPTIMIZATION_DECISION_MATRIX.md. The summary names a concrete per-layer
+  average rank d_c and a projected KV memory at 1M context. The `--full` benchmark run is
+  unaffected (probe is opt-in, does not touch the default decode path).
+- **Effort**: M (2-4 days)
+- **Depends on**: none. Unblocks any future MLA retrofit work, which stays parked until
+  this probe reports a rank cut worth pursuing (e.g. < 384 out of 1024).
+
+### 54. InfiniGen-style KV prefetch predictor + madvise residency hint
+- **Goal**: 5 (swap p90 I/O — direct attack on the failing gate), 3 (decode constancy)
+- **Derived from**: InfiniGen: Efficient Generative Inference of Large Language Models with Dynamic KV Cache Management (2406.19707)
+- **Change**: Two-phase implementation against `omlx/turboquant_kv.py` and
+  `omlx/hypercar_server.py`:
+  - **Phase A — capture**: Add a decode-time hook that logs, per layer, the set of KV pages
+    actually touched by attention at step `t` and the hidden state of layer `t-1`. Run
+    against a NIAH-64K capture (uses the existing phase3a harness) and save a per-layer
+    page-access trace.
+  - **Phase B — predictor + madvise**: Fit a per-layer linear predictor (ridge regression,
+    target = page-touch bitmap, features = previous layer's hidden state mean-pooled per
+    page-size chunk) offline from the Phase A capture. At decode time, before layer `k`
+    runs, call the predictor to get a prefetch bitmap and issue
+    `madvise(ptr, len, MADV_WILLNEED)` on the predicted KV pages via a new
+    `turboquant_kv.prefetch_pages(layer, bitmap)` method.
+  - Gate behind `--kv-prefetch` flag in `omlx/hypercar_server.py` so the default path is
+    unchanged until we measure wins.
+- **Verify**: `python -m omlx.bench.hypercar_bench --full` with `--kv-prefetch` shows p90
+  sustained swap I/O (as reported by `omlx/bench/aggregate.py --report HEAD`) reduced by
+  at least 30% vs the default path on N≥4 runs at 64K context, with no regression on
+  HumanEval, NIAH, or RULER gates. Decode tok/s at 64K unchanged or improved.
+- **Effort**: M (3-5 days)
+- **Depends on**: Task 31 (KV allocator fragmentation profile) — we need its measurements
+  to distinguish "prefetch helps" from "macOS mmap already does this." If Task 31 shows
+  the OS is already prefetching effectively, this task downgrades to measurement-only.
+
+### 55. MagicPIG LSH-sampled attention as fallback for Quest edge cases
+- **Goal**: 3 (decode constancy across context length), 2 (quality guarantee, statistical)
+- **Derived from**: MagicPIG: LSH Sampling for Efficient LLM Generation (2410.16179)
+- **Change**: Extend `omlx/turboquant_kv.py` with a per-layer LSH index built over the
+  pre-quant K vectors at prefill time:
+  - Add `omlx/patches/magicpig_lsh.py` implementing a minimal LSH table (k=8 hashes,
+    bucket width from paper defaults) keyed on normalized K rows. Build is one-shot at
+    end of prefill, lives in a single flat buffer per layer.
+  - Add a `sample_lsh(q, budget)` primitive that returns a weighted subset of key indices
+    plus importance weights for an unbiased attention estimator.
+  - Wire into the decode attention path so that *when Quest's (Task 24) top-K selection
+    reports low confidence* (e.g. its max-bound spans less than 3x the chosen K's real
+    score), the attention forward falls back to MagicPIG sampling on the same page set.
+    Default stays Quest; MagicPIG is a quality safety net, not a replacement.
+  - Add `omlx/bench/magicpig_accuracy.py` comparing full attention, Quest-only,
+    MagicPIG-only, and Quest+MagicPIG-fallback on RULER multi-key + variable-tracking at
+    16K, 64K, 128K.
+- **Verify**: `python -m omlx.bench.magicpig_accuracy` shows Quest+MagicPIG-fallback
+  matches full-attention RULER scores to within 1 point at all three lengths, while
+  Quest-only shows a >2-point gap at 128K on at least one subtask. `python -m
+  omlx.bench.hypercar_bench --full` with the fallback enabled shows no decode tok/s
+  regression vs Quest-only.
+- **Effort**: M (3-5 days)
+- **Depends on**: Task 24 (Quest top-K page selection) landing first — MagicPIG is
+  designed here as a fallback path inside Quest's substrate, not a standalone replacement.
