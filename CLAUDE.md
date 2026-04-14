@@ -33,16 +33,15 @@ any of these — even to improve another — needs explicit justification.
 | 2 | 4 independent evals beating GPT-4 | HumanEval 90%, Code Intel 5/5, RULER 100%, **MMLU-Pro 64% (duo mode)** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
 | 3 | 50 tok/s decode constant | **52.4 tok/s with DuoKVCache — GOAL MET**. Native: 47.5, TQ3: 49.4. | Met in duo/fp16 mode. Drops to ~16 tok/s at 16K context (bandwidth bound). |
 | 4 | 500 tok/s prefill constant | **803 tok/s at 4K, 501 at 16K — GOAL MET** in duo mode. Native: 566/340. | Duo fp16 KV eliminates dequant overhead. O(n²) still applies at 64K+. |
-| 5 | Swap p90 < 100 MB/s | **Duo mode: 0.0 GB swap** at default context. Native N=8: p90 ~460 MB/s. | Duo mode eliminates swap at default context. Need N=8 duo runs for p90. |
+| 5 | Swap p90 < 100 MB/s | **0.0 GB swap across N=8 duo runs — GOAL MET**. p90 = 0 MB/s. | Validated: Runs 46-53 all zero swap with duo mode. |
 | 6 | 48GB M4 Pro fit | Duo: 35.1 GB peak. Native: 37.8 GB. — **PASS** | Duo uses 2.7 GB more Metal (fp16 KV) but zero swap. |
 
 **Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 64% vs 48% native), zero swap,
 52.4 tok/s decode. DuoKVCache uses fp16 for all heads with ring-buffer trimming for streaming
 heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
 
-**Interpretation**: Goals 2, 3, 4, 6 are **MET** in duo mode. Goal 5 is likely met (0.8 GB swap,
-needs N=8 validation). 5 of 6 goals achieved. Goal 1 (1M context) requires native/tq3 mode —
-duo's fp16 KV is too large beyond 16K. For 1M context: use `--kv-mode native` (39.7 GB KV fits).
+**5 of 6 goals MET** in duo mode. Goal 5 validated: N=8 runs, all zero swap. Only Goal 1
+(1M context validation beyond 16K) remains — requires `--kv-mode native` where 3-bit KV fits.
 
 ## Before Every Commit
 
