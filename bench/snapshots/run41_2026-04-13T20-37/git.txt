@@ -1,0 +1,10 @@
+=== HEAD ===
+330585b98d6424fe9439982af67d4152e22dfcfd
+
+=== log -6 ===
+330585b research: LayerSkip NOT VIABLE for MoE — max 55% agreement at depth 44 (Task 38)
+05e2a24 tasks: Start Task 38 (calibration) — LayerSkip exit confidence profiling
+a2f5b2b test: 31 unit tests for RULER generators, aggregate stats, MMLU-Pro
+aabc2bf feat: DuoAttention calibration — 59% streaming heads identified (Task 12)
+8f6bf7b docs: Update CLAUDE.md — Goal 2 MET, 4 eval families all passing
+664c13d feat: DuoAttention calibration script — classifies heads as retrieval/streaming (Task 12)
