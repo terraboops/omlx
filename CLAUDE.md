@@ -83,10 +83,12 @@ Gate summary:
 
 | Mode | Cache Type | Compression | Features | Use Case |
 |------|-----------|-------------|----------|----------|
-| **`duo` (default)** | DuoKVCache (fp16 retrieval + ring-buffer streaming) | ~2x at 16K+ | Best quality (MMLU-Pro 62%, HumanEval 95%), zero swap | **Recommended for all use** |
-| `native` | MLX QuantizedKVCache(bits=3, group_size=64) | 5.3x | Battle-tested, long context | Very long context (64K+) |
-| `tq3` | TurboQuantKVCache (WHT rotation + codebook) | 5.3x | save/load, rewind, fork | Agentic workflows |
+| **`duo` (default)** | DuoKVCache (fp16 retrieval + ring-buffer streaming) | ~2x at 16K+ | Best quality (MMLU-Pro 62%, HumanEval 95%), zero swap | **Best for ≤16K context** |
+| `native` | MLX QuantizedKVCache(bits=3, group_size=64) | 5.3x | Battle-tested, long context | Long context (16K-1M) |
+| `tq3` | TurboQuantKVCache (WHT rotation + codebook) | 5.3x | save/load, rewind, fork, best RULER quality | Agentic workflows |
 | `fp16` | Standard KVCache | 1x | Baseline quality | Testing, ~75K max |
+
+**Mode selection guide**: Use `duo` (default) for interactive coding — best quality and speed up to 16K. Switch to `native` or `tq3` for repository-scale context (64K+) where 3-bit KV compression is needed to fit in 48GB.
 
 TQ3 mode uses Walsh-Hadamard Transform (per arXiv:2504.19874) for full dimension decorrelation. This makes the Beta((d-1)/2, (d-1)/2) codebook valid, producing correct code output.
 
