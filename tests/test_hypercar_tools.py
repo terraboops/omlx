@@ -264,3 +264,34 @@ class TestDuoPolicy:
         streaming = sum(1 for h in policy["heads"] if h["policy"] == "streaming")
         frac = streaming / total
         assert abs(frac - policy["streaming_fraction"]) < 0.01
+
+    def test_all_heads_have_required_fields(self):
+        policy = self._load_policy()
+        for h in policy["heads"]:
+            assert "layer" in h
+            assert "head" in h
+            assert "policy" in h
+            assert h["policy"] in ("streaming", "retrieval")
+            assert "local_fraction" in h
+
+    def test_streaming_heads_have_high_local_fraction(self):
+        policy = self._load_policy()
+        for h in policy["heads"]:
+            if h["policy"] == "streaming":
+                assert h["local_fraction"] >= 0.80, (
+                    f"Layer {h['layer']} head {h['head']}: "
+                    f"streaming but local_frac={h['local_fraction']}"
+                )
+
+    def test_per_layer_distribution_reasonable(self):
+        policy = self._load_policy()
+        n_layers = policy["n_layers"]
+        n_heads = policy["n_heads"]
+        # Each layer should have exactly n_heads entries
+        layer_counts = {}
+        for h in policy["heads"]:
+            layer_counts[h["layer"]] = layer_counts.get(h["layer"], 0) + 1
+        for layer in range(n_layers):
+            assert layer_counts.get(layer, 0) == n_heads, (
+                f"Layer {layer}: {layer_counts.get(layer, 0)} heads, expected {n_heads}"
+            )
