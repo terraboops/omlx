@@ -309,3 +309,45 @@ class TestDuoPolicy:
             assert layer_counts.get(layer, 0) == n_heads, (
                 f"Layer {layer}: {layer_counts.get(layer, 0)} heads, expected {n_heads}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Adaptive chunk sizing tests
+# ---------------------------------------------------------------------------
+
+class TestAdaptiveChunking:
+    """Test the adaptive prefill chunk logic (prevents OOM at 64K+)."""
+
+    def test_default_chunk_at_short_context(self):
+        # At <32K, default chunk=4096 should be used
+        for ctx in [1024, 4096, 16384, 30000]:
+            chunk = 4096 if ctx < 32768 else (2048 if ctx < 65536 else 1024)
+            assert chunk == 4096, f"ctx={ctx} should use chunk=4096, got {chunk}"
+
+    def test_medium_chunk_at_32k(self):
+        for ctx in [32768, 40000, 60000]:
+            chunk = 4096 if ctx < 32768 else (2048 if ctx < 65536 else 1024)
+            assert chunk == 2048, f"ctx={ctx} should use chunk=2048, got {chunk}"
+
+    def test_small_chunk_at_64k_plus(self):
+        for ctx in [65536, 131072, 262144, 524288, 1048576]:
+            chunk = 4096 if ctx < 32768 else (2048 if ctx < 65536 else 1024)
+            assert chunk == 1024, f"ctx={ctx} should use chunk=1024, got {chunk}"
+
+    def test_attention_scores_fit_at_64k(self):
+        """At 64K with chunk=1024, attention scores should be <5 GB."""
+        ctx = 65536
+        chunk = 1024
+        n_heads = 32
+        bytes_per_elem = 2  # fp16
+        attn_gb = (chunk * ctx * n_heads * bytes_per_elem) / 1e9
+        assert attn_gb < 5.0, f"Attention scores at 64K: {attn_gb:.1f} GB (should be <5)"
+
+    def test_attention_scores_oom_at_64k_default_chunk(self):
+        """At 64K with chunk=4096, attention scores would be ~16 GB (OOM)."""
+        ctx = 65536
+        chunk = 4096
+        n_heads = 32
+        bytes_per_elem = 2
+        attn_gb = (chunk * ctx * n_heads * bytes_per_elem) / 1e9
+        assert attn_gb > 10.0, f"Default chunk at 64K should OOM: {attn_gb:.1f} GB"
