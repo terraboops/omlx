@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-- **Task 12**: DuoAttention retrieval/streaming head calibration (script written, needs solo GPU run)
+_(none)_
 
 ## Completed
 
@@ -611,6 +611,12 @@ all in `## In Progress`.
   - Layer 3 outlier: rank 10 (nearly all energy in first 10 SVs). Most layers 150-210.
   - Recommends ShadowKV over InfLLM (Task 43) for K cache tiering
   - Results at `research/shadowkv_rank_20260413.json`
+- **Task 12**: DuoAttention retrieval/streaming head calibration for Qwen3-Coder (2026-04-13)
+  - Calibration captures full attention maps via SDPA patching (1536 maps across 48 layers × 32 heads)
+  - At threshold=0.85: **59% streaming, 41% retrieval** — passes 50% streaming requirement
+  - Layer 3 is most streaming (24/32 heads), late layers (44-47) are mostly retrieval
+  - Policy JSON at `omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json`
+  - Potential KV savings at 1M: ~6.5 GB (59% of K cache uses 256-token ring buffer instead of full cache)
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
