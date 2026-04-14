@@ -283,6 +283,20 @@ class TestDuoPolicy:
                     f"streaming but local_frac={h['local_fraction']}"
                 )
 
+    def test_early_layers_more_streaming(self):
+        """Early layers tend to have more streaming heads than late layers."""
+        policy = self._load_policy()
+        early = [h for h in policy["heads"] if h["layer"] < 12 and h["policy"] == "streaming"]
+        late = [h for h in policy["heads"] if h["layer"] >= 36 and h["policy"] == "streaming"]
+        early_total = sum(1 for h in policy["heads"] if h["layer"] < 12)
+        late_total = sum(1 for h in policy["heads"] if h["layer"] >= 36)
+        early_frac = len(early) / early_total if early_total else 0
+        late_frac = len(late) / late_total if late_total else 0
+        # Early layers should have more streaming heads (they attend locally)
+        assert early_frac >= late_frac, (
+            f"Early streaming {early_frac:.0%} < late {late_frac:.0%}"
+        )
+
     def test_per_layer_distribution_reasonable(self):
         policy = self._load_policy()
         n_layers = policy["n_layers"]
