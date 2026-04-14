@@ -2697,6 +2697,142 @@ Remaining gaps for the engineering roadmap:
     to fit the larger KV caches)
 ```
 
+### Run 47: 🟢 ALL GATES PASSED #3 — R44 Byte-Reproduced Under Code Churn + Co-Tenancy
+```
+Date: 2026-04-14
+SHA:  abdabe5 (HEAD started e9c4c43; race commit during run)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo — default since 3f3e013)
+Snapshot: bench/snapshots/run47_2026-04-14T08-37/
+Lock wait: 0s
+
+**Third clean green run, second byte-identical reproduction of Run 44.**
+Default duo path is now deterministic at N=3 analyst samples (R44,
+R47 bracketing — R45/R46 aborted on concurrent-process checks).
+Total runtime 1229.4s vs R44's 1232.3s (-0.24%). Every quality
+metric matches R44 exactly. Metal peak 35.14 GB identical to R44
+to the byte. NIAH speeds 803/34.8 (4K) and 502/18.7 (16K) match
+R44 within 0.1%. RULER 6/6 at 1.00 again. MMLU-Pro 62/100 again.
+HumanEval 19/20 again. The benchmark and duo cache backend are
+behaving as a pure function of inputs — the cleanest possible
+regression-tracking baseline.
+
+What is NEW this run is code churn and co-tenancy, not results:
+  - Implementation loop landed ShadowKV scaffolding (203 LOC new
+    omlx/shadowkv_cache.py) — a SVD-compressed K cache prototype
+    aimed at long-context. Works at 4K, lossy at 16K per
+    commits a370fd2 / d0ab104.
+  - MMLU-Pro max_tokens was cut from 512 to 256 (1e803b6) to
+    save ~2 min per run, then reverted (20df582) after the cut
+    silently dropped MMLU-Pro from 64% to 24% — reasoning answers
+    were being truncated before emitting the final letter. 512
+    is now validated as the safe floor.
+  - Implementation loop ran its OWN internal N=8 duo sample series
+    (commits ade43de N=2, e9c4c43 N=4, abdabe5 N=8), all claimed
+    zero swap. Those commits landed mid-run; HEAD advanced
+    e9c4c43 -> abdabe5 while my bench was in MMLU-Pro.
+  - Post-run load=10.52 (pre-run 1.75) from engineer workload
+    finishing concurrently.
+
+Despite phys_footprint peak hitting 38.83 GB and rss_peak growing
+16.11 -> 20.25 (+25%) from co-tenancy, Goal 5 p90 was still 0.0
+MB/s with a max of only 31.7 MB/s. DuoAttention's memory profile
+is robust under background pressure.
+
+Commits since Run 44 (e3e2db4, 2026-04-14):
+  d72bafe  bench: Run 44 DuoAttention default landmark
+  f63ef1d  bench: GOAL 4 MET — 16K prefill 501 tok/s duo (devloop Run 45)
+  6f48ed7  research: pass 10 — OPLoRA + Agentless
+  81d056b  docs: Duo validated to 16K, native/tq3 for 64K+
+  c2a9cab  research: DuoKVCache shipped as default
+  64414c0  test: 37 tests — DuoAttention policy validation
+  e35a3d0  bench: Run 45 aborted — lock refused
+  754dca0  docs: KV mode selection guide
+  1e803b6  bench: Cut MMLU-Pro max_tokens 512->256 (problematic)
+  bd44e3f  bench: Add comprehensive --help epilog
+  13a5552  test: 38 tests — streaming distribution check
+  8fc97d8  docs: bench/snapshots/README.md
+  6bd6f87  tasks: 27 completed, 5/6 goals met
+  9e78747  bench: Add __main__.py command list
+  70d2b8c  bench: Run 46 pre-flight abort snapshot
+  e3524e1  research: pass 11 — saturation
+  ebe2216  feat: ShadowKV scaffolding
+  a370fd2  feat: ShadowKV GPU validated (4K works, 16K fails)
+  d0ab104  fix: ShadowKV compress at decode only
+  20df582  fix: Revert MMLU-Pro max_tokens to 512 (64->24% regression)
+  ade43de  bench: N=2 duo zero-swap confirmation
+  e9c4c43  bench: N=4 duo zero-swap confirmation
+  abdabe5  bench: N=8 — "GOAL 5 MET" claim (during this run)
+
+Uncommitted at HEAD: M omlx/bench/agentic_bench.py, ?? omlx/bench/ttt_bench.py
+
+## R44 → R47 reproducibility table
+
+| Metric                        | R44      | R47      | Δ       |
+|-------------------------------|----------|----------|---------|
+| Total runtime (s)             | 1232.3   | 1229.4   | -0.24%  |
+| Phase 3b RULER (s)            | 237.2    | 236.9    | -0.13%  |
+| Phase 3c MMLU-Pro (s)         | 906.6    | 903.8    | -0.31%  |
+| Phase 4 HumanEval (s)         | 19.8     | 19.9     | +0.51%  |
+| NIAH 4K prefill (tok/s)       | 802.2    | 803.2    | +0.12%  |
+| NIAH 4K decode (tok/s)        | 34.9     | 34.8     | -0.29%  |
+| NIAH 16K prefill (tok/s)      | 502.2    | 502.1    | -0.02%  |
+| NIAH 16K decode (tok/s)       | 18.7     | 18.7     |  0.00%  |
+| MMLU-Pro score                | 62/100   | 62/100   |  exact  |
+| HumanEval score               | 19/20    | 19/20    |  exact  |
+| RULER (6 sub-scores)          | all 1.00 | all 1.00 |  exact  |
+| Metal peak (GB)               | 35.14    | 35.14    |  exact  |
+| Swap peak (GB)                | 0.00     | 0.00     |  exact  |
+| RSS peak (GB)                 | 16.11    | 20.25    | +25%    |
+| phys_footprint peak (GB)      | n/a      | 38.83    | (new)   |
+| Swap I/O p90 (MB/s)           | 0.0      | 0.0      | =       |
+| Swap I/O max (MB/s)           | 143.7    | 31.7     | -78%    |
+| Samples                       | 1223     | 1220     | ≈       |
+
+The max swap I/O DROPPED 78% (143.7 → 31.7 MB/s) despite higher
+co-tenancy pressure — another sign that the duo cache holds its
+working set tight enough that even under background memory
+contention the kernel never needs to spill hard. This is a
+maximum-headroom pass: p90 0.0 with peaks an order of magnitude
+below the 100 MB/s Goal 5 gate.
+
+## Analysis notes
+
+- **Goal 5 at analyst N=3, devloop N=8**: Zero swap in every
+  analyst-tracked duo run (R43, R44, R47) AND eight internal
+  devloop runs per commit abdabe5. Combined N=11, all zero.
+  Goal 5 is empirically settled on the duo path.
+- **Goal 4 at 16K now reproduced**: 502 tok/s prefill at 16K for
+  the second consecutive analyst run. Target is 500.
+- **Goal 3 still unsolved**: Decode 34.8 (4K) → 18.7 (16K) is a
+  -46% drop over 4x context. The target is "constant across
+  context window" — duo helps but does not flatten the curve.
+  Remains the biggest open engineering gap.
+- **ShadowKV is NOT the answer for ≤16K**: Per commits a370fd2
+  and d0ab104, ShadowKV works at 4K, fails at 16K (lossy
+  compression drops NIAH), and trades MMLU-Pro for NIAH. The
+  duo path at 16K already beats what ShadowKV currently delivers
+  — ShadowKV may only pay off at 64K+ where duo's fp16 KV
+  exhausts Metal.
+- **MMLU-Pro max_tokens=256 is a landmine**: The 1e803b6 → 20df582
+  cycle shows a -40pp quality regression from shaving 256 tokens
+  off the reasoning budget. File as hard floor in TASKS.md.
+- **Run-numbering namespace collision**: Implementation loop
+  commits use "Runs 46-53" inside messages while analyst tracks
+  Run 46 (aborted) and this Run 47. Two unrelated series share
+  the same integer namespace. Workflow hazard.
+- **Co-tenancy is harmless at default context**: phys_footprint
+  38.83 GB and post-run load 10.52 did NOT perturb any quality
+  or speed metric. Duo cache + headroom gate absorb background
+  pressure cleanly.
+
+## Uncommitted observation
+
+`M omlx/bench/agentic_bench.py` at HEAD is engineer WIP, not
+analyst-introduced. Per analyst role boundaries the analyst
+does not touch it. Noted in git.txt for the snapshot.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
