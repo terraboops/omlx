@@ -769,6 +769,35 @@ def main():
                         "elapsed_s": round(stats.elapsed_s, 3),
                     })
 
+                elif handler_self.path == "/v1/ttt/simpo":
+                    # POST /v1/ttt/simpo — SimPO contrastive preference step
+                    # Body: {winner: str, loser: str, prompt: str, beta?: float, gamma?: float}
+                    if _ttt_engine[0] is None:
+                        _send_json(handler_self, {"error": "TTT not initialized"}, 400)
+                        return
+                    winner = body.get("winner", "")
+                    loser = body.get("loser", "")
+                    prompt = body.get("prompt", "")
+                    if not winner or not loser or not prompt:
+                        _send_json(handler_self, {"error": "winner, loser, and prompt required"}, 400)
+                        return
+                    beta = body.get("beta", 2.0)
+                    gamma = body.get("gamma", 0.5)
+                    with _inference_lock:
+                        stats = _ttt_engine[0].simpo_step(
+                            winner_text=winner,
+                            loser_text=loser,
+                            prompt=prompt,
+                            beta=beta,
+                            gamma=gamma,
+                        )
+                    _send_json(handler_self, {
+                        "loss": round(stats.loss, 4),
+                        "grad_norm": round(stats.grad_norm, 4),
+                        "adapter_norm": round(stats.adapter_norm, 4),
+                        "elapsed_s": round(stats.elapsed_s, 3),
+                    })
+
                 elif handler_self.path == "/v1/ttt/checkpoint":
                     if _ttt_engine[0] is None:
                         _send_json(handler_self, {"error": "TTT not initialized"}, 400)
@@ -834,7 +863,7 @@ def main():
             _srv.APIHandler.do_POST = agentic_do_post
             _srv.APIHandler.do_GET = agentic_do_get
             logger.info("Agentic endpoints: /v1/sessions/{create,fork,rewind,save,load}, /v1/stats")
-            logger.info("TTT endpoints: /v1/ttt/{generate,feedback,feedback_exec,train,checkpoint,rewind,reset,stats}")
+            logger.info("TTT endpoints: /v1/ttt/{generate,feedback,feedback_exec,train,simpo,checkpoint,rewind,reset,stats}")
         except Exception as e:
             logger.warning(f"Could not patch agentic endpoints: {e}")
 
