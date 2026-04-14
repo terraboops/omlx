@@ -1492,6 +1492,26 @@ def _print_summary(phases: List[PhaseResult], total_elapsed: float):
 def main():
     parser = argparse.ArgumentParser(
         description="Hypercar gated benchmark — run before every commit",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Modes:
+  --quick       Smoke + coherence only (~15s)
+  (default)     + Code Intel + NIAH + RULER + MMLU-Pro (~7min)
+  --full        + HumanEval (~25min)
+
+KV cache modes:
+  duo (default) Best quality (MMLU-Pro 64%%, HumanEval 95%%), zero swap, ≤16K
+  native        3-bit quantized, lower quality, supports 64K+ context
+  tq3           WHT codebook, save/load/rewind, best RULER quality
+  fp16          Baseline quality, highest memory, ~75K max
+
+Examples:
+  %(prog)s                          # standard pre-commit check
+  %(prog)s --quick                  # fast smoke test
+  %(prog)s --full                   # full validation with HumanEval
+  %(prog)s --kv-mode native         # test with 3-bit KV (for long context)
+  %(prog)s --full --max-swap-pct 40 # loosened swap for full run on 48GB
+""",
     )
     parser.add_argument("--quick", action="store_true",
                         help="Phase 0+1 only (~30s)")
