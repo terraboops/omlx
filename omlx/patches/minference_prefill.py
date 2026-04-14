@@ -70,19 +70,23 @@ def load_pattern_table(model_name: str = "qwen3_coder_30b_a3b_instruct_8bit") ->
 # Sparse mask builders
 # ---------------------------------------------------------------------------
 
-def _build_a_shape_mask(L: int, params: dict) -> mx.array:
+def _build_a_shape_mask(L_q: int, params: dict, L_kv: int = 0) -> mx.array:
     """Build A-shape sparse mask: sink columns + causal band.
 
-    Returns (L, L) bool mask where True = attend.
+    Returns (L_q, L_kv) bool mask where True = attend.
+    For chunked prefill, L_kv > L_q (accumulated context).
     """
+    if L_kv == 0:
+        L_kv = L_q
     num_sink = params.get("num_sink", 4)
     band_width = params.get("band_width", 64)
 
-    # Start with causal mask
-    rows = mx.arange(L)[:, None]  # (L, 1)
-    cols = mx.arange(L)[None, :]  # (1, L)
+    # Row indices map to global positions: [L_kv - L_q, L_kv)
+    offset = L_kv - L_q
+    rows = mx.arange(L_q)[:, None] + offset  # (L_q, 1) global row positions
+    cols = mx.arange(L_kv)[None, :]  # (1, L_kv)
 
-    # Causal: cols <= rows
+    # Causal: cols <= rows (global positions)
     causal = cols <= rows
 
     # Sink columns: cols < num_sink
@@ -96,56 +100,58 @@ def _build_a_shape_mask(L: int, params: dict) -> mx.array:
 
 
 def _build_vertical_slash_mask(
-    L: int,
+    L_q: int,
     params: dict,
     keys: Optional[mx.array] = None,
+    L_kv: int = 0,
 ) -> mx.array:
     """Build vertical-slash sparse mask: important columns + causal band.
 
-    If keys are provided, selects columns by key norm (dynamic).
-    Otherwise uses the band_width + num_vertical_cols from calibration.
+    Returns (L_q, L_kv) bool mask. For chunked prefill, L_kv > L_q.
     """
+    if L_kv == 0:
+        L_kv = L_q
     band_width = params.get("band_width", 64)
     num_vert = params.get("num_vertical_cols", 16)
 
-    rows = mx.arange(L)[:, None]
-    cols = mx.arange(L)[None, :]
+    offset = L_kv - L_q
+    rows = mx.arange(L_q)[:, None] + offset  # global positions
+    cols = mx.arange(L_kv)[None, :]
 
     causal = cols <= rows
     band = (rows - cols) < band_width
 
     if keys is not None and num_vert > 0:
-        # Dynamic: pick columns by key norm (proxy for importance)
-        # keys shape: (1, 1, L, D) for a single head slice
-        k_norms = mx.linalg.norm(keys[0, 0], axis=-1)  # (L,)
-        # Top-K column indices by norm
+        k_norms = mx.linalg.norm(keys[0, 0], axis=-1)  # (L_kv,)
         top_indices = mx.argsort(-k_norms)[:num_vert]
-        # Build vertical column mask
-        vert_mask = mx.zeros((L,), dtype=mx.bool_)
+        vert_mask = mx.zeros((L_kv,), dtype=mx.bool_)
         vert_mask = vert_mask.at[top_indices].add(mx.ones((num_vert,), dtype=mx.bool_))
-        vert = vert_mask[None, :]  # (1, L) — broadcast to (L, L)
+        vert = vert_mask[None, :]  # (1, L_kv)
     else:
-        # Static: use first num_vert positions as vertical columns
         vert = cols < num_vert
 
     mask = causal & (band | vert)
     return mask
 
 
-def _build_block_sparse_mask(L: int, params: dict) -> mx.array:
-    """Build block-sparse mask: block-diagonal with overlap to previous block."""
+def _build_block_sparse_mask(L_q: int, params: dict, L_kv: int = 0) -> mx.array:
+    """Build block-sparse mask: block-diagonal with overlap to previous block.
+
+    Returns (L_q, L_kv) bool mask. For chunked prefill, L_kv > L_q.
+    """
+    if L_kv == 0:
+        L_kv = L_q
     block_size = params.get("block_size", 64)
 
-    rows = mx.arange(L)[:, None]
-    cols = mx.arange(L)[None, :]
+    offset = L_kv - L_q
+    rows = mx.arange(L_q)[:, None] + offset  # global positions
+    cols = mx.arange(L_kv)[None, :]
 
     causal = cols <= rows
 
-    # Block assignments
     row_block = rows // block_size
     col_block = cols // block_size
 
-    # Same block or previous block
     same_or_prev = (row_block == col_block) | (row_block == col_block + 1)
 
     mask = causal & same_or_prev
@@ -224,7 +230,8 @@ def sparse_prefill_sdpa(
             queries, keys, values, scale=scale, mask=mask,
         )
 
-    B, H_q, L, D = queries.shape
+    B, H_q, L_q, D = queries.shape
+    L_kv = keys.shape[2]
     H_kv = keys.shape[1]
     GQA = H_q // H_kv
     num_layers = _PATTERN_TABLE["num_layers"]
@@ -239,7 +246,7 @@ def sparse_prefill_sdpa(
         lookup.get((layer_idx, h), {}).get("pattern", "dense") == "dense"
         for h in range(H_q)
     )
-    if all_dense or L <= 128:
+    if all_dense or L_q <= 128:
         return mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=scale, mask=mask,
         )
@@ -283,18 +290,16 @@ def sparse_prefill_sdpa(
             first_entry = lookup.get((layer_idx, head_indices[0]), {})
             params = first_entry.get("params", {})
 
-            # Build mask once for this pattern (shared across heads with same params)
+            # Build mask for this pattern — rectangular (L_q × L_kv) for chunked prefill
             if pattern_type == "a_shape":
-                sparse_mask = _build_a_shape_mask(L, params)
+                sparse_mask = _build_a_shape_mask(L_q, params, L_kv=L_kv)
             elif pattern_type == "vertical_slash":
-                # For vertical_slash with dynamic column selection,
-                # we use the first KV head's keys as a proxy
                 kv_h = head_indices[0] // GQA
                 sparse_mask = _build_vertical_slash_mask(
-                    L, params, keys=keys[:, kv_h:kv_h+1, :, :],
+                    L_q, params, keys=keys[:, kv_h:kv_h+1, :, :], L_kv=L_kv,
                 )
             elif pattern_type == "block_sparse":
-                sparse_mask = _build_block_sparse_mask(L, params)
+                sparse_mask = _build_block_sparse_mask(L_q, params, L_kv=L_kv)
             else:
                 sparse_mask = None
 
