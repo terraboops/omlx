@@ -1759,3 +1759,107 @@ _(none)_
 - **Effort**: M (3-5 days)
 - **Depends on**: Task 24 (Quest top-K page selection) landing first — MagicPIG is
   designed here as a fallback path inside Quest's substrate, not a standalone replacement.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 9, 2026-04-14)
+
+### 56. Add MagicDec cost-model gate for speculative decoding decisions
+- **Goal**: 3 (decode speed, constant across context), 4 (prefill)
+- **Derived from**: MagicDec: Breaking the Latency-Throughput Tradeoff for Long
+  Context Generation with Speculative Decoding (2408.11049)
+- **Change**:
+  - Add `omlx/specdec_gate.py` implementing a closed-form predictor
+    `should_speculate(context_len, kv_load_lat_us, model_compute_us, accept_rate)`
+    that returns a bool plus a projected speedup. The formula is lifted from
+    MagicDec Eq. 2-4, re-fit for single-user (batch=1) interactive serving.
+  - Add `omlx/bench/specdec_calibrate.py` that runs 4-8 prefill+decode rounds
+    at 2K, 16K, 64K, 128K contexts in fp16 KV mode, measures per-token
+    KV-load wall time vs model-compute wall time, and dumps the fitted
+    constants to `omlx/specdec_constants.json`.
+  - Wire the gate into `omlx/hypercar_server.py` so that any speculative-decoding
+    code path (existing Lookahead Task 47, future EAGLE-2 Tasks 28/29, future
+    TriForce Task 58) must consult `should_speculate` before activating.
+    At short context the gate returns False and the server falls back to
+    plain autoregressive; at long context the gate returns True with the
+    projected speedup logged.
+  - Add a pytest in `tests/test_specdec_gate.py` that exercises the gate
+    against hand-computed expected values for three (context_len, kv_load,
+    compute) tuples.
+- **Verify**: `pytest tests/test_specdec_gate.py` passes. Running
+  `.venv/bin/python -m omlx.bench.specdec_calibrate` produces a constants
+  file whose predictions differ from a direct measurement (on a 4-run
+  autoregressive baseline at 64K) by <15%. `grep -c should_speculate
+  omlx/hypercar_server.py` shows the gate is called before any spec-decode
+  dispatch.
+- **Effort**: S (1 day)
+- **Depends on**: None (it is a pure predictor; it *informs* future spec-decode
+  tasks but does not block on any)
+
+### 57. PyramidKV per-layer budget vector for Qwen3-Coder
+- **Goal**: 5 (swap pressure), 1 (effective context at 128K+)
+- **Derived from**: PyramidKV: Dynamic KV Cache Compression based on Pyramidal
+  Information Funneling (2406.02069)
+- **Change**:
+  - Add `omlx/pyramid_budget.py` computing a 48-entry budget vector for
+    Qwen3-Coder's 48 layers, exposing `budget_for_layer(layer_idx, total_budget)`
+    using the paper's exponential-decay schedule as the starting shape
+    (beta=0.7, reshaped to sum to `total_budget`).
+  - Extend `omlx/turboquant_kv.py` so each TurboQuantKVCache layer accepts a
+    `max_tokens` cap from this vector; when the cache grows past the cap,
+    apply the existing SnapKV-style eviction (Task 46's primitive — this
+    task composes with 46, not replaces it).
+  - Add `omlx/bench/pyramid_calibrate.py` that sweeps (beta, total_budget)
+    on a fixed grid and runs the existing code-intel eval + RULER
+    multi-key at 16K on each setting, picking the pareto point that keeps
+    code-intel at 5/5 and RULER multi-key within 1 point of full-KV.
+  - Bake the winning budget vector into a default in `omlx/pyramid_budget.py`
+    and add a `--pyramid-kv` flag to `omlx/hypercar_server.py` to enable.
+- **Verify**: `.venv/bin/python -m omlx.bench.pyramid_calibrate` selects a
+  budget vector. `.venv/bin/python -m omlx.bench.hypercar_bench --full` with
+  `--pyramid-kv` enabled passes all gates AND shows at least a 20% reduction
+  in peak KV memory at 64K context vs the non-pyramidal baseline, measured
+  via the existing memory watchdog in `hypercar_bench.py`. p90 swap rate
+  over N=8 runs (via `omlx/bench/aggregate.py --report HEAD`) drops below
+  300 MB/s (down from 460 MB/s baseline — not yet at 100 MB/s target but
+  on the right trajectory).
+- **Effort**: S-M (2 days)
+- **Depends on**: Task 46 (SnapKV prefill-time eviction in TurboQuantKVCache)
+  — PyramidKV provides the *budget vector*, SnapKV provides the *eviction
+  primitive*. They compose. If SnapKV is not yet live, this task can still
+  land as "pyramidal budget + drop-oldest" as a fallback eviction policy,
+  but the quality ceiling is lower.
+
+### 58. TriForce hierarchical speculative decoding for long-context decode
+- **Goal**: 3 (decode speed, constant across context), 1 (long-context decode)
+- **Derived from**: TriForce: Lossless Acceleration of Long Sequence Generation
+  with Hierarchical Speculative Decoding (2404.11912)
+- **Change**:
+  - Add `omlx/triforce.py` implementing the two-stage hierarchical draft:
+    - Stage 1 draft: the existing target model (Qwen3-Coder-30B-A3B) run
+      over a Quest-sparsified KV cache (Task 24's substrate). This reuses
+      the already-loaded weights — no second large model in memory.
+    - Stage 2 draft: a small Qwen-family model (Qwen2.5-0.5B or
+      Qwen3-1.7B) loaded in fp16 under its own KV cache. If none is
+      available, fall back to stage-1-only (Quest draft, target verifies).
+    - Verification: standard speculative decoding tree verification against
+      the full-KV target.
+  - Wire the MagicDec gate (Task 56) as the activation condition —
+    TriForce only runs when `should_speculate(...)` returns True.
+  - Add `omlx/bench/triforce_bench.py` measuring decode tok/s at 16K, 64K,
+    128K vs autoregressive baseline. Log acceptance rate per stage.
+  - Add draft-model loading to `omlx/hypercar_server.py` behind a
+    `--triforce-draft <hf-id>` flag. If the flag is absent, the server
+    runs stage-1-only (Quest-as-draft, same target weights).
+- **Verify**: `.venv/bin/python -m omlx.bench.triforce_bench --context 64000`
+  shows at least 1.4x decode speedup over autoregressive at 64K, with zero
+  output divergence from the autoregressive baseline (lossless — verify via
+  byte-identical output on a fixed-seed prompt). Acceptance rate > 40% at
+  stage 2 (if a draft model is loaded). `.venv/bin/python -m
+  omlx.bench.hypercar_bench --full` passes all gates with TriForce enabled.
+- **Effort**: L (multi-day, 4-6 days)
+- **Depends on**: Task 24 (Quest top-K page selection) is the stage-1 draft
+  substrate. Task 56 (MagicDec gate) is the activation gate. Both must be
+  live before TriForce can land. Stage-2 draft model loading is optional —
+  if no suitable small Qwen is available, ship as stage-1-only (which is
+  effectively Quest-as-self-draft, still a strict improvement over plain
+  autoregressive at long context per MagicDec's cost model).
+

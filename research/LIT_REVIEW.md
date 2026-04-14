@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-13 (pass 8)_
+_Last updated: 2026-04-14 (pass 9)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -1507,6 +1507,194 @@ does not use. No concrete retrofit path for our model — parked until a
 paper explicitly targets post-hoc expert sparsification on an off-the-shelf
 fine-grained MoE like Qwen3.
 
+## Pass 9 — 2026-04-14
+
+Context for this pass: Run 41 on `hypercar` was the first complete `--full`
+green benchmark run — Goal 2 (intelligence breadth) is now empirically MET
+across 4 independent evals (RULER + HumanEval + Code Intelligence + NIAH).
+The open goals are 1 (context at 128K+), 3 (decode constant across context),
+4 (prefill constant across context), and 5 (swap p90 sustained < 100 MB/s,
+currently 4.6x over). This pass deliberately skips eval papers and drills
+into the remaining compute/memory gaps, with a bias toward techniques whose
+speedup *grows* with context length (the exact shape Goals 3 and 4 need) and
+techniques that restructure the KV-vs-swap tradeoff in a new way.
+
+### [TriForce: Lossless Acceleration of Long Sequence Generation with Hierarchical Speculative Decoding](https://arxiv.org/abs/2404.11912) — 2404.11912
+- **Authors**: Hanshi Sun, Zhuoming Chen, Xinyu Yang, Yuandong Tian, Beidi Chen (CMU, Meta FAIR)
+- **Published**: 2024-04 (COLM 2024)
+- **Hypercar goals it addresses**: Goal 3 (decode speed, constant across context), Goal 1 (long-context decode)
+- **TL;DR**: Hierarchical speculative decoding for long-context generation.
+  The key move is that the *draft model is the full target model with a
+  retrieval-sparsified KV cache* (a handful of recent + top-scored pages),
+  and that draft is then further drafted by a small external model. Because
+  the intermediate draft has identical weights to the target, acceptance is
+  high even when the sparse-KV draft is cheap; the small model only has to
+  cover the residual cases. Reports 2.31x on Llama2-7B-128K on A100 and
+  7.78x in an offloading setting where the full KV lives on host memory.
+- **Why it matters for Hypercar**: This is the only speculative-decoding
+  design we have found whose speedup *scales with context length* rather
+  than degrading with it — exactly the shape Goal 3 requires. It also
+  composes with Quest (Task 24) in a non-trivial way: Quest is already a
+  "draft model = target model with sparse KV" construction, so TriForce
+  is effectively Quest-with-a-second-stage. On our box the offloading path
+  is particularly interesting because unified memory makes "host KV" and
+  "device KV" the same physical RAM — which means TriForce's offload
+  speedup (the headline 7.78x) is actually *achievable on M4 Pro* with
+  zero PCIe cost, where on the original A100 + RTX 4090 setup it was
+  paying real transfer overhead. This is the single biggest lever in
+  this pass for the decode-at-long-context gap.
+- **Cost of adoption**: L (multi-day). Requires a working Quest page
+  selector first (Task 24 — it is the "draft model" in the hierarchy),
+  plus a small Qwen-family draft model loaded in fp16 (Qwen2.5-0.5B or
+  Qwen3-1.7B). Biggest risk: acceptance rate depends heavily on the
+  draft model matching the target's output distribution — Qwen3-Coder
+  uses a distinct instruction format and a different post-training mix
+  than any public small Qwen, so we may need a short LoRA-distill pass
+  to get >50% acceptance. That distill is a cloud-training item, which
+  collides with abandoned work unless we can do it on-device via the
+  TTT engine; land this only after Quest ships and we measure the
+  Quest-only speedup ceiling.
+- **Local PDF**: research/2404.11912_triforce.pdf
+
+### [MagicDec: Breaking the Latency-Throughput Tradeoff for Long Context Generation with Speculative Decoding](https://arxiv.org/abs/2408.11049) — 2408.11049
+- **Authors**: Ranajoy Sadhukhan, Jian Chen, Zhuoming Chen, Vashisth Tiwari, Ruihang Lai, Jinyuan Chen, Jiawei Zhao, Mohammad Mahoor, Jian Zhang, Beidi Chen (CMU, Meta, Moffett AI)
+- **Published**: 2024-08
+- **Hypercar goals it addresses**: Goal 3 (decode speed, constant across context), Goal 4 (prefill constant)
+- **TL;DR**: Identifies the precise regime where speculative decoding
+  *helps* at long context: when KV-cache loading (not model compute)
+  dominates the per-token cost, a draft model with an aggressive sparse
+  KV cache beats autoregressive target decoding even when the draft is
+  the *same size* as the target. Provides a theoretical framework
+  (predicted speedup as a function of context length, batch size, and
+  sparse-KV fraction) that explains why speculative decoding *breaks down*
+  at short context but *scales up* at long context — the opposite of
+  the conventional speculative-decoding story. Confirmed empirically
+  with up to 2x speedup at 64K-128K context for LLaMA-2/3 variants.
+- **Why it matters for Hypercar**: MagicDec is the theoretical complement
+  to TriForce — TriForce tells us *how* to build the draft, MagicDec tells
+  us *when* to bother. Our Goal 3 target says "50 tok/s constant across
+  context", and MagicDec gives us a closed-form prediction of at what
+  context length the Quest+TriForce combo *mathematically* beats the
+  autoregressive baseline on our hardware. That lets us stage the
+  rollout: we don't pay speculative-decoding engineering cost for the
+  2K-16K regime (where it hurts), only for the 64K+ regime where it
+  dominates — and that's *exactly* the regime where Goal 3 is failing
+  hardest. It also removes the "need a small draft model" blocker by
+  showing self-speculation (target = draft) is viable at long context.
+- **Cost of adoption**: S (1 day). No new kernels — MagicDec is a *decision
+  framework* implemented as a cost model. Add it as a tiny module that,
+  given context length and measured KV-load latency, returns whether to
+  use speculative decoding at all. Biggest risk: the cost model is
+  derived for batch>1 throughput-regime serving; our single-user
+  interactive workload may sit in a different regime and the breakeven
+  point shifts. We need a one-shot profiling run to re-fit the
+  constants before trusting the prediction.
+- **Local PDF**: research/2408.11049_magicdec.pdf
+
+### [PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling](https://arxiv.org/abs/2406.02069) — 2406.02069
+- **Authors**: Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Yucheng Li, Tianyu Liu, Keming Lu, Wayne Xiong, Yue Dong, Baobao Chang, Junjie Hu, Wen Xiao, Junxian Shen (PKU, Tsinghua, Mila, Microsoft, others)
+- **Published**: 2024-06 (NeurIPS 2024)
+- **Hypercar goals it addresses**: Goal 5 (swap), Goal 1 (effective context)
+- **TL;DR**: Empirically shows that attention spreads across many tokens
+  in early layers but *funnels* to a small number of tokens in later
+  layers — the "pyramidal information funnel". Exploits this by giving
+  early layers a large KV budget and later layers a much smaller one,
+  rather than the uniform budget that SnapKV, H2O, and most eviction
+  papers assume. At the same average KV budget, PyramidKV matches full
+  KV on LongBench while using 12% of the memory, or alternatively gives
+  a 4-10x larger effective context at the same memory footprint.
+- **Why it matters for Hypercar**: Goal 5 is our worst failing gate
+  (p90 460 MB/s sustained swap, 4.6x over target) and every other KV
+  paper on the backlog — KIVI, DuoAttention, SnapKV, ShadowKV, YOCO —
+  applies a *uniform* per-layer compression policy. PyramidKV is the
+  first paper we have found that says "layers are not interchangeable"
+  and gives an empirical profile of *which* layers can tolerate deep
+  eviction. For Qwen3-Coder's 48 layers, applying pyramidal budgets
+  means the bottom third pays full KV cost (where retrieval quality
+  lives, per DuoAttention) and the top two-thirds pay a small fraction
+  — the aggregate memory saving compounds with TurboQuant's 3-bit codec
+  multiplicatively. Critically, SnapKV (Task 46) is the wrong primitive
+  at uniform budget but the *right* primitive at pyramidal budget, so
+  PyramidKV effectively rescues the SnapKV task from the backlog as a
+  layer-varying eviction budget. It directly reduces the KV-memory
+  pressure the swap gate measures.
+- **Cost of adoption**: S-M (1-2 days). The compression logic itself is
+  trivial (a per-layer budget vector); the hard part is the offline
+  calibration to pick the pyramid shape for Qwen3-Coder. We already
+  have a code-intel eval in the bench suite (Run 41 shows 5/5 passing)
+  that we can use as the calibration signal. Biggest risk: the paper's
+  pyramidal shape was measured on LLaMA-class dense models, not
+  fine-grained MoE — the attention sink pattern may differ enough that
+  the bottom-heavy shape doesn't transfer. The calibration run will
+  answer this in a few hours.
+- **Local PDF**: research/2406.02069_pyramidkv.pdf
+
+### [Samba: Simple Hybrid State Space Models for Efficient Unlimited Context Language Modeling](https://arxiv.org/abs/2406.07522) — 2406.07522
+- **Authors**: Liliang Ren, Yang Liu, Yadong Lu, Yelong Shen, Chen Liang, Weizhu Chen (Microsoft, U Illinois)
+- **Published**: 2024-06
+- **Hypercar goals it addresses**: Goal 1 (unlimited context), Goal 3 (decode constant), Goal 5 (swap), but ARCHITECTURAL — not a retrofit
+- **TL;DR**: Interleaves Mamba (state-space) layers with sliding-window
+  attention layers in a 1:1 ratio. Mamba handles unbounded memory at
+  O(1) decode cost; sliding-window attention handles precise local
+  retrieval. Trained end-to-end, 3.8B Samba matches or beats equally
+  sized full-attention and pure-Mamba baselines, and critically
+  maintains *constant* decode throughput and memory from 4K to 1M
+  context — the Hypercar Goal 3 and Goal 5 shape exactly.
+- **Why it matters for Hypercar**: Listed here as a *design reference*,
+  NOT a retrofit task. Samba is architectural — it cannot be retrofitted
+  onto Qwen3-Coder without a full retrain, which collides with the
+  abandoned training-from-scratch work list (Granite distillation, TQ3.5
+  weight quant). The reason it is still worth citing: it is the first
+  paper in the review whose *empirical* decode-throughput curve is flat
+  from 4K to 1M, which tells us (a) a flat Goal 3 curve is *achievable*
+  on a 30B-class model and (b) what the architectural price of that
+  flatness looks like. Concretely, Samba's 1:1 Mamba:SWA ratio implies
+  our retrofit-class work (Quest + DuoAttention + TriForce) must
+  approximate *both* O(1)-memory unbounded context *and* bounded-window
+  precise retrieval, because that is the minimum viable decomposition.
+  If we land Quest + DuoAttention + TriForce and Goal 3 *still* isn't
+  flat, Samba is the "told you so" paper: the Qwen3-Coder architecture
+  itself is the ceiling, and no retrofit will be enough — at that point
+  the right move is to shift to a Samba-class model when one ships in
+  the Qwen family. No task derived.
+- **Cost of adoption**: XL / not-a-task. Design reference only.
+- **Local PDF**: research/2406.07522_samba.pdf
+
+**Gap not closed this pass**: *Speculative prefill specifically for
+long prompts (not decode).* I looked for a 2024-2026 paper that does
+draft-assisted *prefill* on long prompts — i.e., the draft model runs
+prefill first, the target model verifies chunks in parallel, and
+accepted chunks skip full recompute. The closest candidates (SpecPrefill
+2502.02789 already cited as prior art; PEARL 2408.11313 focuses on
+draft-target parallelism not prefill specifically; Parallel Prompt
+Decoding 2405.18628 is a decode technique mislabelled in some surveys)
+all miss the mark. The prefill gate at 16K (Goal 4) remains the hardest
+structural problem in the backlog because every paper that looks like
+a prefill accelerator is actually a decode accelerator on inspection.
+Parked until a concrete draft-prefill paper appears.
+
+**Gap not closed this pass**: *CLLM-style Jacobi consistency decoding.*
+The original CLLM paper (2403.00835) is a *training* technique — it
+requires fine-tuning the target model on a Jacobi-consistency loss,
+which collides with the abandoned training-from-scratch list. I looked
+for a 2024-2026 *retrofit* variant that gets Jacobi parallelism without
+the consistency training pass, and found only Lookahead (already cited
+as 2402.02057 in Task 47) which is a weaker approximation. The
+retrofit-class Jacobi bucket is genuinely empty in the 2024-2026 window
+for our constraints. Parked.
+
+**Gap not closed this pass**: *FP4 / NF4 weight formats.* I looked for
+a 2024-2026 paper on sub-4-bit weight formats with a concrete
+retrofit path to MLX. QuaRot (Task 41) is already cited and sits at 4
+bits; going to 3 bits via NF3 or similar would free ~4GB of weight
+memory on top of QuaRot, directly easing Goal 5. The candidates I
+examined (AWQ already-prior-art, SpinQuant requires full calibration
+infra, OmniQuant is training-loop-heavy, GPTQ already-prior-art) all
+either require training-time integration or offer no advantage over
+QuaRot at the 4-bit level. No strong 2024-2026 retrofit paper found in
+the sub-4-bit weight bucket. Parked until a post-hoc NF3 retrofit
+appears.
+
 ## Synthesis
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -1981,3 +2169,86 @@ diagnostic) being complete so we have a clean measurement baseline.
 MagicPIG (Task 55) lands third, gated on Quest (Task 24) being live
 so we have the page-selection substrate to sample within. No Titans
 task this pass — it stays a literature-reference item.
+
+### Pass 9 adds (2026-04-14)
+
+**Highest-leverage find this pass: MagicDec (2408.11049).** This is a
+*decision framework*, not an implementation — which makes it uniquely
+valuable in a backlog that has accumulated ~12 compression and
+speculation primitives (Quest, KIVI, DuoAttention, ShadowKV, InfLLM,
+InfiniGen, MagicPIG, YOCO-lite, SnapKV, LayerSkip, EAGLE-2, Lookahead)
+without a clear sequencing principle. MagicDec answers the question
+*"when is speculative decoding worth turning on, as a function of
+context length?"* with a closed-form cost model, and that answer
+directly fires the trigger for TriForce (Task 56) and re-sequences
+three speculative-decoding tasks already on the backlog (EAGLE-2 Tasks
+28/29, LayerSkip Task 38, Lookahead Task 47) into a *regime*-based
+rather than *paper*-based rollout. It is also cheap: one day of work,
+one profiling run, and we get a gate condition that can be baked into
+the bench suite so future speculative-decoding experiments know
+whether they should even run at a given context length. This is the
+highest leverage-per-hour paper we have seen in several passes, and it
+composes with every speculative-decoding entry already on the backlog
+rather than replacing any of them.
+
+**Second highest: PyramidKV (2406.02069).** Every prior KV-compression
+paper — KIVI, DuoAttention, SnapKV, ShadowKV, YOCO, MLA — applies a
+uniform per-layer policy. PyramidKV is the first to say "layers are
+not interchangeable" and empirically justify a non-uniform budget.
+This matters specifically because our Goal 5 failure (p90 460 MB/s) is
+an *aggregate* memory pressure issue, not a per-layer one — the swap
+gate doesn't care which layer is spending KV, only the total. A
+pyramidal budget reshapes the aggregate without hurting the layers
+where retrieval lives. Critically, it composes *multiplicatively* with
+the SnapKV task already on the backlog (Task 46): pyramidal shape
+gives the budget vector, SnapKV gives the within-layer eviction
+policy. That composition is a genuinely new primitive, not either
+paper alone.
+
+**TriForce (2404.11912)** is the one big retrofit-class bet this pass.
+It is the only speculative-decoding paper in the full 9-pass review
+whose speedup actively *scales with context length* (because the
+bottleneck it attacks — KV loading — grows with context). And on
+unified-memory Apple Silicon the "offloading" path that gave 7.78x on
+A100+4090 collapses to *zero transfer cost*, because host-memory KV
+and device-memory KV are the same physical RAM on M4 Pro. We may
+have the single hardware target where TriForce's peak headline number
+is directly achievable. But it is expensive (multi-day), blocked on
+Quest (Task 24) being live, and hinges on a draft model we don't
+currently have — so it sits behind MagicDec in the sequencing.
+
+**Samba (2406.07522)** is a *design reference only*, no task derived.
+It is listed because it is the only paper we have seen whose decode
+throughput is empirically flat from 4K to 1M, which gives us an
+existence proof for Goal 3's "constant across context" requirement.
+If our retrofit stack (Quest + DuoAttention + TriForce + PyramidKV)
+lands fully and Goal 3 is *still* not flat, Samba is the sign that
+the Qwen3-Coder architecture itself is the ceiling and the only path
+forward is a Samba-class hybrid model when one ships in the Qwen
+family. Capturing it now so we have a named escape hatch.
+
+Sequencing for Pass 9 tasks: MagicDec cost-model gate (Task 56) lands
+first — it is the cheapest and it *conditions* every speculative
+decoding task in the backlog, including TriForce. PyramidKV
+calibration + per-layer budget vector (Task 57) lands second, gated
+only on the existing code-intel eval being green (already true post
+Run 41). TriForce hierarchical draft (Task 58) lands third, gated on
+Quest (Task 24) being live — without Quest the draft stage 1 doesn't
+exist. No Samba task; design reference only.
+
+**Saturation note.** With 35 papers now reviewed over 9 passes, the
+retrofit-class literature is clearly saturating for 2024-2026 work:
+this pass produced 3 actionable papers + 1 design reference, down from
+4-5 in earlier passes, and 3 distinct "Gap not closed" buckets (spec
+prefill, retrofit Jacobi, sub-4-bit weights) where no strong 2024-2026
+paper could be found. The most exhausted bucket is *KV-cache
+compression* — between KIVI, DuoAttention, ShadowKV, InfLLM, YOCO,
+MLA, SnapKV, and now PyramidKV, nearly every axis (bits, heads,
+layers, pages, eviction, sharing, rank) has been attacked by a cited
+paper, and the marginal next paper in this bucket will likely be a
+combination rather than a new axis. The remaining productive buckets
+are (a) hardware-specific Apple Silicon / unified memory work (cited
+none yet, but also almost none is published), (b) online / inference-
+time training beyond TTT, and (c) agentic orchestration above the
+single-inference layer. Pass 10 should bias toward one of those if it
+runs at all.
