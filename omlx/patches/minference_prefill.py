@@ -367,9 +367,10 @@ def apply_minference_prefill_patch(
     ) -> mx.array:
         L = queries.shape[-2]
 
-        # Only apply sparse dispatch during prefill (L > 1)
-        # Decode (L=1) is already handled by TQ3 fused kernel or Quest
-        if L > 1 and L > 128:
+        # Only apply sparse dispatch during prefill with fp16 KV (L > 1)
+        # Skip if keys is a tuple (quantized KV state from QuantizedKVCache)
+        # Decode (L=1) is handled by TQ3 fused kernel or Quest
+        if L > 1 and L > 128 and isinstance(keys, mx.array):
             return sparse_prefill_sdpa(queries, keys, values, scale, mask)
 
         # Short sequence or decode — pass through to existing SDPA
