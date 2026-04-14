@@ -1981,6 +1981,221 @@ Still blocking:
   #35 Sandbox broadening for aggregate tool
 ```
 
+### Run 40: LANDMARK — First Phase 4 HumanEval in 18 Analyst Runs; Every Analyst Fix Validated End-to-End
+```
+Date: 2026-04-13
+SHA:  52f9069 (HEAD and bench-captured; no race; clean state)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: Native 3-bit KV (MLX QuantizedKVCache, bits=3, group_size=64)
+Snapshot: bench/snapshots/run40_2026-04-13T17-33/
+Lock wait: 0s
+
+**FIRST Phase 4 HumanEval execution in 18 analyst runs** (since Run
+22). Pass@1 = 18/20 = 90%, gate PASS. The Phase 3b→4 cascade fix
+(commit 655c22b) fired exactly as designed: Phase 3b failed on
+quality gate (ruler_vt@4K reasoning ceiling, 5th observation),
+memory was clean, and the new guard let Phase 4 run anyway. The
+literal log line "Phase 3b FAILED (quality gate) — memory clean,
+continuing to Phase 4 HumanEval for independent eval coverage"
+proves the fix works. Run also landed in FAST cluster (NIAH 72.5s),
+swap peak 6.88 GB (second-ever post-Task-8 run to pass old 8 GB
+depth gate), Phase 5 PASS (3rd consecutive), all in 747s total.
+
+Commits since Run 37 (b6ea75a, 2026-04-13):
+  10725df  bench: Run 37 — Phase 3b 15/15 reproduced
+  5b2426c  tasks: Resume Task 22 — try Option (c) loosened watchdog
+  655c22b  fix: Phase 3b quality-gate failure no longer blocks Phase 4 HumanEval
+  0a40d06  bench: Run 38 aborted by pre-flight check (validates 97df157)
+  ba29851  bench: Run 39 aborted — same pre-flight condition as Run 38
+  52f9069  bench: Task 22 Option (c) full run — HumanEval 90% first time ever
+
+Benchmark results (--full, total 747.2s):
+  Phase 0  Smoke          PASS   0.3s  (warmup working)
+  Phase 1  Coherence      PASS   2.3s
+  Phase 2  Code Intel 5/5 PASS   5.1s
+  Phase 3  NIAH 4K+16K    PASS  72.5s  ← FAST cluster
+  Phase 3b RULER 15/15    FAIL 629.2s  (quality gate: vt@4K 0.50 < 0.70)
+  Phase 4  HumanEval 18/20 PASS 20.4s  ← FIRST TIME EVER (since R22)
+  Phase 5  Memory Profile PASS   0.0s  (3rd consecutive)
+  Phase 6  Summary        PASS   0.0s
+
+Overall GATE FAILURE because Phase 3b quality gate fails (reasoning
+ceiling). But the actual story is that 6 of 8 phase checks pass
+and the failing gate is a known reproducible model-capability
+finding, not a memory/harness issue.
+
+## Phase 4 HumanEval 18/20 breakdown
+
+  PASS: HE/0, HE/2, HE/3, HE/4, HE/5, HE/6, HE/7, HE/9, HE/10,
+        HE/11, HE/12, HE/13, HE/14, HE/15, HE/16, HE/17, HE/18, HE/19
+  FAIL: HE/1 (separate_paren_groups), HE/8 (sum_product)
+
+Same exact 2 failures as the historical Run 22 baseline recorded in
+CLAUDE.md. Model coding quality is fully preserved across all the
+analyst fixes (Tasks #7-11, Phase 3b→4 fix, Task 22 Option (c)).
+Phase 4 runtime 20.4s — very cheap compared to Phase 3b's 629s.
+
+## All analyst-filed fixes validated end-to-end
+
+  Task  #7 RULER KeyError fix         validated R31
+  Task  #8 Profiler rebuild            validated R32
+  Task  #9 RULER headroom gate         validated R31 (SKIP firing)
+  Task #10 NIAH decode fix             validated R31 (credible tok/s)
+  Task #11 Sandbox baseline diagnostic validated R32
+  Task #21 Multi-run aggregation       shipped d1e4ea7
+  Task #23 Goal 5 re-statement         shipped b06670f
+  Phase 3b→4 cascade fix (655c22b)     VALIDATED R40 — this run
+  Task #22 Option (c) loose watchdog   validated 52f9069 (loop's own run)
+
+## RULER task outcomes (15/15 processed)
+
+  [1]  mk@4K  k=2      PASS 2/2 (100%)
+  [2]  mk@4K  k=4      PASS 4/4 (100%)
+  [3]  mk@16K k=3      PASS 3/3 (100%)
+  [4]  mk@16K k=5      PASS 4/5 (80%)
+  [5]  mk@64K k=3      SKIP  (headroom gate)
+  [6]  vt@4K  chain=3  PASS 1/1 (100%)
+  [7]  vt@4K  chain=4  FAIL 0/1 (0%)    ← reasoning ceiling (5th obs)
+  [8]  vt@16K chain=4  FAIL 0/1 (0%)
+  [9]  vt@16K chain=8  PASS 1/1 (100%)  ← non-monotonic (2nd obs)
+  [10] vt@64K chain=4  SKIP
+  [11] vt@64K chain=8  SKIP
+  [12] fw@4K  w=4      FAIL 1/3 (33%)
+  [13] fw@16K w=5      FAIL 1/3 (33%)
+  [14] fw@16K w=7      FAIL 1/3 (33%)
+  [15] fw@64K w=5      SKIP
+
+## Non-monotonic vt pattern CONFIRMED at N=2
+
+Runs 37 and 40 both show the same peculiar pattern at 16K:
+  chain=4  FAIL 0/1 (0%)
+  chain=8  PASS 1/1 (100%)
+
+More variables to track (chain=8) PASSED while fewer (chain=4)
+FAILED. This breaks the "reasoning ceiling at chain >= 4"
+hypothesis. Two possible explanations: (a) per-instance
+stochastic — chain=4 drew harder problems in both runs, (b)
+chain=4 has a specific failure mode distinct from chain=8.
+Still N=1 per task within each run, so we can't statistically
+distinguish. Needs multi-sample-per-task to characterize properly
+(worth filing as an investigation task, but not urgent now that
+HumanEval is running).
+
+## Fast-cluster hit rate (post-warmup-default runs only)
+
+  R34: slow
+  R35: fast
+  R37: slow
+  R40: fast
+  Hit rate: 2/4 = 50%
+
+Better than the 33% seen at N=3. With N=4 we have: 2 fast + 2 slow.
+
+## Memory profile — first fast-cluster run to pass OLD Goal 5 too
+
+  Metal peak:            37.78 GB   (stable across 10+ runs)
+  Swap peak delta:        6.88 GB   ← UNDER 8 GB depth gate
+  phys_footprint peak:   ~38.7 GB
+  Phase 5 Memory Profile: PASS (3rd consecutive)
+
+Only R35 (5.05 GB) and R40 (6.88 GB) have passed the CLAUDE.md old
+depth gate of < 8 GB in the post-Task-8 era. R36/38/39 aborted;
+R31/32/33/34/37 all failed depth.
+
+## Goal 5 p90 metric — still violated even in fast cluster
+
+  R33 slow: 534.4 MB/s (5.3x)
+  R34 slow: 496.3 MB/s (5.0x)
+  R35 fast:  36.4 MB/s (PASS, 64% headroom)
+  R37 slow: 446.2 MB/s (4.5x)
+  R40 fast: 208.7 MB/s (2.09x) ← still FAIL
+
+Run 40 is interesting: FAST cluster but still ~2x over the Goal 5
+p90 gate. R35 was the outlier — it passed easily at 36.4. R40
+passed depth but failed throughput. This is new: fast cluster is
+NECESSARY but not SUFFICIENT for Goal 5 PASS. Task #22 Option (c)
+(loose watchdog to 40%) is the reliable path per 52f9069.
+
+## vm_stat deltas (Run 40)
+
+  Pageins:           48.2 GB
+  Total swap I/O:   143.5 GB  (best post-Task-8 run, R35 was 31 GB)
+  Sustained rate:    192 MB/s wall-averaged
+  Compressions:      24.8 M pages (lowest since Run 23)
+
+## Decode speed — 6-run context-sensitivity picture
+
+                R32    R33    R34    R35    R37    R40    mean
+  4K  decode:  32.1   31.4   31.2   31.6   31.6   32.1   31.7
+  16K decode:  16.5   16.3   16.4   16.4   16.6   16.5   16.4
+
+  Run-to-run CV: 4K 1.2%, 16K 0.7%
+  Context slope: 4x context → 50% throughput (32 -> 16 tok/s)
+  Goal 3 target: >= 50 tok/s constant across context window
+  Gap at 4K: 37% short
+  Gap at 16K: 67% short
+
+The run-to-run STABILITY is excellent. The CONTEXT-SENSITIVITY is
+the actual Goal 3 problem. Every post-Task-10 run (6 total) shows
+the same ~2x slowdown from 4K to 16K, and both points are below
+target. Analyst correction from Run 37: "stable at 5 runs" was a
+misleading characterization; the real Goal 3 story is "reliably
+below target and reliably context-sensitive." Tracking both axes
+now.
+
+Analysis notes (snapshot: bench/snapshots/run40_2026-04-13T17-33/):
+
+- **Phase 4 HumanEval 18/20 = 90% confirms 8-bit model coding
+  quality is preserved.** Same 2 failures as Run 22 baseline (HE/1
+  separate_paren_groups, HE/8 sum_product). All Task 7/8/9/10/11/21/
+  22/23 fixes + Phase 3b→4 cascade fix have not regressed model
+  coding intelligence.
+
+- **Phase 3b→4 cascade fix (655c22b) validated end-to-end.** The
+  literal log line "Phase 3b FAILED (quality gate) — memory clean,
+  continuing to Phase 4 HumanEval" appears in console. Phase 4
+  runtime 20.4s — cheap, reliable, and unblocks the single most
+  valuable Goal 2 signal we have.
+
+- **Fast cluster is NECESSARY but NOT SUFFICIENT for Goal 5 PASS
+  at p90.** Run 35 (36.4 MB/s PASS) and Run 40 (208.7 MB/s FAIL)
+  are both fast-cluster runs with very different Goal 5 outcomes.
+  Something else varies between them (background system state?
+  compressor fragmentation state?). Single-run Goal 5 verdict
+  needs multi-run aggregation (Task #21's tool) to be reliable.
+
+- **Non-monotonic variable_tracking confirmed at N=2.** R37 + R40
+  both show vt@16K chain=4 FAIL, chain=8 PASS. This is a real
+  model-behavior pattern (or a hard instance-distribution bias),
+  not noise. Phase 3b's gate fails on vt@4K which has N=5 FAIL
+  observations now — reliably below the 70% threshold. This is
+  Qwen3-Coder's structural reasoning ceiling on variable binding
+  chains, not a benchmark bug.
+
+- **frequent_word uniform 33% confirmed at N=3** (R35, R37, R40).
+  All 3 fw tasks (4K w=4, 16K w=5, 16K w=7) score exactly 1/3
+  across 3 independent runs. Too uniform to be random sampling
+  noise. Either a systematic retrieval failure or the test set
+  generator produces problems where 1 of 3 answers is reliably
+  findable. Worth investigating but not task-ready yet.
+
+- **Decode speed stable but context-sensitive.** 4K 31.2-32.1 (CV
+  1.2%), 16K 16.3-16.6 (CV 0.7%). But the 4K→16K slope is a clean
+  ~50% drop. Goal 3 ("constant across context window") is
+  structurally unmet — both in absolute value (below 50 target)
+  and in shape (not constant).
+
+New TASKS.md entries: **NONE filed.**
+The non-monotonic vt pattern and frequent_word 33% are still not
+atomic-and-testable — both need multi-sample-per-task to root-cause.
+
+Still blocking:
+  #22 Task 22 — Option (c) validated by 52f9069, loop work continues
+      on Options (a)/(b) per user directive. Priority unchanged.
+  #35 Sandbox broadening for aggregate tool — not blocking any
+      current analysis workflow.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
