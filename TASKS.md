@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 36**: MMLU-Pro reasoning gate in hypercar_bench
 
 ## Completed
 
