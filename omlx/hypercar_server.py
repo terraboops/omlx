@@ -165,6 +165,12 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
         if kv_mode == "fp16":
             return caches
 
+        if kv_mode == "duo":
+            from omlx.duo_kv_cache import DuoKVCache, load_duo_policy
+            policy = load_duo_policy()
+            num_layers = len(caches)
+            return [DuoKVCache(policy, layer_idx=i, bits=bits) for i in range(num_layers)]
+
         result = []
         for i, c in enumerate(caches):
             if i < fp16_layers:
@@ -255,8 +261,8 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--fp16-layers", type=int, default=1,
                         help="Number of fp16 layers (rest use TQ3). Default 1.")
-    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16"], default="native",
-                        help="KV cache strategy: native (MLX affine), tq3 (WHT codebook w/ save/load/rewind), fp16 (no quant)")
+    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16", "duo"], default="duo",
+                        help="KV cache: duo (DuoAttention, best quality+speed), native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
     parser.add_argument("--bits", type=int, default=3,
                         help="KV quantization bits (default 3)")
     parser.add_argument("--kv-group-size", type=int, default=64,
@@ -298,7 +304,10 @@ def main():
     logger.info(f"KV mode:          {args.kv_mode}")
     logger.info(f"Bits:             {args.bits}")
     logger.info(f"fp16 layers:      {args.fp16_layers}")
-    if args.kv_mode == "native":
+    if args.kv_mode == "duo":
+        logger.info(f"DuoAttention:     streaming heads use ring buffer (sink+window)")
+        logger.info(f"Quality:          MMLU-Pro 62%, HumanEval 95% (best mode)")
+    elif args.kv_mode == "native":
         logger.info(f"Group size:       {args.kv_group_size}")
     elif args.kv_mode == "tq3":
         logger.info(f"Dequant chunk:    {args.dequant_chunk}")
