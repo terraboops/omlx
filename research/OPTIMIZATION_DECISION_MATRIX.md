@@ -5,16 +5,17 @@ All measurements on Qwen3-Coder-30B-A3B-Instruct-8bit, M4 Pro 48GB.
 
 ## Summary Table
 
-| Technique | Task | Viable? | Savings | Quality Risk | Priority |
-|-----------|------|---------|---------|-------------|----------|
-| **ShadowKV** (K low-rank compression) | 44 | **YES** | ~65% K cache | <1% info loss | **HIGH** |
-| **DuoAttention** (streaming head ring buffer) | 12 | **YES** | ~6.5 GB at 1M | Threshold-dependent | **HIGH** |
+| Technique | Task | Viable? | Savings | Quality Impact | Priority |
+|-----------|------|---------|---------|---------------|----------|
+| **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
+| **ShadowKV** (K low-rank compression) | 44 | **YES** | ~65% K cache | <1% info loss | HIGH (for 64K+) |
+| **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
+| **Metal warmup** | 25 | **SHIPPED** | 2.25x decode, no cold-start | None | **DONE** |
+| **Quest** (page selection) | 3, 24b | **YES** | 1.55x decode speedup | Fails NIAH (norm-based scoring) | MEDIUM |
+| **MInference** (sparse prefill) | 4, 5 | YES (code) | TBD | Needs rectangular masks for chunked prefill | MEDIUM |
+| **TQ3 2-bit KV** (aggressive quantization) | 22 | PARTIAL | Goal 5 fixed | NIAH 4K regression | CONDITIONAL |
 | **ProMoE** (expert lazy-load) | 16 | MARGINAL | 3.6 GB at 87.5% | Repetition artifacts | LOW |
 | **LayerSkip** (self-speculative decode) | 38 | **NO** | N/A | MoE routing blocks early exit | SKIP |
-| **TQ3 2-bit KV** (aggressive quantization) | 22 | PARTIAL | Goal 5 fixed | NIAH 4K regression | CONDITIONAL |
-| **Quest** (page selection) | 3, 24b | **YES** | Sublinear decode | argpartition <200µs | MEDIUM |
-| **MInference** (sparse prefill) | 4, 5 | YES (code) | TBD (needs GPU run) | Per-head mask overhead | MEDIUM |
-| **Metal warmup** | 25 | **YES** | 2.25x decode | None | **DONE** |
 
 ## Recommended Priority Order
 
