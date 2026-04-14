@@ -494,7 +494,7 @@ all in `## In Progress`.
 
 ## In Progress
 
-_(none)_
+- **Task 16**: ProMoE lazy-load probe for Qwen3-Coder expert weights
 
 ## Completed
 
