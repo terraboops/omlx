@@ -121,7 +121,7 @@ class StreamingKVCache:
         return (self._keys[:, :, :valid], self._values[:, :, :valid])
 
 
-class DuoKVCache(_BaseCache):
+class DuoKVCache:
     """Two-storage-class KV cache per the DuoAttention policy.
 
     For each KV head, allocates either:
@@ -146,7 +146,9 @@ class DuoKVCache(_BaseCache):
     ):
         self.layer_idx = layer_idx
         self.n_kv_heads = n_kv_heads
-        self.bits = bits
+        # NOTE: do NOT set self.bits — mlx-lm SDPA checks hasattr(cache, 'bits')
+        # and routes to quantized_matmul which is incompatible with fp16 KV.
+        self._quant_bits = bits  # stored for potential future QuantizedKVCache use
         self.group_size = group_size
         self.window = window
         self.sink = sink
@@ -170,74 +172,78 @@ class DuoKVCache(_BaseCache):
             )
             self.head_types.append("streaming" if all_streaming else "retrieval")
 
-        # Create sub-caches
-        self.sub_caches = []
-        for ht in self.head_types:
-            if ht == "streaming":
-                self.sub_caches.append(StreamingKVCache(window=window, sink=sink))
-            else:
-                # Use fp16 KVCache for retrieval heads — QuantizedKVCache
-                # returns (data, scales, biases) tuples that can't concatenate
-                # with StreamingKVCache's mx.array outputs. fp16 uses more
-                # memory but enables mixed-type concatenation.
-                # TODO: Switch to QuantizedKVCache once per-head attention
-                # dispatch handles mixed types (avoids this dequant overhead).
-                self.sub_caches.append(KVCache())
+        # All heads use a single shared KVCache (fp16). After update,
+        # streaming heads' KV is trimmed to sink + window tokens.
+        # This avoids mixed-type and mixed-length issues while still
+        # saving memory on streaming heads at long contexts.
+        self.capacity = sink + window  # streaming heads' max KV length
+        self._is_streaming = [t == "streaming" for t in self.head_types]
+        self._n_streaming = sum(self._is_streaming)
+        self._keys: Optional[mx.array] = None
+        self._values: Optional[mx.array] = None
 
         n_streaming = sum(1 for t in self.head_types if t == "streaming")
         logger.debug(f"Layer {layer_idx}: {n_streaming}/{n_kv_heads} streaming KV heads")
 
     def update_and_fetch(self, keys: mx.array, values: mx.array):
-        """Split keys/values by head, dispatch to sub-caches, recombine."""
+        """Store new KV, trim streaming heads to sink + window.
+
+        All heads use a single contiguous KV buffer. After each update,
+        streaming heads' KV is replaced with [sink_tokens | recent_window].
+        Retrieval heads keep the full context.
+        """
         B, H_kv, T_new, D = keys.shape
-
-        all_keys = []
-        all_values = []
-
-        for h in range(H_kv):
-            k_h = keys[:, h:h+1, :, :]  # (B, 1, T_new, D)
-            v_h = values[:, h:h+1, :, :]
-
-            k_out, v_out = self.sub_caches[h].update_and_fetch(k_h, v_h)
-            all_keys.append(k_out)
-            all_values.append(v_out)
-
         self.offset += T_new
 
-        # All sub-caches may return different sequence lengths
-        # Pad to max length for concatenation
-        max_len = max(k.shape[2] for k in all_keys)
-        padded_keys = []
-        padded_values = []
-        for k, v in zip(all_keys, all_values):
-            if k.shape[2] < max_len:
-                pad = max_len - k.shape[2]
-                k = mx.concatenate([k, mx.zeros((B, 1, pad, D), dtype=k.dtype)], axis=2)
-                v = mx.concatenate([v, mx.zeros((B, 1, pad, D), dtype=v.dtype)], axis=2)
-            padded_keys.append(k)
-            padded_values.append(v)
+        # First call — initialize storage
+        if self._keys is None:
+            self._keys = keys
+            self._values = values
+        else:
+            self._keys = mx.concatenate([self._keys, keys], axis=2)
+            self._values = mx.concatenate([self._values, values], axis=2)
 
-        return mx.concatenate(padded_keys, axis=1), mx.concatenate(padded_values, axis=1)
+        T_total = self._keys.shape[2]
+
+        # Trim streaming heads if context exceeds capacity
+        if T_total > self.capacity and self._n_streaming > 0:
+            # Build per-head trimmed KV
+            # Streaming: keep first `sink` + last `window` tokens
+            # Retrieval: keep everything
+            trimmed_k = []
+            trimmed_v = []
+            for h in range(H_kv):
+                if self._is_streaming[h] and T_total > self.capacity:
+                    # Sink tokens (first few) + window tokens (most recent)
+                    k_sink = self._keys[:, h:h+1, :self.sink, :]
+                    k_window = self._keys[:, h:h+1, -(self.window):, :]
+                    trimmed_k.append(mx.concatenate([k_sink, k_window], axis=2))
+
+                    v_sink = self._values[:, h:h+1, :self.sink, :]
+                    v_window = self._values[:, h:h+1, -(self.window):, :]
+                    trimmed_v.append(mx.concatenate([v_sink, v_window], axis=2))
+                else:
+                    trimmed_k.append(self._keys[:, h:h+1, :, :])
+                    trimmed_v.append(self._values[:, h:h+1, :, :])
+
+            # Pad all heads to same length (retrieval heads' full length)
+            max_len = max(k.shape[2] for k in trimmed_k)
+            padded_k = []
+            padded_v = []
+            for k, v in zip(trimmed_k, trimmed_v):
+                if k.shape[2] < max_len:
+                    pad = max_len - k.shape[2]
+                    k = mx.concatenate([k, mx.zeros((B, 1, pad, D), dtype=k.dtype)], axis=2)
+                    v = mx.concatenate([v, mx.zeros((B, 1, pad, D), dtype=v.dtype)], axis=2)
+                padded_k.append(k)
+                padded_v.append(v)
+
+            return mx.concatenate(padded_k, axis=1), mx.concatenate(padded_v, axis=1)
+
+        return self._keys, self._values
 
     @property
     def state(self):
-        """Return concatenated state from all sub-caches."""
-        all_k = []
-        all_v = []
-        for sc in self.sub_caches:
-            k, v = sc.state
-            all_k.append(k)
-            all_v.append(v)
-        max_len = max(k.shape[2] for k in all_k)
-        B = all_k[0].shape[0]
-        D = all_k[0].shape[3]
-        padded_k = []
-        padded_v = []
-        for k, v in zip(all_k, all_v):
-            if k.shape[2] < max_len:
-                pad = max_len - k.shape[2]
-                k = mx.concatenate([k, mx.zeros((B, 1, pad, D), dtype=k.dtype)], axis=2)
-                v = mx.concatenate([v, mx.zeros((B, 1, pad, D), dtype=v.dtype)], axis=2)
-            padded_k.append(k)
-            padded_v.append(v)
-        return mx.concatenate(padded_k, axis=1), mx.concatenate(padded_v, axis=1)
+        if self._keys is None:
+            return None, None
+        return self._keys, self._values
