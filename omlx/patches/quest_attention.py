@@ -204,7 +204,7 @@ def gather_pages(
     # Gather packed: (B, H_kv, sel_tokens, pw)
     # Need to expand indices for the pw dimension
     pw = k_packed.shape[-1]
-    flat_indices_4d = flat_indices[:, :, :, None].broadcast_to(B, H_kv, sel_tokens, pw)
+    flat_indices_4d = mx.broadcast_to(flat_indices[:, :, :, None], (B, H_kv, sel_tokens, pw))
     k_packed_sel = mx.take_along_axis(k_packed, flat_indices_4d, axis=2)
     v_packed_sel = mx.take_along_axis(v_packed, flat_indices_4d, axis=2)
 
