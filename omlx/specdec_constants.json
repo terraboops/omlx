@@ -1,0 +1,10 @@
+{
+  "kv_base_us": 687.4,
+  "kv_per_token_us": 0.335654,
+  "compute_us": 19124.9,
+  "draft_overhead_factor": 0.15,
+  "verify_overhead_factor": 1.2,
+  "min_context": 4096,
+  "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+  "calibrated": true
+}

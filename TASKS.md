@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 39 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 40 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,14 @@ _(none)_
 
 ## Completed
 
+- **Task 56**: Add MagicDec cost-model gate for speculative decoding decisions (2026-04-15)
+  - New `omlx/specdec_gate.py` — closed-form predictor based on MagicDec Eq. 2-4
+  - Calibrated on M4 Pro: compute=19.1ms/tok, KV-load=0.34µs/ctx-token, crossover ~57K
+  - Gate predicts 2.31x speedup at 70% accept rate / 5 draft tokens (all ctx > 4K)
+  - New `omlx/bench/specdec_calibrate.py` — measures real decode latency at 2K/8K/32K
+  - Calibration constants at `omlx/specdec_constants.json`
+  - 14 new tests in `tests/test_specdec_gate.py`: gate logic, latency model, persistence
+  - Informs all spec-decode tasks: EAGLE-2 (28/29), TriForce (58), Lookahead (47)
 - **Task 31**: Profile KV allocator fragmentation at 1M context (2026-04-15)
   - Profiled at 4K/16K/64K context lengths; fragmentation stable at 2.1% (~0.7 GB peak-active gap)
   - Extrapolated to 1M: only ~0.5 GB fragmentation out of 22.5 GB KV — negligible
