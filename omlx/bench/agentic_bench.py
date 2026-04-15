@@ -92,7 +92,7 @@ def _create_session(base: str, prompt: str) -> str:
 def _generate(base: str, session_id: str, message: str, max_tokens: int = 40) -> str:
     """Generate from a session via standard /v1/chat/completions."""
     r = _post(f"{base}/v1/chat/completions", {
-        "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+        "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
         "session_id": session_id,
         "messages": [{"role": "user", "content": message}],
         "max_tokens": max_tokens,
