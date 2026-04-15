@@ -1,0 +1,8 @@
+fce9f55fbd8a30564faebebe472fcad76575f691
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run54_2026-04-14T20-37/console.txt
+?? bench/snapshots/run54_2026-04-14T20-37/git.txt
+?? research/2506.02572_hata.pdf
+?? research/2506.15155_ellm.pdf
+?? research/2510.11472_dftopk.pdf
+?? research/2510.18870_pairmixer.pdf
