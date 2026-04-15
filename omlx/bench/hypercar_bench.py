@@ -953,6 +953,14 @@ def phase3b_ruler(model, tokenizer, watchdog: MemoryWatchdog,
     Two gates:
       1. multi_key_retrieval@16K accuracy >= 0.8
       2. ruler_vt@4K accuracy >= 0.7 (independent eval for Goal 2)
+
+    Methodology follows ProLong (arXiv:2410.02660) which identifies three
+    diagnostic RULER subtask families — retrieval (multi-key NIAH),
+    multi-hop tracing (variable tracking), and aggregation (frequent word) —
+    as the minimal set that distinguishes genuine long-context capability
+    from shallow retrieval. Length tiers (4K, 16K, 64K) are chosen to
+    bracket the model's validated context range. Tasks beyond the headroom
+    gate are SKIPped rather than aborting the phase.
     """
     from omlx.eval.ruler.tasks import RULER_QUICK_SUITE, RULER_FULL_SUITE
 

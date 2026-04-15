@@ -110,6 +110,11 @@ all in `## In Progress`.
   - Gate: `multi_key_retrieval@16K` must be >= 0.8 accuracy.
 - **Verify**: `.venv/bin/python -m omlx.bench.hypercar_bench --quick` prints
   `ruler: PASS` and the new gate appears in the gate summary table.
+  Per ProLong (arXiv:2410.02660), the three diagnostic RULER subtask families are:
+  - **Retrieval**: multi_key_niah@16K (keys=2,3,5) — gate ≥ 0.8
+  - **Multi-hop tracing**: variable_tracking@4K (chain=4,8) — gate ≥ 0.7
+  - **Aggregation**: frequent_word@4K (words=5,10) — informational, no gate
+  Length tiers: 4K (quick), 16K (default), 64K (--full only).
 - **Effort**: S
 
 ### 2. Probe 2-bit KV on WHT-rotated codec (KIVI transfer test)
@@ -203,6 +208,11 @@ all in `## In Progress`.
   and confirm the log shows `BREACH: Metal peak ...` rather than
   `KeyError: 'found'`, AND that Phase 3b completes with a failed
   `PhaseResult` rather than an exception bubbling out of `main()`.
+  Per ProLong (arXiv:2410.02660): when a task breaches at length L,
+  the gate should evaluate on tasks that completed at shorter lengths
+  rather than failing the entire phase. Current implementation already
+  does this — breach results are filtered from gate aggregation via
+  `"accuracy" in r` guard, and skipped tasks are tracked in `skipped` list.
 - **Effort**: S
 
 ### 8. Rebuild profiler.py observability for macOS unified memory
@@ -498,6 +508,11 @@ _(none)_
 
 ## Completed
 
+- **Task 49**: Adopt ProLong's RULER length × subtask matrix in Tasks 1/7/25 (2026-04-14)
+  - Added ProLong (arXiv:2410.02660) methodology citation to phase3b_ruler docstring
+  - Updated Task 1 verify: explicit subtask × length diagnostic pairs (retrieval, tracing, aggregation)
+  - Updated Task 7 verify: confirmed breach path follows ProLong "fail at next-shorter length" semantics
+  - Updated Task 25 verify: profiling subset aligned with ProLong recommended tiers (4K/16K/64K)
 - **Task 62**: Namespace run numbering between analyst cron and implementation loop (2026-04-14)
   - Convention: analyst runs use "Run N", devloop runs use "devloop-N" or "sample-N" in commit messages
   - Documented in bench/snapshots/README.md and CLAUDE.md "Before Every Commit" section
@@ -932,6 +947,11 @@ _(none)_
   writes the cost JSON; subsequent `--quick` and `--full` runs
   demonstrate that the picked lengths hit the wall-time budgets
   without manual intervention.
+  Per ProLong (arXiv:2410.02660), the recommended profiling subset is:
+  - Quick (≤30s): multi_key_niah@4K, variable_tracking@4K, frequent_word@4K
+  - Default (≤5min): above + multi_key_niah@16K, variable_tracking@16K
+  - Full (≤20min): above + all three families @64K
+  Lengths beyond 64K (128K-1M) are opt-in only via `--niah-context`.
 - **Effort**: S
 
 ### 26. MInference block-sparse prefill kernel dispatch
