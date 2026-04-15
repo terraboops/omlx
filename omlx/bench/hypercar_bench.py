@@ -101,7 +101,9 @@ def _check_phase_headroom(phase_name: str, metal_limit_gb: float) -> bool:
     """
     required = PHASE_HEADROOM_GB.get(phase_name, 2.0)
     try:
-        metal_active = mx.metal.get_active_memory() / 1e9
+        # Use non-deprecated API (mx.get_active_memory replaces mx.metal.get_active_memory)
+        get_active = getattr(mx, 'get_active_memory', None) or mx.metal.get_active_memory
+        metal_active = get_active() / 1e9
         headroom = metal_limit_gb - metal_active
         if headroom < required:
             logger.warning(
