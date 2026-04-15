@@ -209,6 +209,13 @@ class MemoryWatchdog:
             "reason": reason,
         }
         logger.error(f"MEMORY BREACH: {reason}")
+        # Flush immediately — under memory pressure the process may exit
+        # before buffered log output is written. R54/R57 exited 144 with
+        # NO error message because the logger didn't flush in time.
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        sys.stderr.flush()
+        print("WATCHDOG-BREACH", file=sys.stderr, flush=True)
         self.breached.set()
 
 

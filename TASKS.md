@@ -510,6 +510,10 @@ _(none)_
 
 ## Completed
 
+- **Task 85**: Flush logger before exit in memory-watchdog breach path (2026-04-15)
+  - Added immediate handler flush + stderr flush + `WATCHDOG-BREACH` sentinel to `_set_breach()`
+  - Fixes R54/R57 silent exit 144 — breach reason now always visible in console.txt
+  - Grep-able sentinel: `grep WATCHDOG-BREACH bench/snapshots/*/console.txt`
 - **Task 49**: Adopt ProLong's RULER length × subtask matrix in Tasks 1/7/25 (2026-04-14)
   - Added ProLong (arXiv:2410.02660) methodology citation to phase3b_ruler docstring
   - Updated Task 1 verify: explicit subtask × length diagnostic pairs (retrieval, tracing, aggregation)
