@@ -1,0 +1,13 @@
+25be8766002a6caf0954e152603192fe854d7bb0
+ M research/LIT_REVIEW.md
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run59_2026-04-15T12-37/console.txt
+?? bench/snapshots/run59_2026-04-15T12-37/git.txt
+?? bench/snapshots/run59_2026-04-15T12-37/profile.json
+?? bench/snapshots/run59_2026-04-15T12-37/results.json
+?? research/2510.18921_mlx_apple_bench.pdf
+?? research/2512.24449_packkv.pdf
+?? research/2601.14209_int_interventions.pdf
+?? research/2604.09459_credit_assignment_survey.pdf
+ research/LIT_REVIEW.md | 298 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 297 insertions(+), 1 deletion(-)

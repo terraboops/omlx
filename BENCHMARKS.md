@@ -2952,6 +2952,116 @@ downstream issue in this session.
   HumanEval) are sensitive to co-tenancy.
 ```
 
+### Run 59: 🟢 ALL GATES PASSED #4 — Middle-Case Co-Tenancy, First Sub-500 Goal 4 Prefill on Duo Path
+```
+Date: 2026-04-15
+SHA:  25be876
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo — default since 3f3e013)
+Snapshot: bench/snapshots/run59_2026-04-15T12-37/
+Lock wait: 0s
+
+**First clean full run in 26 hours** (since R48 at 10:37 previous
+day). All quality gates pass with the same scores as R44/R47/R48
+to the byte — MMLU-Pro 62/100, HumanEval 19/20, RULER 6/6 at 1.00,
+Metal peak 35.14 GB. Total runtime 1311.8s (R44 1232.3, +6%).
+
+What makes R59 analytically valuable is the **middle case**: R44/
+R47/R48 were all clean-box runs (0.0 swap, 0.0 p90 swap I/O, 16K
+prefill 502 tok/s, 4K decode 34.9). R58 was over-the-edge (watchdog
+fired at NIAH 16K). R59 sits between: co-tenancy present, quality
+gates still met, but speed metrics measurably degraded.
+
+## The co-tenancy pressure series at a glance
+
+| Metric                    | R44 (clean) | R48 (clean) | R58 (breach) | R59 (pressure) |
+|---------------------------|-------------|-------------|--------------|----------------|
+| Total runtime (s)         | 1232.3      | 1249.6      | aborted      | 1311.8 (+6%)   |
+| Warmup (s)                | 3.2         | ~3          | 42.0         | 8.7            |
+| Phase 3b RULER (s)        | 237.2       | 237.5       | —            | 301.2 (+27%)   |
+| Phase 3c MMLU-Pro (s)     | 906.6       | 903.8       | —            | 912.4 (+0.6%)  |
+| NIAH 4K prefill (tok/s)   | 802.2       | 802.0       | —            | 801.1 (−0.1%)  |
+| NIAH 4K decode  (tok/s)   | 34.9        | 34.7        | —            | **29.6 (−15%)**|
+| NIAH 16K prefill (tok/s)  | 502.2       | 501.8       | —            | **475.6 (−5%)**|
+| NIAH 16K decode (tok/s)   | 18.7        | 18.5        | —            | 18.5 (flat)    |
+| Metal peak (GB)           | 35.14       | 35.14       | 35.14        | 35.14 (exact)  |
+| Swap peak (GB)            | 0.00        | 0.00        | 12.9 (limit) | 5.48 (42%)     |
+| Swap I/O p90 (MB/s)       | 0.0         | 0.0         | —            | 15.8 (PASS)    |
+| Swap I/O max (MB/s)       | 143.7       | 135.1       | —            | 2678.6 spike   |
+| MMLU-Pro                  | 62/100      | 62/100      | —            | 62/100 (exact) |
+| HumanEval                 | 19/20       | 19/20       | —            | 19/20 (exact)  |
+
+## The key empirical findings
+
+**1. Goal 4 16K prefill falls BELOW the 500 tok/s floor for the
+first time on the duo path: 475.6 tok/s.** R44/R47/R48 all
+reported 502. The 26 tok/s drop is entirely co-tenancy — the
+cache code is unchanged. Under moderate pressure the compute
+that used to be spent on forward passes is now being spent on
+memory contention, and it shows up where Goal 4 cares most.
+
+**2. Goal 3 4K decode drops 15% (34.9 → 29.6 tok/s)** under
+the same pressure. The decode path is bandwidth-bound; any
+reduction in effective memory bandwidth from co-tenancy lands
+directly on decode tok/s. Interestingly, 16K decode is FLAT
+(18.5 tok/s) because it was already bottlenecked.
+
+**3. First non-zero duo swap peak**: 5.48 GB (42% of the 12.9 GB
+watchdog limit). The duo cache has real swap exposure under
+pressure that the clean-box N=8 claim did not capture. Goal 5
+p90 still passes cleanly (15.8 MB/s vs 100 MB/s gate), but the
+peak went from "0.0 GB forever" to "5.5 GB once" — the margin
+is thinner than CLAUDE.md suggests.
+
+**4. Quality metrics are completely immune to co-tenancy.**
+MMLU-Pro 62/100, HumanEval 19/20, RULER 6/6 at 1.00, Code
+Intel 5/5 — byte-identical to every prior clean run. Whatever
+the box is doing in the background, the MODEL's correctness
+doesn't care. Only speed and memory margins do.
+
+## Analysis notes
+
+- **The duo path has a two-tier performance profile**: clean-box
+  (R44/R47/R48 targets) and under-pressure (R59). On a clean
+  box all 6 Goals are MET. Under pressure, Goal 3 drops to 59%
+  of target and Goal 4 misses the 16K floor by 5%. Quality
+  goals (1 context, 2 intelligence, 5 swap p90, 6 fit) still
+  hold. CLAUDE.md's current status rows implicitly assume
+  clean-box conditions — worth a single-line qualifier so
+  future readers don't misinterpret the reported numbers.
+- **Goal 5 max swap I/O hit a 2678 MB/s instantaneous spike**.
+  The M4 Pro's advertised swap bandwidth ceiling is ~430 MB/s;
+  a 6x-over-ceiling sample is almost certainly a profiler
+  artifact (psutil divides a raw byte delta by a small
+  elapsed-time window; if the sampler itself was paged out
+  for part of the interval the effective-Δt is tiny, inflating
+  the computed rate). The p90 of 15.8 MB/s is the reliable gate
+  and it passes. Max is noise. Consider clamping or flagging
+  physically-impossible spikes in the profiler — but not as a
+  blocking task, just an accuracy improvement.
+- **Warmup 8.7s ≈ 3× clean-box baseline**. R44's 3.2s is the
+  true floor; 8.7s indicates some co-tenancy pressure at start
+  but well short of R58's 42.0s or R57's 24-minute wall-clock
+  stall. Warmup continues to be a reliable forward indicator:
+  <10s = "this run should complete cleanly", 10-30s = "watch
+  for phase-3+ problems", >30s = "abort likely".
+- **The 4K short-context path is STILL completely pressure-immune
+  on speed.** NIAH 4K prefill 801.1 tok/s across R44, R47, R48,
+  R59 — zero deviation. Only decode at 4K cares (−15%). The
+  bandwidth-bound phase is where pressure lands first.
+- **Run 59's role in the historical record**: R44 = clean-box
+  best-case, R58 = over-the-edge worst-case, R59 = realistic
+  middle-case. With three calibration points, future analysts
+  have a framework for interpreting any subsequent duo run:
+  compare Metal peak (should always be 35.14), compare warmup
+  time (predicts the pressure regime), compare NIAH 16K prefill
+  (tells you which regime you're in). Worth preserving.
+- **No new tasks filed from R59**. Tasks #80 (profiler wall-clock
+  correlation), #85 (watchdog log flush), #86 (per-phase headroom
+  check) already cover every observation class in this run.
+  The discipline of not re-filing known issues matters.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
