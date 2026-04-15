@@ -2371,3 +2371,54 @@ _(none)_
   - Smoke test: set a temporarily-low required-headroom value in a test config, force a SKIP at Phase 3 NIAH 16K, assert the bench still writes a valid Phase 6 summary with the skipped phase recorded.
 - **Effort**: S-M (3-5 hours: 1h for the helper, 1h for the phase-entry integration, 1h for the constants calibration from prior snapshots, 1h for the unit + smoke tests)
 - **Risk**: False positives if the headroom estimate is too conservative — the bench would skip valid phases unnecessarily. Mitigation: the constants above are calibrated from 3 successful runs' observed memory growth (R44/R47/R48 NIAH 16K needed 8 GB Metal delta; R48 had 24 GB free with 6 GB margin so 8 GB is a 75th percentile). Adjust if field reports show false skips.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 19, 2026-04-15)
+
+### 87. MLX softmax fused-reduction audit + microbench harness
+- **Goal**: 3 (decode tok/s, every layer's softmax is on the path), 4 (prefill tok/s, same), and a meta-goal: every prior kernel-port task in this backlog is implicitly multiplied by the MLX softmax constant.
+- **Derived from**: Benchmarking On-Device ML on Apple Silicon with MLX (2510.18921). The paper measured `mx.softmax` at 27.91 ms on M1 vs 1.06 ms on a CUDA baseline — a 26x gap that is *worse* than MLX's matmul gap (6.6x) on the same hardware, suggesting an unfused reduction pattern in the MLX softmax kernel rather than a memory-bandwidth limit.
+- **Change**:
+  - Build a microbench harness in `omlx/bench/` (sibling to `hypercar_bench.py`) that calls `mx.softmax`, `mx.fast.scaled_dot_product_attention`, and a hand-rolled `softmax-then-matmul` Metal shader at the exact shapes Hypercar uses in production: B=1, H=24 (Qwen3-Coder layer count over heads), S=2K / 16K / 64K / 256K / 1M. Time each via `mx.eval()` boundaries with at least 50 warmup + 200 measured iterations.
+  - Audit the MLX source (or its Metal shader output) for the softmax reduction — confirm whether it's actually unfused, or whether the paper's measurement was on an old MLX release that has since been patched. Note the MLX commit / version under test in the harness output.
+  - If unfused: prototype a fused softmax-then-matmul Metal shader behind a `--fused-softmax` flag in the server. The fusion target is the inner attention loop where softmax(QK^T/sqrt(d)) is immediately multiplied by V.
+  - Report the harness output in `research/mlx_softmax_audit.md` (research note, not a long-lived doc) — the only documentation deliverable. Either it confirms the gap and we file follow-on work, or it disproves the gap and we close the bucket.
+- **Verify**:
+  - Microbench runs to completion in < 60s on a clean M4 Pro.
+  - The harness output for `mx.softmax` at S=2K matches the paper's M1 measurement to within 2x (accounting for M1 → M4 Pro gen difference) — this validates the harness is measuring the right thing.
+  - If the fused shader prototype lands: `omlx.bench.hypercar_bench --quick` decode tok/s at 16K context improves by ≥ 3% (a 5x softmax improvement compounds into a small but measurable end-to-end win because softmax is one of several ops in the attention path). NIAH 64K still passes. HumanEval pass rate unchanged.
+- **Effort**: S (1 day for the harness + audit, 2-3 days for the fused-shader prototype if the audit justifies it). The audit alone is the gating step — if MLX has already fused softmax in a release after the paper's measurement window, the rest of the work is unnecessary and the bucket closes.
+- **Depends on**: none. Independent of all other tasks; the audit sits below them in the stack.
+- **Risk**: The 2510.18921 measurement is on M1 with an older MLX release, and MLX has had multiple version bumps since. The gap may already be closed. Mitigation: the audit *is* the verification step — if the gap is gone, we file zero follow-on work and the cost is one day.
+
+### 88. PackKV asymmetric K/V codec in TurboQuantKVCache
+- **Goal**: 5 (swap headroom — frees ~5 GB at 1M context), 1 (1M context fit on M4 Pro 48GB under co-tenancy load), 6 (machine fit envelope)
+- **Derived from**: PackKV (2512.24449). The paper reports 153.2% memory reduction for K and 179.6% for V over SOTA quantisation — by using *different lossy operators* for K and V, not just different axes (KIVI's contribution from pass 1). V can tolerate a coarser bulk codec because softmax-weighted-sum aggregation absorbs uniform value-side error.
+- **Change**:
+  - Refactor `omlx/turboquant_kv.py` to parameterise the codec independently per K/V axis. Today both K and V share the same WHT-rotated 3-bit codebook; after the change K stays at the existing fine-grained per-channel codec (to preserve outliers) and V gets a coarser bulk codec with a larger group size (group_size 256 instead of 64) and an outlier-clamp pre-pass instead of per-group scales.
+  - Add a `--v-codec {fine,bulk}` server flag. Default to `fine` (current behaviour); `bulk` activates the new V codec. This is opt-in until the bench gates pass.
+  - Calibrate the bulk-V codec against `omlx/bench/hypercar_bench.py --quick` traces — measure NIAH 64K accuracy, HumanEval pass rate, and KV memory at 1M context for both modes side-by-side.
+  - Compose with task 81 (CTkvr): CTkvr picks which V pages to fetch, the bulk codec makes each fetched page 1.5-1.8x smaller. The two compose multiplicatively on the V-side memory budget.
+- **Verify**:
+  - Unit test: round-trip a synthetic V cache through the bulk codec, assert reconstruction error stays below the threshold derived from the paper's reported tolerances.
+  - Memory check: at 1M context, KV cache memory drops from 22.5 GB to ≤ 18 GB (the paper's 1.7x V-side reduction applied to the V half of the cache).
+  - Quality check: NIAH 64K passes with `--v-codec bulk`. HumanEval pass rate at ≥ 35% (current threshold). MMLU-Pro accuracy unchanged ± 1pp.
+  - Co-tenancy gate: with `--v-codec bulk`, NIAH 500K passes the pre-flight headroom check on a box with 12 GB free (the failure mode that pass 15's eLLM was supposed to fix; this is the alternative path).
+- **Effort**: M (3-5 days: 1d for the codec parameterisation refactor, 1d for the bulk-V codec implementation, 1-2d for the calibration and bench, 1d for the integration + flag plumbing)
+- **Depends on**: composes with task 81 (CTkvr) but is independent of it — task 88 can land first. Stacks orthogonally with task 70 (ButterflyQuant) since that targets the rotation, not the codec.
+- **Risk**: the paper's headline gains assume GPU memory bandwidth is the binding constraint. On Apple Silicon's unified memory the binding constraint is often Metal heap fragmentation rather than bandwidth, so the *throughput* gains may not transfer even if the *memory* gains do. Mitigation: a one-day microbench on the bulk-V codec alone gates the rest of the work; if memory drops as expected but throughput is unchanged, the task still ships because the memory headroom is independently valuable.
+
+### 89. InT-style self-proposed intervention loop in TTT engine
+- **Goal**: 2 (intelligence-breadth via TTT — the credit-assignment problem is the largest gap in `omlx/ttt.py` per the pass 17/18/19 papers)
+- **Derived from**: InT — Self-Proposed Interventions Enable Credit Assignment in LLM Reasoning (2601.14209). The paper reframes credit assignment as a counterfactual intervention problem: instead of attributing reward across a trajectory, have the model propose what it would have done differently at the first wrong step, then re-run the modified trajectory through the verifier. ~14% accuracy gain on IMO-AnswerBench with a 4B model.
+- **Change**:
+  - In `omlx/ttt.py`, after a failed trajectory (terminal verifier returns fail), add an intervention-proposal phase. The phase walks the action sequence, identifies the first step where the verifier output diverges from a "would-pass prefix" (need a trace-level diff utility comparing current trajectory's per-step verifier output against a known-good trajectory or the verifier's expected output), and prompts the model to propose a single replacement action at that step.
+  - Re-run the modified trajectory (original prefix + proposed replacement + original suffix or new suffix) through the verifier. If the modified trajectory now passes, fine-tune the model on the corrected suffix as the supervision signal — this localises the credit-assignment signal to the problematic step rather than smearing it across the whole trace.
+  - Scope the first prototype to *single-test-failure trajectories*: trajectories where exactly one test in the verifier suite failed, so the "first wrong step" is unambiguous. Multi-test-failure trajectories are deferred to a second iteration once the unambiguous case proves out.
+  - Compose with task 78 (SWE-Shepherd PRM): SWE-Shepherd scores actions densely *during* the rollout, InT rewrites failing actions *after* the rollout. They target different points in the TTT loop and can land independently.
+- **Verify**:
+  - Unit test: a synthetic single-test-failure trajectory where the "wrong step" is known by construction; the intervention-proposal phase identifies the correct step ≥ 80% of the time, and the proposed replacement action when re-run flips the verifier output to pass ≥ 50% of the time.
+  - End-to-end metric: TTT engine HumanEval pass rate (or whatever metric `omlx/ttt.py` currently tracks) improves by ≥ 5pp on a held-out set after one round of intervention-driven fine-tuning, vs the existing terminal-only credit-assignment baseline.
+  - Stability gate: the intervention loop must not regress the existing TTT calibration tests — the OPLoRA safety rail (task 59) should still be the outermost envelope.
+- **Effort**: M (4-7 days: 2d for the trace-diff utility and intervention-proposal scaffold, 1-2d for the verifier re-run wiring, 1d for the fine-tune integration, 1-2d for the calibration vs SWE-Shepherd)
+- **Depends on**: task 59 (OPLoRA safety rail) is the outer envelope and must already be in place. Composes with task 78 (SWE-Shepherd) but does not require it — they target different points in the TTT loop.
+- **Risk**: code-verification trajectories are sparser and more multi-modal than math-verification trajectories — the "first wrong step" is often ambiguous when half the test suite was failing for orthogonal reasons. Mitigation: the single-test-failure scope above. Second risk: re-running modified trajectories doubles the verifier compute cost during TTT training. Mitigation: only run the intervention loop on trajectories where the model's confidence-of-wrongness is highest, i.e., the trajectories where the most learning signal is available.

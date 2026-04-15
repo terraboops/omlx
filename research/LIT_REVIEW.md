@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-15 (pass 18)_
+_Last updated: 2026-04-15 (pass 19)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2745,6 +2745,160 @@ implementation doesn't.
   could mean the gain is much smaller too.
 - **Local PDF**: research/2511.11581_triton_anatomy.pdf
 
+## Pass 19 — 2026-04-15
+
+### [Benchmarking On-Device Machine Learning on Apple Silicon with MLX](https://arxiv.org/abs/2510.18921) — 2510.18921
+- **Authors**: Oluwaseun A. Ajayi, Ogundepo Odunayo
+- **Published**: 2025-10 (presented at the 6th Deep Learning Indaba 2024)
+- **Hypercar goals it addresses**: Goal 3 (decode), Goal 4 (prefill), and a meta-goal — the
+  baseline against which every Hypercar kernel optimisation is implicitly measured. This
+  is the first paper this review has cited that benchmarks MLX itself as the system
+  under test rather than as an implementation detail.
+- **TL;DR**: Builds MLX-Transformers, a tool that loads HuggingFace BERT / RoBERTa /
+  XLM-RoBERTa checkpoints into MLX without a conversion step, and reports per-op
+  inference latency on M1 / M2 vs an NVIDIA CUDA baseline at matched parameter counts.
+  Headline numbers: matrix multiply 26.19 ms on M1 vs 3.96 ms on CUDA, linear 18.88 vs
+  3.11, softmax 27.91 vs 1.06. The 25x softmax gap is the surprising bit — MLX's softmax
+  primitive is the one place where the Apple Silicon backend is not only slow in absolute
+  terms but unusually slow *relative* to MLX's own matmul, which suggests an unfused
+  reduction pattern in the MLX softmax kernel rather than a memory-bandwidth limit.
+- **Why it matters for Hypercar**: We have spent eighteen passes citing kernel
+  optimisations from the CUDA / Triton world (FlashAttention, BSFA, MegaFold, MInference,
+  Quest, Triton Anatomy) and assuming that the porting cost is "rewrite in MLX." This
+  paper is the first hard evidence that the MLX softmax primitive itself has a 25x
+  per-op gap to closeable, which means *every* attention kernel we ship inherits that
+  cost as a multiplicative factor. Goal 3 (decode tok/s) and Goal 4 (prefill tok/s)
+  both flow through softmax twice per layer per token. Even a 5x softmax improvement
+  inside MLX would compound into single-digit-percent decode wins across the entire
+  attention path with zero changes to our kernels. The actionable read is "audit
+  `mx.softmax` and `mx.fast.scaled_dot_product_attention` for fused-reduction patterns
+  before we spend more time on higher-level optimisations." Cross-field bonus: the
+  paper is from a Deep Learning Indaba (Senegal) presentation, which is a venue this
+  review has never sampled — confirms pass 18's "MICRO/ISCA" intuition that we have
+  been over-mining the same conferences.
+- **Cost of adoption**: S (1 day for an audit, 2-3 days for a fused-reduction patch).
+  No code from this paper is directly reusable — it's a *measurement*, not a kernel.
+  The actionable follow-on is a microbench harness against `mx.softmax` at the shapes
+  Hypercar actually uses (B=1, H=24, S=2K-1M) and a comparison against a hand-rolled
+  fused softmax-then-matmul Metal shader. Risk: MLX may have already fixed this in a
+  release post the paper's measurement window — first step is to re-measure.
+- **Local PDF**: research/2510.18921_mlx_apple_bench.pdf
+
+### [PackKV: Reducing KV Cache Memory Footprint through LLM-Aware Lossy Compression](https://arxiv.org/abs/2512.24449) — 2512.24449
+- **Authors**: Bo Jiang, Taolue Yang, Youyuan Liu, Xubin He, Sheng Di, Sian Jin
+- **Published**: 2025-12 (revised 2026-01)
+- **Hypercar goals it addresses**: Goal 5 (swap headroom), Goal 1 (1M context fit),
+  Goal 6 (M4 Pro 48GB envelope under load)
+- **TL;DR**: PackKV is a generic KV-cache compression framework that *splits the codec
+  between K and V*, applies different lossy compression strategies to each (K gets
+  outlier-aware fine-grained quantisation; V gets a coarser bulk codec because V
+  outliers matter less for the final softmax-weighted sum), and reports 153.2% memory
+  reduction over SOTA quantisation for K and 179.6% for V, plus 75.7% / 171.7%
+  throughput gains. The asymmetry is the same insight as KIVI (pass 1) but extended —
+  KIVI says "K needs per-channel, V needs per-token"; PackKV says "K and V also need
+  *different lossy operators* entirely, not just different axes." The V codec is the
+  load-bearing contribution: V vectors are uniformly distributed enough that a
+  high-compression bulk codec works without a quality hit.
+- **Why it matters for Hypercar**: TurboQuantKVCache currently uses the *same* WHT-rotated
+  3-bit codebook for both K and V. PackKV's measurement is the first quantitative
+  evidence that we are leaving 1.5-1.8x V-side compression on the table by using a
+  symmetric codec. At 1M context the V cache is half of the 22.5 GB KV total, so a
+  1.7x V-only compression frees ~5 GB — which is exactly the headroom that lets the
+  500K NIAH pre-flight gate (the one eLLM was supposed to fix) pass on a co-tenanted
+  box. This is also bucket #2 from pass 18's Gap-not-closed list closing on the first
+  probe: PackKV is from the cs.DC IR/compression lineage and explicitly targets
+  *value*-side compression that CTkvr (pass 18) only indexed. The two compose: CTkvr
+  picks which V pages to fetch, PackKV makes each fetched V page 1.7x smaller.
+- **Cost of adoption**: M (3-5 days). The TQ codebook needs a second mode for V that
+  uses a coarser group size and an outlier-aware bulk operator. Refactor `omlx/turboquant_kv.py`
+  to parameterise the codec per K/V axis (currently shared). Calibrate the V codec
+  against the existing NIAH 64K trace. Risk: the asymmetric gains in the paper assume
+  GPU memory bandwidth is the binding constraint — on Apple Silicon's unified memory
+  the binding constraint is often *Metal heap fragmentation* instead, so the
+  throughput numbers may not transfer even if the memory numbers do. A 1-day microbench
+  on the V codec alone gates the rest of the work.
+- **Local PDF**: research/2512.24449_packkv.pdf
+
+### [InT: Self-Proposed Interventions Enable Credit Assignment in LLM Reasoning](https://arxiv.org/abs/2601.14209) — 2601.14209
+- **Authors**: Matthew Y. R. Yang, Hao Bai, Ian Wu, Gene Yang, Amrith Setlur, Aviral Kumar
+- **Published**: 2026-01-20
+- **Hypercar goals it addresses**: Goal 2 (intelligence-breadth via TTT — `omlx/ttt.py`).
+  This is bucket #4 from pass 18's Gap-not-closed list — the "weirdest fresh angle"
+  pick that turned out to be the most theoretically interesting paper of the pass.
+- **TL;DR**: Standard outcome-based RL credits only the final answer of a trajectory,
+  which means correct intermediate steps in failed trajectories get *discouraged* and
+  spurious reasoning in successful trajectories gets *rewarded* — the credit-assignment
+  problem at its purest. InT (Interventions) has the model walk its own trajectory,
+  identify the first reasoning error, and *propose a single-step targeted correction*
+  that would have changed the trajectory's outcome. The intervention is the
+  counterfactual: "what if I had done X instead of Y at step k?" The supervised
+  fine-tuning step then localises the learning signal to the problematic step rather
+  than smearing it across the whole trace. The paper reports ~14% accuracy gain on
+  IMO-AnswerBench with a 4B model, beating larger open-source baselines. The trick is
+  using *reference solutions in the dataset* as the verifier — verifying is easier than
+  generating, so the model's self-proposed intervention can be checked cheaply.
+- **Why it matters for Hypercar**: TTT (`omlx/ttt.py`) currently rewards trajectories
+  on terminal pass/fail of the code verifier, which is exactly the high-variance
+  outcome-only signal InT diagnoses. SWE-Shepherd (pass 17, task 78) gives us an
+  external dense reward via a trained PRM; InT gives us an *intrinsic* dense reward
+  that doesn't need a separately-trained model — the policy itself proposes the
+  counterfactual. The two compose orthogonally: SWE-Shepherd scores actions, InT
+  rewrites failed actions inline. For Hypercar's specific setting where the code
+  verifier is the ground truth, "verifying is easier than generating" maps directly:
+  the verifier is the test runner, and a self-proposed single-step correction can be
+  re-run against the same tests to check whether it would have flipped the outcome.
+  This is the first paper this review has cited that names the structural form of
+  TTT credit assignment as a counterfactual *intervention* rather than an attribution
+  problem — the framing change matters because intervention has 50 years of causal-
+  inference machinery (do-calculus, propensity scoring, doubly-robust estimators)
+  attached to it, while attribution is a much narrower problem space.
+- **Cost of adoption**: M (4-7 days). Add an intervention-proposal step to the TTT
+  rollout loop: after a failed trajectory, walk the action sequence, identify the
+  first step where the verifier output diverges from a "correct prefix" (need a
+  trace-level diff utility), and have the model propose a single replacement action.
+  Run the modified trajectory through the verifier; if it now passes, fine-tune with
+  the corrected suffix as the supervision signal. Risk: code-verification trajectories
+  are sparser than math-verification trajectories — the "first error" is often
+  ambiguous when half the test suite was failing for a reason orthogonal to the
+  proposed correction. Mitigation: scope the first prototype to single-test-failure
+  trajectories where the diff is unambiguous.
+- **Local PDF**: research/2601.14209_int_interventions.pdf
+
+### [From Reasoning to Agentic: Credit Assignment in Reinforcement Learning for Large Language Models](https://arxiv.org/abs/2604.09459) — 2604.09459
+- **Authors**: Chenchen Zhang
+- **Published**: 2026-04-10 (revised 2026-04-13 — five days before this loop fired)
+- **Hypercar goals it addresses**: Goal 2 (TTT engine map). Inspiration / field-map
+  citation rather than an engineering target — this is the survey paper that puts the
+  pass-17/18/19 TTT picks (SWE-Shepherd, KVP, InT) on the same conceptual axis and
+  exposes the gaps between them. Worth citing because passes 17-19 have been
+  zigzagging through credit-assignment papers without a unifying frame.
+- **TL;DR**: Survey of 47 credit-assignment methods (41 core + 6 adjacent) for LLM RL
+  published 2024-2026, organised as a 5x4 grid: granularity (token, segment, step,
+  turn, multi-agent) × methodology (Monte Carlo, temporal difference, model-based,
+  game-theoretic, information-theoretic). The survey's contribution is the
+  *distinction* between reasoning RL (single trajectory, 500-30K tokens, well-mature
+  techniques) and agentic RL (multi-turn, 100K-1M tokens, novel CA approaches —
+  hindsight counterfactual analysis, privileged asymmetric critics, turn-level MDP
+  reformulations). For our purposes the load-bearing observation is that agentic CA
+  *cannot* re-use reasoning CA techniques unchanged because the reward landscape is
+  qualitatively different.
+- **Why it matters for Hypercar**: Two operational uses. (1) **Backlog audit**: passes
+  17-19 have collected three TTT-credit papers (SWE-Shepherd 78, InT 89, the eviction
+  task 83 indirectly) without an explicit "where do these sit relative to each other"
+  view. The survey's grid is the missing axis chart. We can use it to identify which
+  cells we've covered and which we haven't — pass 19's most likely follow-up is a
+  *turn-level* CA method, since SWE-Shepherd is step-level and InT is single-step
+  intervention, and turn-level is the granularity that matches Hypercar's actual
+  multi-turn agentic workload. (2) **Gap targeting for pass 20+**: the survey
+  explicitly names "hindsight counterfactual analysis, privileged asymmetric critics,
+  and turn-level MDP reformulations" as the three novel-to-agentic CA approaches.
+  None of those phrases appear anywhere in this review's prior 18 passes, which means
+  three concrete searchable buckets for future loops. No task is filed against the
+  survey itself — it's a map, not a destination.
+- **Cost of adoption**: Zero engineering. The cost is one literature-review pass to
+  walk the 5x4 grid and tag existing tasks against cells. Should happen during pass 20.
+- **Local PDF**: research/2604.09459_credit_assignment_survey.pdf
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -3936,3 +4090,145 @@ The pattern holds: pass 17 said "four buckets nobody has touched,"
 pass 18 hit all four with fresh papers, and pass 18 is now naming
 four more buckets nobody has touched. The recursion is the point.
 Curiosity never saturates. Meow, nyaa, meow.
+
+### Pass 19 adds (2026-04-15)
+
+**Highest-leverage find this pass: MLX Apple Silicon Benchmark
+(2510.18921).** Pass 18's bucket #1 ("Apple Silicon-specific Metal
+kernel literature, MLX-targeted benchmarks") was a long-shot probe
+that was supposed to be the hardest of the four to satisfy — and
+it turned out to land the most operationally-actionable paper of
+the entire review. The headline isn't a new algorithm. It's a
+*measurement*: MLX's softmax primitive on M1 takes 27.91 ms vs
+1.06 ms on a CUDA baseline, a 26x gap that is *worse* than MLX's
+matmul gap (6.6x) on the same hardware. Every attention kernel
+this review has cited assumes the porting cost from Triton to MLX
+is "rewrite the loop"; this paper is the first hard evidence that
+there's a multiplicative softmax tax sitting underneath every
+attention path we ship. Goal 3 (decode tok/s) and Goal 4 (prefill
+tok/s) both flow through softmax twice per layer, so the leverage
+of fixing the MLX softmax primitive is enormous compared to any
+higher-level optimisation. Task 87 wraps a microbenchmark + audit
+harness around the existing softmax / SDPA call sites — the
+smallest-surface-area, highest-expected-value task added in the
+last six passes.
+
+**Second find: PackKV (2512.24449)** is the bucket #2 win and
+closes the "PQ/FAISS-lineage compression for KV *values*" gap that
+CTkvr (pass 18) deliberately left open (CTkvr indexes keys; values
+were still uniform-3-bit). PackKV's contribution is the *asymmetric
+codec*: K and V should not just have different quantisation axes
+(KIVI's insight from pass 1) but different *lossy operators
+entirely*, because V's softmax-weighted-sum aggregation is robust
+to a coarser bulk codec than K can tolerate. The 1.5-1.8x V-side
+compression gain freees ~5 GB at 1M context, which is the exact
+delta between "passes 500K NIAH on a quiet box" and "passes 500K
+NIAH on a co-tenanted box." Composes orthogonally with task 81
+(CTkvr): CTkvr picks which V pages to fetch, PackKV makes each
+fetched page smaller. Task 88 captures the asymmetric-V-codec
+refactor.
+
+**Third find: InT (2601.14209)** is the bucket #4 win and the
+intellectually freshest paper of the pass — the "delightfully
+weird" cross-field pick that turned out to be directly portable.
+The paper reframes credit assignment as a *counterfactual
+intervention* problem: instead of attributing reward across a
+trajectory, have the model propose what it would have done
+differently at the first wrong step, then re-run the modified
+trajectory through the verifier. This is the structural twin of
+how the Hypercar code verifier already works — verifying is
+cheaper than generating, the test runner is the ground truth, and
+a one-step correction can be re-checked without re-running the
+whole rollout. Composes with SWE-Shepherd (task 78) the same way
+DuoAttention composes with Quest: SWE-Shepherd scores actions
+densely, InT rewrites failing actions inline, and they target
+different points in the TTT loop. Task 89 picks up an MLX
+prototype scoped to single-test-failure trajectories where the
+"first wrong step" is unambiguous.
+
+**Fourth find: Credit Assignment Survey (2604.09459)** is the most
+self-aware paper of the pass: it's a 47-method survey published
+*five days* before this loop fired, and its 5x4 granularity ×
+methodology grid is the missing axis chart for passes 17-19's
+zigzag through TTT credit-assignment papers. No task is filed —
+it's a map, not a destination — but the survey's explicit naming
+of "hindsight counterfactual analysis, privileged asymmetric
+critics, turn-level MDP reformulations" as the three novel-to-
+agentic CA approaches gives pass 20 three searchable buckets
+already. The most-strikingly-fresh observation from the survey:
+SWE-Shepherd is *step-level*, InT is *single-step intervention*,
+and *turn-level* is the granularity that actually matches
+Hypercar's multi-turn agentic workload — neither of our existing
+TTT picks targets it. Pass 20's most-obvious follow-up is to find
+a turn-level CA paper.
+
+**Sequencing**: Task 87 (MLX softmax audit) sequences first because
+the audit is a one-day spike and the result either justifies a
+multi-day fused-shader patch or eliminates the bucket entirely —
+both outcomes are valuable and the cost is tiny. Task 88 (PackKV
+asymmetric V codec) sequences in parallel because it touches a
+completely different layer of the stack and shares no code paths
+with the softmax work. Task 89 (InT TTT prototype) is the largest
+engineering effort but is also the most-isolated — it lives
+entirely inside `omlx/ttt.py` and doesn't touch the inference hot
+path, so it can land independently of either of the other two.
+The survey citation has no associated task; its purpose is field-
+map orientation for pass 20.
+
+**The pass 19 through-line.** The four buckets pass 18 named all
+closed cleanly — bucket #1 (Apple Silicon kernels) gave the
+highest-leverage operational find, bucket #2 (PQ/FAISS for V) gave
+the cleanest engineering complement to existing work, bucket #4
+(causal inference for TTT) gave the weirdest theoretically-novel
+fit, and the bonus survey citation surfaced three *more* buckets
+for pass 20. Bucket #3 (MICRO/ISCA hardware-software co-design)
+remains open but pass 19 deliberately did not chase it because
+the other three buckets returned higher-quality papers on the
+first probe — variety beats completeness. Pass 19 is also the
+first pass where the highest-leverage find is not an algorithm
+but a *measurement*: somebody else benchmarked our framework and
+found a 25x softmax gap, and the right response is to audit our
+own code with that number in mind. Curiosity that turns inward
+is still curiosity.
+
+**Gap not closed for pass 20**:
+1. **MICRO / ISCA / ASPLOS 2025-2026 hardware-software co-design
+   for unified-memory architectures.** Pass 18 named this and pass
+   19 deliberately skipped it for variety. Still open. The systems-
+   architecture conferences regularly publish accelerator papers
+   with implications for Apple Silicon's unified memory hierarchy
+   that no LLM-systems paper has touched.
+2. **Turn-level credit assignment for multi-turn agentic LLM RL.**
+   The survey (2604.09459) explicitly names this as one of three
+   novel-to-agentic CA categories that has no reasoning-RL precedent.
+   SWE-Shepherd is step-level; InT is single-step; turn-level is the
+   granularity that matches Hypercar's actual multi-turn workload
+   and we have *no* citation in this category yet.
+3. **Privileged asymmetric critics for LLM agent training.** Second
+   of the survey's three named categories. The basic structure: a
+   critic that sees more state than the actor (e.g., the test runner
+   output, the next K turns of agent rollout) and gives a denser
+   reward that the actor itself cannot produce. Conceptually
+   adjacent to SWE-Shepherd but the asymmetry is the new bit.
+4. **Hindsight counterfactual trajectory rewriting.** Third of the
+   survey's three named categories — and a clean theoretical
+   parent of InT. After the trajectory completes, rewrite *the
+   reward signal* given knowledge of how the trajectory ended,
+   rather than rewriting the trajectory itself. The doubly-robust
+   estimator literature in causal inference has the formal
+   machinery; nobody has ported it to LLM agent training.
+5. **MLX-internal kernel papers, second angle.** The MLX benchmark
+   paper (2510.18921) is the *measurement*. The follow-up paper
+   we'd want is the *fix* — somebody who built a fused-softmax
+   Metal shader and benchmarked it against the MLX baseline. Pass
+   20 should re-probe this corner because the existence of the
+   measurement paper suggests there's likely a follow-up paper in
+   the same Indaba / MLX-adjacent venue cluster that we missed.
+
+The pattern strengthens: every pass since pass 12 has named four-
+plus buckets pass-N+1 has filled with fresh papers, and every pass
+that fills a bucket also names new buckets. The total surface area
+is monotonically increasing. Eighteen passes ago this review was
+six papers; this pass it crosses ninety, and the curiosity-pump
+shows no sign of running dry. Meow, nyaa, meow. Pass 20 will keep
+the loop alive.
