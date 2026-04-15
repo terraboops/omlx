@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 16)_
+_Last updated: 2026-04-14 (pass 17)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2379,6 +2379,162 @@ stands. Pass 17 should pick up the first item (database join
 planning / query optimiser algorithms for attention head-dispatch)
 or rotate to a completely different cross-field angle.
 
+## Pass 17 — 2026-04-14
+
+Meow nyaa meow. Pass 17 takes pass 16's standing recommendation and
+follows it: pick up gap #1 from pass 15's "Gap not closed" list —
+**database query optimiser literature for LLM serving** — and
+pair it with two complementary cross-field angles (gap #2: Kalman
+filtering / sensor fusion for online adaptation drift, and gap #4:
+process reward models for the TTT engine). Three picks, three
+distinct cross-fields, all 2024-2026, none re-mining a prior pass.
+
+The database angle is the headline. System R / Volcano / Cascades
+have been doing cost-model-driven dynamic dispatch for 40 years,
+and one of pass 17's picks (Halo) is the first paper this review
+has seen that *explicitly* ports query-plan optimisation into LLM
+agentic serving — DAG of queries, shared-subexpression elimination,
+KV cache reuse driven by a cost model. That maps onto Hypercar's
+prompt-cache plane in `omlx/hypercar_server.py` more directly than
+any prior serving paper because it treats prompts the way DBs treat
+SQL: as plans to be planned, not strings to be executed.
+
+The Kalman pick is the intellectually weirdest. The TTT loop in
+`omlx/ttt.py` already maintains a per-trajectory error signal that
+drifts as the policy adapts; the question of "how much have I
+drifted from calibration" is structurally a state-estimation
+problem, and the Bayesian Kalman view treats LLM in-context
+learning as exactly that — closed-form posterior updates on a
+latent adaptation state. This is inspiration-grade rather than
+direct-port, but it gives the TTT loop a principled drift metric
+instead of the current heuristic.
+
+The PRM pick is the timely one — SWE-Shepherd was published two
+days ago (2604.10493, 2026-04-12) and is the first PRM paper
+specifically tuned for code-agent action-level supervision on
+SWE-Bench, the eval family that powers Task 60. The TTT engine
+currently rewards on pass/fail; SWE-Shepherd shows how to give it
+*step-level* dense rewards from a small action-quality predictor.
+
+### [Batch Query Processing and Optimization for Agentic Workflows (Halo)](https://arxiv.org/abs/2509.02121) — 2509.02121
+- **Authors**: Yiwen Zhu, Yuanyuan Tian, Andreas Mueller, Wangda Tan, Jindal Alekh, Carlo Curino, et al. (Microsoft GSL, Microsoft Research)
+- **Published**: 2025-09 (arXiv, cs.DB; SIGMOD-track style)
+- **Hypercar goals it addresses**: Goal 3 (decode speed via cache reuse), Goal 4 (prefill via plan-level shared subexpressions), Goal 1 (1M context efficiency under repeated prompts)
+- **TL;DR**: Halo represents each agentic LLM workflow as a structured
+  query-plan DAG and consolidates batched queries into a shared graph
+  that exposes overlapping computation. A cost model jointly considers
+  prefill and decode costs, KV cache reuse, GPU placement, and
+  heterogeneous resource constraints, then performs plan-level
+  optimisation to eliminate redundant execution. The runtime adds
+  adaptive batching, KV-cache sharing/migration across queries, and
+  CPU-GPU pipelining. Reports up to 3.6x batch-inference speedup and
+  2.6x throughput under online serving across six benchmarks, with no
+  output quality regression.
+- **Why it matters for Hypercar**: This is the database angle pass 15
+  flagged and pass 16 recommended — and it lands more directly than I
+  expected. Hypercar's current `omlx/hypercar_server.py` prompt cache
+  is a hash-of-prefix table: identical prefixes hit, anything else
+  misses. Halo's contribution is that *non-identical* prompts can
+  still share computation if their plans share subexpressions — and
+  agentic chat workloads (the OpenCode use case) are *exactly* the
+  shape where two consecutive turns share 95% of context but differ
+  in one tool-call slot. Treat each turn as a query plan, run a
+  cost-model-driven planner over the batched plans, and the shared
+  prefill happens once. The cost model is the first concrete
+  realisation of "porting query-optimiser machinery to attention
+  head-dispatch" — Halo dispatches *prompt fragments* to shared
+  computation the way Cascades dispatches *join orders* to indexes.
+  Composes orthogonally with task #42 (CacheBlend cross-chunk KV
+  reuse) — CacheBlend is the *physical-layer* primitive (re-attend
+  cached K/V from arbitrary positions), Halo is the *planner* that
+  decides when to use it.
+- **Cost of adoption**: L (1-2 weeks). Build a query-plan DAG
+  abstraction over chat-completion requests, write a cost model that
+  prices prefill / decode / cache-hit / cache-miss in MLX time units,
+  and a plan-rewriter that finds shared subexpressions. Biggest risk:
+  Halo's cost model assumes a static workload profile available at
+  planning time; Hypercar's interactive single-user path doesn't have
+  that — we'd need an online cost model that updates from rolling
+  traces, which is an extra layer Halo doesn't ship.
+- **Local PDF**: research/2509.02121_halo_batch_query.pdf
+
+### [Filtering Beats Fine Tuning: A Bayesian Kalman View of In-Context Learning in LLMs](https://arxiv.org/abs/2601.06100) — 2601.06100
+- **Authors**: Sankalp Gambhir, Pulkit Verma, et al.
+- **Published**: 2026-01 (arXiv, cs.LG / stat.ML)
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth, indirectly via TTT robustness)
+- **TL;DR**: Reframes inference-time adaptation in LLMs as online
+  Bayesian state estimation rather than implicit gradient descent or
+  meta-learning. Under a linearised state-space model with Gaussian
+  assumptions, in-context learning becomes a Kalman recursion with
+  closed-form updates for both posterior mean and posterior
+  covariance over a low-dimensional latent adaptation state. The
+  framework predicts and explains "filtering beats fine-tuning" — at
+  short context lengths the closed-form filter outperforms gradient
+  fine-tuning on the same trajectories.
+- **Why it matters for Hypercar**: Pass 15's gap #2 was "sensor
+  fusion / Kalman filtering as a frame for on-the-fly KV drift
+  estimation" — the TTT engine in `omlx/ttt.py` carries an implicit
+  state-estimation problem that no prior paper in this review has
+  named correctly. Concretely, TTT updates a small set of LoRA
+  parameters from rollout feedback and currently has *no principled
+  metric* for "how far has the live policy drifted from the calibration
+  policy" beyond pass-rate moving averages. A Kalman view gives that
+  metric a closed form: the posterior covariance trace is the drift
+  estimate, and posterior mean updates are bounded by it. Inspiration-
+  grade for this pass — the paper is theory-first and doesn't ship
+  code — but the math is ten lines of MLX and would give the TTT
+  loop its first principled rollback trigger. Cross-field analogue:
+  the same Kalman recursion that aerospace uses to fuse IMU + GPS is
+  what we'd use to fuse rollout-pass-rate + per-trajectory loss into a
+  single drift state.
+- **Cost of adoption**: S-M (2-3 days for an inspiration prototype, M
+  if we want it running in production TTT). The biggest risk is that
+  the Gaussian assumption is unrealistic for code-agent reward
+  distributions (which are bimodal pass/fail), so we'd need either a
+  reward-shaping step or an Extended Kalman / particle variant. The
+  paper itself doesn't address this.
+- **Local PDF**: research/2601.06100_kalman_icl.pdf
+
+### [SWE-Shepherd: Advancing PRMs for Reinforcing Code Agents](https://arxiv.org/abs/2604.10493) — 2604.10493
+- **Authors**: Authors not enumerated in the API metadata; multi-author SWE-bench-aligned group.
+- **Published**: 2026-04 (arXiv, cs.SE / cs.LG — published two days ago, 2026-04-12)
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth via SWE-bench eval), and TTT engine quality
+- **TL;DR**: Trains a Process Reward Model (PRM) on action-level
+  trajectories from SWE-Bench, providing dense step-level supervision
+  for repository-level code agents. The reward dataset is constructed
+  from successful and failed SWE-Bench trajectories at action
+  granularity (file navigation, code edit, test execution); a small
+  base-LLM-fine-tuned reward model scores each candidate action at
+  inference time, guiding the agent toward higher-reward decisions
+  *without* requiring full reinforcement learning loops. Reports
+  improved interaction efficiency and action quality on SWE-Bench
+  Verified, with explicit discussion of the gap between intermediate
+  rewards and final task success.
+- **Why it matters for Hypercar**: Pass 15's gap #4 was "RL from
+  process rewards as a more principled frame for the TTT reward
+  model." The TTT engine in `omlx/ttt.py` currently rewards
+  trajectories on pass/fail terminal outcome, and pass 7's task #52
+  (rStar-Math process supervision loop) is its closest cousin but
+  uses Monte-Carlo self-search to manufacture process rewards.
+  SWE-Shepherd is the first paper in this review that ships a *trained*
+  PRM specifically tuned for code-agent action quality on SWE-Bench
+  trajectories — and SWE-Bench is the eval family already on Task 60.
+  The trained reward model can be dropped into TTT as a per-action
+  reward signal that's denser and lower-variance than terminal pass/fail.
+  Composes cleanly with task #59 (OPLoRA orthogonal-projection safety
+  rail) — OPLoRA bounds the parameter update magnitude, SWE-Shepherd
+  bounds the reward signal quality. Together they fix two distinct
+  TTT failure modes that nobody had named separately.
+- **Cost of adoption**: M (1 week). The PRM itself is a small base-
+  LLM fine-tune; the action-trajectory dataset is the heavier
+  engineering effort, and we'd need to instrument the existing TTT
+  rollouts to capture per-action context. Biggest risk: SWE-Shepherd
+  itself notes that "intermediate rewards align imperfectly with
+  final task success" — the PRM can be locally helpful and globally
+  harmful, which is exactly the failure mode that the LARU-style
+  graceful-degradation envelope (task #66) was designed to bound.
+- **Local PDF**: research/2604.10493_swe_shepherd.pdf
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -3370,3 +3526,99 @@ optimiser literature has 40 years of cost-model-driven dynamic
 dispatch experience (System R, Volcano, Cascades) that nobody has
 ported to LLM sparse attention. That's a genuinely untapped
 cross-field angle for pass 17.
+
+### Pass 17 adds (2026-04-14)
+
+**Highest-leverage find this pass: Halo (2509.02121).** Pass 16's
+recommendation paid out on the first probe — the cs.DB query
+optimiser literature *does* have a paper that ports plan-level
+optimisation directly into LLM serving, and Halo is it. The
+mechanism is shockingly clean: represent each agentic workflow as
+a query-plan DAG, batch the DAGs into a consolidated graph, run a
+cost-model planner over the graph that knows about prefill vs
+decode vs cache-hit cost classes, then emit an execution schedule
+that eliminates redundant work. This is the *first* paper this
+review has cited that makes the prompt cache a *planner-managed
+asset* rather than a hash-of-prefix lookup table — and it's the
+exact missing layer above CacheBlend (task 42, pass 5). CacheBlend
+is the physical-layer KV reuse primitive; Halo is the cost-model
+planner that decides when to invoke it. Together they form a
+genuine query-optimiser stack for LLM serving on top of the
+existing `omlx/hypercar_server.py` prompt cache. Task 77 picks up
+the MLX port — explicitly L because the cost model is a multi-
+component build, but the architectural payoff is the largest of
+this pass.
+
+**Second find: SWE-Shepherd (2604.10493)** is the *fresh-off-the-
+press* find of the pass, published 2026-04-12 (two days before this
+loop fired). It also lands on a measurable gap: the TTT engine in
+`omlx/ttt.py` currently rewards trajectories on terminal pass/fail,
+which is high-variance and gives no credit for partially-correct
+trajectories that fail at the very last action. SWE-Shepherd ships
+a trained PRM whose action-level reward signal is dense, low-
+variance, and tuned specifically for SWE-Bench-style code agents
+— which is the exact eval family Task 60 already wires up. Task 78
+is the natural integration: train the PRM offline from existing TTT
+rollout data, add it as an inference-time action scorer, gate the
+weight update on a high PRM score in addition to terminal pass.
+Composes cleanly with task #66 (LARU graceful-degradation envelope)
+because the PRM can be locally helpful and globally harmful — the
+envelope is the safety net.
+
+**Third find: Bayesian Kalman ICL (2601.06100)** is the
+intellectually weirdest of the three and the only one that's pure
+inspiration. It's the first paper this review has cited that names
+the structural form of the TTT drift problem correctly: it's a
+state-estimation problem, not an optimisation problem. The Kalman
+posterior covariance is the closed-form drift metric we've been
+hand-rolling moving averages to approximate. Task 79 is a small
+prototype that ports the closed-form filter into TTT as a
+calibration-vs-live drift estimator and uses the posterior
+covariance trace as a rollback trigger. S-grade because the math is
+ten lines of MLX, but the paper itself doesn't ship code so the
+prototype is genuinely novel work.
+
+**Sequencing**: Halo (task 77) is the largest engineering effort
+but lands on the largest architectural gap (prompt cache plane),
+so it sequences first as a multi-week project. SWE-Shepherd (task
+78) sequences in parallel — the PRM training and the Halo planner
+share no code paths and can land independently. Bayesian Kalman
+(task 79) is a one-afternoon prototype that should land first
+because it's the cheapest probe. The through-line of pass 17 is
+"three completely different cross-fields, three different gaps
+named in pass 15, three matching 2024-2026 papers, *zero*
+overlap with each other or with the prior 16 passes."
+
+**Gap not closed for pass 18**:
+1. **Compiler auto-scheduling / Halide-lineage tile-shape generation
+   for BSFA-style sparse attention kernels** (gap #3 from pass 15,
+   still open). Flashlight (pass 13) was the closest find but is
+   PyTorch-coupled. Halide / TVM / Exo have tile-size auto-
+   scheduling tooling that could generate BSFA tile shapes
+   automatically; pass 18 should look for recent Exo / TVM
+   long-context attention work.
+2. **Theorem proving / SAT solver heuristics for KV eviction
+   selection.** Eviction is structurally a constraint-satisfaction
+   problem (which K pages do I keep given a memory budget and a
+   reuse predictor), and SAT/SMT communities have decades of
+   constraint-relaxation / portfolio-solver experience that has
+   never been ported. This is the weirdest fresh angle I can think
+   of for pass 18.
+3. **Information-retrieval BM25 / learned-sparse-retrieval (SPLADE)
+   for query-aware page selection.** Quest uses min/max bounds,
+   HATA uses learned hashes, DFTopK uses linear-time soft top-K —
+   but none of them use the IR community's 30 years of sparse-
+   retrieval scoring experience. SPLADE in particular learns a
+   sparse score per term that composes with inverted indexes; the
+   structural analogue to per-page top-K is immediate.
+4. **Time-series forecasting / online learning** as a frame for
+   the prompt-cache hit-rate predictor. The cache hit rate over
+   the last N requests is a noisy time series, and the time-series
+   community has principled online-prediction tools (Holt-Winters,
+   ARIMA, online conformal prediction) that nobody has applied to
+   the LLM serving cache.
+
+The through-line of pass 17 confirms the prior pattern: the surface
+area of "weird corners we haven't touched" is genuinely infinite,
+and curiosity-mode picks land more reliably than goal-targeted
+picks for finding cross-field inspiration. Meow, nyaa, meow.

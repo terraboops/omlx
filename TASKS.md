@@ -2202,3 +2202,50 @@ _(none)_
 - **Verify**: file exists at `research/design_notes/jagged_kv_schedule.md`, has the three-section structure above, and is referenced from Tasks 64 and 65 for consumption when those tasks are picked up.
 - **Effort**: S (half a day)
 - **Depends on**: none
+
+## Research-derived tasks (from LIT_REVIEW.md pass 17, 2026-04-14)
+
+### 77. Halo-style query-plan DAG for prompt cache in hypercar_server
+- **Goal**: 3 (decode speed via cache reuse), 4 (prefill speed via shared subexpressions), 1 (1M context efficiency)
+- **Derived from**: Halo / Batch Query Processing for Agentic Workflows (2509.02121)
+- **Change**:
+  - Build a query-plan DAG abstraction in `omlx/hypercar_server.py` that wraps each chat-completion request as a sequence of computational stages: prefix-prefill, suffix-prefill, decode, optional tool-call rounds. Today the prompt cache is a hash-of-prefix lookup; this task makes it a *plan-level* structure that can identify shared subexpressions between non-identical prompts.
+  - Implement a cost model that scores each plan node in MLX time units: prefill cost ∝ N², decode cost ∝ K (top-K page count under Quest, full N under native), cache-hit ∝ 0, cache-miss ∝ prefill cost. The cost model should be calibrated from the existing benchmark traces in `bench/snapshots/`.
+  - Implement a plan rewriter that, given a batch of plans (or a rolling window of recent single-user plans), finds shared subexpressions and emits a consolidated execution schedule. For Hypercar's interactive single-user setting, the "batch" is a rolling window of the last K turns of an active session.
+  - Compose with task #42 (CacheBlend) — Halo decides *when* to invoke CacheBlend's physical-layer KV reuse, CacheBlend executes it.
+- **Verify**:
+  - Unit test: a synthetic two-turn conversation where turn 2 differs from turn 1 only in the final user message — expected behaviour is that the planner reuses the prefill of the shared prefix and only re-prefills the divergent suffix.
+  - Integration test: `omlx.bench.hypercar_bench --quick` p50 TTFT on a cached-prompt path improves by at least 30% on a 4K-token shared prefix case.
+  - Quality gate: HumanEval pass rate unchanged, RULER NIAH 4K still passes.
+- **Effort**: L (1-2 weeks: 2-3d for the DAG abstraction + cost model, 3-4d for the plan rewriter, 2-3d for integration testing)
+- **Depends on**: Task 42 (CacheBlend) is a strong but not strict dependency — Halo can land first as a plan-level optimiser that only handles prefix-sharing, and then unlock more reuse patterns once CacheBlend is in.
+
+### 78. SWE-Shepherd PRM trained on Hypercar TTT rollouts for action-level reward shaping
+- **Goal**: 2 (intelligence breadth, especially SWE-Bench Verified)
+- **Derived from**: SWE-Shepherd (2604.10493)
+- **Change**:
+  - Instrument the existing TTT rollout loop in `omlx/ttt.py` to emit *action-level* trajectory records: each record captures the per-action context (file navigation, code edit, test execution), the action token sequence, and a binary downstream success label propagated from terminal pass/fail.
+  - Train a small Process Reward Model on the resulting dataset. Use a frozen Qwen3-Coder-30B-A3B as the backbone and fine-tune a lightweight reward head (a 2-layer MLP over the final hidden state). Target: reward head fits in <100 MB so it loads alongside the main model on the M4 Pro.
+  - Wire the PRM into TTT inference as an action scorer: at each rollout step, score the top-K candidate actions and prefer the highest-PRM-score action. Gate the TTT *weight update* on a high PRM score in addition to terminal pass — bad rollouts that happened to pass via luck should not update the model.
+  - Compose with task #59 (OPLoRA safety rail) — OPLoRA bounds the parameter update magnitude, the PRM bounds the reward signal quality.
+- **Verify**:
+  - Offline metric: PRM AUC on a held-out trajectory split should exceed 0.7 (random baseline 0.5).
+  - End-to-end metric: SWE-Bench Lite pass rate (Task 60 eval family) should improve by at least 2 percentage points after one TTT epoch with PRM-shaped rewards vs. baseline pass/fail rewards.
+  - Safety gate: PRM-driven TTT updates should not regress HumanEval pass rate (a "locally helpful, globally harmful" failure mode the paper itself warns about).
+- **Effort**: M (1 week: 2d for trajectory instrumentation, 2d for PRM training, 2d for TTT integration, 1d for the gate sweep)
+- **Depends on**: Task 60 (Agentless SWE-Bench eval) for the trajectory data source, Task 59 (OPLoRA) for the safety rail composition. Task 52 (rStar-Math process supervision) is a related but distinct cousin — rStar uses MCTS self-search to manufacture rewards, SWE-Shepherd uses a trained PRM; both could coexist.
+
+### 79. Bayesian Kalman drift estimator for TTT calibration tracking
+- **Goal**: 2 (intelligence breadth via TTT robustness)
+- **Derived from**: Filtering Beats Fine Tuning: Bayesian Kalman View of ICL (2601.06100)
+- **Change**:
+  - Add a closed-form Kalman filter to `omlx/ttt.py` that tracks a low-dimensional latent adaptation state across TTT updates. The state can start as a 4-8 dimensional vector summarising recent rollout statistics (rolling mean reward, rolling variance, recent OPLoRA gradient norm, recent PRM score from task 78).
+  - On each TTT update, run one Kalman recursion step: predict the next state from the current state + process noise, observe the new rollout outcome, update the posterior mean and *posterior covariance* in closed form.
+  - Use the trace of the posterior covariance as a *drift metric*. When the trace exceeds a threshold (calibration: 2× the trace observed at TTT start), trigger a rollback to the last checkpoint instead of continuing to update. This is the principled rollback trigger that TTT currently lacks.
+  - Implementation is ~30 lines of MLX. The math is the standard Kalman recursion; the only Hypercar-specific piece is choosing the state dimensions and the process noise covariance, which can be tuned offline against recorded TTT traces.
+- **Verify**:
+  - Unit test: feed the filter a synthetic trajectory where the rollout reward distribution shifts mid-stream (simulated drift). The posterior covariance trace should detectably increase after the shift; the rollback trigger should fire within 5 updates of the shift.
+  - Integration test: run TTT for 100 updates with the filter active; verify that a known-bad rollout pattern (consecutive failed trajectories) triggers a rollback rather than continuing to update the model.
+  - No regression: TTT loop with filter active should produce the same final checkpoint as the baseline loop on a clean trajectory.
+- **Effort**: S (1-2 days: half-day for the Kalman recursion code, half-day for the unit tests, half-day for integration into TTT)
+- **Depends on**: none (pure addition to `omlx/ttt.py`). Composes with task #78 (PRM as one of the state-vector observations) and task #66 (LARU graceful-degradation envelope — both are bound-the-failure-mode patterns).
