@@ -1,0 +1,212 @@
+{
+  "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+  "elapsed_s": 133.0,
+  "profiles": [
+    {
+      "target_tokens": 4096,
+      "actual_tokens": 2054,
+      "model_base_gb": 32.44,
+      "active_gb": 32.67,
+      "peak_gb": 33.4,
+      "cache_gb": 1.0,
+      "fragmentation_gb": 0.73,
+      "fragmentation_pct": 2.2,
+      "kv_estimate_gb": 0.23,
+      "samples": [
+        {
+          "tokens": 0,
+          "active_gb": 32.441,
+          "peak_gb": 0.0,
+          "cache_gb": 0.0
+        },
+        {
+          "tokens": 2048,
+          "active_gb": 32.642,
+          "peak_gb": 33.4,
+          "cache_gb": 0.788
+        },
+        {
+          "tokens": 2054,
+          "active_gb": 32.667,
+          "peak_gb": 33.4,
+          "cache_gb": 0.997
+        }
+      ]
+    },
+    {
+      "target_tokens": 16384,
+      "actual_tokens": 8198,
+      "model_base_gb": 32.44,
+      "active_gb": 33.27,
+      "peak_gb": 34.0,
+      "cache_gb": 2.83,
+      "fragmentation_gb": 0.73,
+      "fragmentation_pct": 2.2,
+      "kv_estimate_gb": 0.83,
+      "samples": [
+        {
+          "tokens": 0,
+          "active_gb": 32.441,
+          "peak_gb": 0.0,
+          "cache_gb": 0.0
+        },
+        {
+          "tokens": 2048,
+          "active_gb": 32.642,
+          "peak_gb": 33.4,
+          "cache_gb": 0.788
+        },
+        {
+          "tokens": 4096,
+          "active_gb": 32.844,
+          "peak_gb": 33.584,
+          "cache_gb": 1.001
+        },
+        {
+          "tokens": 6144,
+          "active_gb": 33.045,
+          "peak_gb": 33.794,
+          "cache_gb": 1.408
+        },
+        {
+          "tokens": 8192,
+          "active_gb": 33.246,
+          "peak_gb": 34.004,
+          "cache_gb": 2.012
+        },
+        {
+          "tokens": 8198,
+          "active_gb": 33.271,
+          "peak_gb": 34.004,
+          "cache_gb": 2.835
+        }
+      ]
+    },
+    {
+      "target_tokens": 65536,
+      "actual_tokens": 32774,
+      "model_base_gb": 32.44,
+      "active_gb": 35.69,
+      "peak_gb": 36.34,
+      "cache_gb": 2.49,
+      "fragmentation_gb": 0.65,
+      "fragmentation_pct": 1.8,
+      "kv_estimate_gb": 3.25,
+      "samples": [
+        {
+          "tokens": 0,
+          "active_gb": 32.441,
+          "peak_gb": 0.0,
+          "cache_gb": 0.0
+        },
+        {
+          "tokens": 2048,
+          "active_gb": 32.642,
+          "peak_gb": 33.4,
+          "cache_gb": 0.788
+        },
+        {
+          "tokens": 4096,
+          "active_gb": 32.844,
+          "peak_gb": 33.584,
+          "cache_gb": 1.001
+        },
+        {
+          "tokens": 6144,
+          "active_gb": 33.045,
+          "peak_gb": 33.794,
+          "cache_gb": 1.408
+        },
+        {
+          "tokens": 8192,
+          "active_gb": 33.246,
+          "peak_gb": 34.004,
+          "cache_gb": 2.012
+        },
+        {
+          "tokens": 10240,
+          "active_gb": 33.448,
+          "peak_gb": 34.214,
+          "cache_gb": 2.818
+        },
+        {
+          "tokens": 12288,
+          "active_gb": 33.649,
+          "peak_gb": 34.346,
+          "cache_gb": 3.824
+        },
+        {
+          "tokens": 14336,
+          "active_gb": 33.85,
+          "peak_gb": 34.555,
+          "cache_gb": 4.336
+        },
+        {
+          "tokens": 16384,
+          "active_gb": 34.052,
+          "peak_gb": 34.723,
+          "cache_gb": 4.139
+        },
+        {
+          "tokens": 18432,
+          "active_gb": 34.253,
+          "peak_gb": 34.975,
+          "cache_gb": 3.935
+        },
+        {
+          "tokens": 20480,
+          "active_gb": 34.454,
+          "peak_gb": 35.143,
+          "cache_gb": 3.736
+        },
+        {
+          "tokens": 22528,
+          "active_gb": 34.656,
+          "peak_gb": 35.352,
+          "cache_gb": 3.535
+        },
+        {
+          "tokens": 24576,
+          "active_gb": 34.857,
+          "peak_gb": 35.562,
+          "cache_gb": 3.329
+        },
+        {
+          "tokens": 26624,
+          "active_gb": 35.058,
+          "peak_gb": 35.719,
+          "cache_gb": 3.113
+        },
+        {
+          "tokens": 28672,
+          "active_gb": 35.26,
+          "peak_gb": 35.925,
+          "cache_gb": 2.931
+        },
+        {
+          "tokens": 30720,
+          "active_gb": 35.461,
+          "peak_gb": 36.13,
+          "cache_gb": 2.723
+        },
+        {
+          "tokens": 32768,
+          "active_gb": 35.662,
+          "peak_gb": 36.336,
+          "cache_gb": 2.528
+        },
+        {
+          "tokens": 32774,
+          "active_gb": 35.687,
+          "peak_gb": 36.336,
+          "cache_gb": 2.494
+        }
+      ]
+    }
+  ],
+  "extrapolation": {
+    "avg_fragmentation_pct": 2.1,
+    "estimated_1m_kv_gb": 22.5,
+    "estimated_1m_fragmentation_gb": 0.5
+  }
+}

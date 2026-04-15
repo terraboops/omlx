@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 38 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 39 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,11 @@ _(none)_
 
 ## Completed
 
+- **Task 31**: Profile KV allocator fragmentation at 1M context (2026-04-15)
+  - Profiled at 4K/16K/64K context lengths; fragmentation stable at 2.1% (~0.7 GB peak-active gap)
+  - Extrapolated to 1M: only ~0.5 GB fragmentation out of 22.5 GB KV — negligible
+  - **VERDICT: Skip paging work** — MLX Metal allocator is efficient, Tasks 43/64 not justified for memory savings alone
+  - Research note at `research/KV_FRAGMENTATION.md`, raw data at `research/kv_fragmentation_profile.json`
 - **Task 24-b**: Probe MLX argpartition speed for Quest top-K page selection (2026-04-15)
   - ALL configurations PASS (<200µs/head budget) — Quest is viable as written
   - At 1M context (8K pages): ~40µs/head. At 8M context (64K pages): ~80µs/head
