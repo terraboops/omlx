@@ -1,45 +1,54 @@
 # Optimization Decision Matrix
 
-Consolidated probe results from Tasks 12, 16, 30, 38, 44.
-All measurements on Qwen3-Coder-30B-A3B-Instruct-8bit, M4 Pro 48GB.
+Consolidated probe results from 40 completed tasks.
+All measurements on Qwen3-Coder-30B-A3B-Instruct-8bit, M4 Pro 48GB, MLX 0.31.1.
+Last updated: 2026-04-15.
 
 ## Summary Table
 
 | Technique | Task | Viable? | Savings | Quality Impact | Priority |
 |-----------|------|---------|---------|---------------|----------|
 | **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
-| **ShadowKV** (K low-rank compression) | 44 | **VALIDATED** | ~65% K cache | NIAH PASS, MMLU-Pro 24% (reasoning drops) | For 64K+ only |
+| **ShadowKV** (K low-rank compression) | 44 | **VALIDATED** | ~65% K cache | NIAH PASS, reasoning drops | For 64K+ only |
 | **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
 | **Metal warmup** | 25 | **SHIPPED** | 2.25x decode, no cold-start | None | **DONE** |
-| **Quest** (page selection) | 3, 24b | **YES** | 1.55x decode speedup | Fails NIAH (norm-based scoring) | MEDIUM |
-| **MInference** (sparse prefill) | 4, 5 | YES (code) | TBD | Needs rectangular masks for chunked prefill | MEDIUM |
+| **EAGLE-2** (tree spec-decode) | 28 | **FEASIBLE** | 2.31x predicted speedup | Tree masks work in SDPA (<1e-6 error) | HIGH |
+| **Quest** (page selection) | 3, 24b | **YES** | argpartition <200µs budget | Fails NIAH (norm-based scoring) | MEDIUM |
+| **MInference** (sparse prefill) | 4, 5 | YES (code) | TBD | Needs GPU validation run | MEDIUM |
+| **Spec-decode gate** (MagicDec cost model) | 56 | **SHIPPED** | Predicts 2.31x at 70% accept | Framework for all spec-decode | **DONE** |
 | **TQ3 2-bit KV** (aggressive quantization) | 22 | PARTIAL | Goal 5 fixed | NIAH 4K regression | CONDITIONAL |
-| **ProMoE** (expert lazy-load) | 16 | MARGINAL | 3.6 GB at 87.5% | Repetition artifacts | LOW |
+| **ProMoE** (expert lazy-load) | 16, 32 | MARGINAL | 3.6 GB at 87.5% | 0.1% experts fully cold, concentrated top-10 | LOW |
+| **KV fragmentation** (allocator overhead) | 31 | **NEGLIGIBLE** | Only 2.1% (~0.5 GB at 1M) | N/A | **SKIP** |
+| **MLX softmax** (fused kernel gap) | 87 | **CLOSED** | Gap is 1.0x (was 26x on M1) | N/A | **SKIP** |
 | **LayerSkip** (self-speculative decode) | 38 | **NO** | N/A | MoE routing blocks early exit | SKIP |
 
 ## Recommended Priority Order
 
-### Tier 1: Ship Now (proven viable, high impact)
-1. **Metal warmup** — DONE. Decode 20→45 tok/s. Default since commit 7a62b53.
-2. **ShadowKV** — K cache is low-rank (median 177/512 at 99% energy). Implement
-   SVD-compressed K storage for retrieval heads. Saves ~65% of K cache memory.
-3. **DuoAttention** — 59% of heads are streaming. Implement ring-buffer KV for
-   streaming heads. Saves ~6.5 GB at 1M context. Calibration table ready.
+### Tier 1: Shipped (proven viable, high impact)
+1. **DuoKVCache** — DEFAULT mode. Zero swap, 52.7 tok/s, MMLU-Pro 62%.
+2. **DuoAttention** — 59% streaming heads. Feeds DuoKVCache. Calibration table shipped.
+3. **Metal warmup** — Decode 20→45 tok/s. Default since commit 7a62b53.
+4. **Spec-decode gate** — Cost model calibrated. Predicts when EAGLE-2/TriForce helps.
 
-### Tier 2: Worth Pursuing (viable, moderate impact)
-4. **Quest** — Page selection viable (argpartition <200µs at 64K pages). Wire
-   into decode path for sublinear attention at long contexts.
-5. **MInference** — Sparse prefill patterns calibrated. Runtime dispatch built.
-   Needs GPU validation run to measure actual prefill speedup.
-6. **TQ3 2-bit** — Fixes Goal 5 swap pressure but regresses NIAH 4K. Use
-   conditionally for contexts >16K where swap is the bottleneck.
+### Tier 2: Next Up (validated, ready to build)
+5. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
+   needed (Task 29, cloud GPU). Predicted 2.31x decode speedup at 70% accept rate.
+6. **ShadowKV** — K cache is low-rank (median 177/512). Implement SVD-compressed K
+   for retrieval heads. Saves ~65% K cache memory at 64K+.
+7. **Quest** — argpartition <200µs at 64K pages. Wire into decode path for sublinear
+   attention at long contexts.
 
-### Tier 3: Skip or Defer
-7. **ProMoE** — Only 3.6 GB savings at 87.5% residency with quality artifacts.
-   Fused QuantizedSwitchLinear makes per-expert lazy-load hard. Skip unless
-   DuoAttention + ShadowKV combined is insufficient.
-8. **LayerSkip** — 0% agreement at depths ≤40, 55% at depth 44 (4 layers
-   skipped). MoE routing makes every layer critical. Not viable for this model.
+### Tier 3: Conditional (viable with caveats)
+8. **MInference** — Sparse prefill patterns calibrated. Runtime built but needs GPU
+   validation for actual prefill speedup measurement.
+9. **TQ3 2-bit** — Fixes Goal 5 but regresses NIAH 4K. Use for contexts >16K only.
+10. **ProMoE** — 0.1% experts fully cold, but top-10 hold 14-27% of dispatches.
+    Marginal savings (3.6 GB) with quality risk. Profile data available for retry.
+
+### Tier 4: Skip (disproven or negligible)
+11. **KV fragmentation paging** — Only 2.1% fragmentation, ~0.5 GB at 1M. Not worth it.
+12. **MLX softmax fusion** — Gap closed in MLX 0.31.1 (4.9ms vs paper's 27.9ms on M1).
+13. **LayerSkip** — MoE routing blocks early exit. 0% agreement at depth ≤40.
 
 ## Combined Goal 5 Story
 
@@ -54,11 +63,18 @@ After ShadowKV + DuoAttention:
 
 ## Data Sources
 
-| File | What it measures |
-|------|-----------------|
-| `research/shadowkv_rank_20260413.json` | Per-layer SVD rank at 99/99.5/99.9% energy |
-| `research/MLX_ATTN_DISPATCH.md` | MLX SDPA kernel dispatch (AMX vs vector) |
-| `docs/bimodal_timing_root_cause.md` | Metal JIT cold-start bimodality |
-| `omlx/patches/duoattention_policies/*.json` | Per-head streaming/retrieval classification |
-| `omlx/patches/layerskip_thresholds/*.json` | Per-layer early-exit agreement rates |
-| `omlx/patches/minference_patterns/*.json` | Per-head attention pattern classification |
+| File | What it measures | Task |
+|------|-----------------|------|
+| `research/shadowkv_rank_20260413.json` | Per-layer SVD rank at 99/99.5/99.9% energy | 44 |
+| `research/MLX_ATTN_DISPATCH.md` | MLX SDPA kernel dispatch (AMX vs vector) | 30 |
+| `research/mlx_softmax_audit.json` | mx.softmax vs SDPA vs unfused at production shapes | 87 |
+| `research/KV_FRAGMENTATION.md` | Metal active vs peak memory at 4K/16K/64K | 31 |
+| `research/kv_fragmentation_profile.json` | Raw fragmentation samples per context length | 31 |
+| `omlx/specdec_constants.json` | Calibrated decode latency model (compute + KV-load) | 56 |
+| `omlx/patches/duoattention_policies/*.json` | Per-head streaming/retrieval classification | 12 |
+| `omlx/patches/layerskip_thresholds/*.json` | Per-layer early-exit agreement rates | 38 |
+| `omlx/patches/minference_patterns/*.json` | Per-head attention pattern classification | 4 |
+| `omlx/patches/promoe_profiles/*.json` | Per-layer×expert MoE dispatch frequencies | 32 |
+| `docs/bimodal_timing_root_cause.md` | Metal JIT cold-start bimodality | 20 |
+| `scripts/probe_eagle_tree_attn.py` | EAGLE-2 tree mask correctness + overhead | 28 |
+| `scripts/probe_quest_topk.py` | argpartition vs argsort at various page counts | 24b |
