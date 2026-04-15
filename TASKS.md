@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 36 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 37 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 32**: ProMoE offline expert activation frequency profiling (2026-04-15)
+  - New `scripts/moe_profile_expert_activation.py` — hooks 48 MoE router gates via TrackedGate wrapper
+  - 4379 tokens of mixed coding prompts across 8 calibration prompts (Python, Rust, JS, SQL, etc.)
+  - Results: only 8/6144 (0.1%) experts never activated; top-10 hold 14-27% of dispatches per layer
+  - Layer 32 most concentrated (27.1% top-10), layers 0/47 most uniform (14-18%)
+  - Profile output at `omlx/patches/promoe_profiles/qwen3_coder_30b_a3b_instruct_8bit.json`
+  - Informs Task 16/33: 50% resident saves ~3.6 GB, 75% saves ~1.8 GB, 87.5% saves ~0.9 GB
 - **Task 28**: EAGLE-2 tree-attention feasibility probe for MLX (2026-04-15)
   - `mx.fast.scaled_dot_product_attention` SUPPORTS tree masks — additive mask works correctly
   - Numerical accuracy vs NumPy reference: max error < 1e-6 across all tested shapes
