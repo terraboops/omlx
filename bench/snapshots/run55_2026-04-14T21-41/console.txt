@@ -1,0 +1,4 @@
+WARNING: GPU-heavy processes detected:
+  PID 33491: .venv/bin/python -m omlx.bench.hypercar_bench --niah-only --niah-context 4K,64K --kv-mode native --f
+Running the benchmark concurrently with these may cause catastrophic swap pressure on 48GB.
+Aborting. Kill the above processes first, or pass --force to override.
