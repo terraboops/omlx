@@ -331,17 +331,24 @@ class TestAdaptiveChunking:
 
     def test_small_chunk_at_64k_plus(self):
         for ctx in [65536, 131072, 262144, 524288, 1048576]:
-            chunk = 4096 if ctx < 32768 else (2048 if ctx < 65536 else 1024)
-            assert chunk == 1024, f"ctx={ctx} should use chunk=1024, got {chunk}"
+            if ctx >= 131072:
+                chunk = 512
+            elif ctx >= 65536:
+                chunk = 512
+            elif ctx >= 32768:
+                chunk = 2048
+            else:
+                chunk = 4096
+            assert chunk == 512, f"ctx={ctx} should use chunk=512, got {chunk}"
 
     def test_attention_scores_fit_at_64k(self):
-        """At 64K with chunk=1024, attention scores should be <5 GB."""
+        """At 64K with chunk=512, attention scores should be <3 GB."""
         ctx = 65536
-        chunk = 1024
+        chunk = 512
         n_heads = 32
         bytes_per_elem = 2  # fp16
         attn_gb = (chunk * ctx * n_heads * bytes_per_elem) / 1e9
-        assert attn_gb < 5.0, f"Attention scores at 64K: {attn_gb:.1f} GB (should be <5)"
+        assert attn_gb < 3.0, f"Attention scores at 64K: {attn_gb:.1f} GB (should be <3)"
 
     def test_attention_scores_oom_at_64k_default_chunk(self):
         """At 64K with chunk=4096, attention scores would be ~16 GB (OOM)."""

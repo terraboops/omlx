@@ -715,11 +715,15 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         cache = _make_cache(n_layers)
 
         # Chunked prefill — adaptive chunk size for long context.
-        # At 64K+, attention scores per chunk = chunk × accumulated × n_heads × 2.
-        # chunk=4096 at 64K = 16 GB scores (OOM). chunk=1024 = 4 GB (fits).
+        # Attention scores per chunk = chunk × accumulated_ctx × n_heads × 2 bytes.
+        # chunk=4096 at 64K = 16 GB (OOM). chunk=1024 = 4 GB. chunk=512 = 2 GB.
+        # On 48GB M4 Pro with 32.4 GB model, chunk=512 at 64K leaves ~7 GB
+        # headroom vs the 41.2 GB Metal limit (80% of 51.5 GB).
         chunk = PREFILL_CHUNK
-        if ctx_len >= 65536:
-            chunk = 1024  # Prevent attention score OOM at 64K+
+        if ctx_len >= 131072:
+            chunk = 512   # 128K+: 512 × 131K × 32 × 2 = 4.3 GB scores
+        elif ctx_len >= 65536:
+            chunk = 512   # 64K: 512 × 64K × 32 × 2 = 2.1 GB scores
         elif ctx_len >= 32768:
             chunk = 2048
 
