@@ -51,8 +51,10 @@ def load_duo_policy(
 
     policy["_lookup"] = lookup
     streaming_pct = policy.get("streaming_fraction", 0) * 100
-    logger.info(f"DuoAttention policy: {streaming_pct:.0f}% streaming, "
-                f"window={policy.get('window', 256)}, sink={policy.get('sink', 4)}")
+    if not hasattr(load_duo_policy, "_logged"):
+        logger.info(f"DuoAttention policy: {streaming_pct:.0f}% streaming, "
+                    f"window={policy.get('window', 256)}, sink={policy.get('sink', 4)}")
+        load_duo_policy._logged = True
     return policy
 
 
