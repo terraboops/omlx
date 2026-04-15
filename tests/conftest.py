@@ -3,6 +3,8 @@
 Pytest configuration and fixtures for oMLX tests.
 
 This module provides common fixtures used across test files.
+MLX-dependent imports are deferred to fixture bodies so that tests
+which don't need MLX (tool tests, eval tests) can run without GPU.
 """
 
 from pathlib import Path
@@ -10,8 +12,6 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
-
-from omlx.request import Request, SamplingParams
 
 
 class MockTokenizer:
@@ -25,13 +25,10 @@ class MockTokenizer:
 
     def encode(self, text: str, add_special_tokens: bool = True) -> List[int]:
         """Encode text to token ids (simple simulation)."""
-        # Simple simulation: each word becomes a token
         tokens = []
         if add_special_tokens:
             tokens.append(self.bos_token_id)
-        # Simulate tokenization by splitting on spaces
         for i, word in enumerate(text.split()):
-            # Use hash to get a consistent token id for each word
             token_id = (hash(word) % (self.vocab_size - 10)) + 10
             tokens.append(token_id)
         return tokens
@@ -48,7 +45,6 @@ class MockTokenizer:
                 for t in token_ids
                 if t not in (self.eos_token_id, self.pad_token_id, self.bos_token_id)
             ]
-        # Return a placeholder string representing the token count
         return f"<decoded:{len(token_ids)} tokens>"
 
     def __call__(
@@ -125,8 +121,12 @@ def tmp_cache_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def sample_request() -> Request:
-    """Factory fixture for creating sample Request objects."""
+def sample_request():
+    """Factory fixture for creating sample Request objects.
+
+    Requires MLX/Metal — skips if unavailable.
+    """
+    from omlx.request import Request, SamplingParams
     return Request(
         request_id="test-request-001",
         prompt="Hello, world!",
@@ -140,7 +140,11 @@ def sample_request() -> Request:
 
 @pytest.fixture
 def sample_request_factory():
-    """Factory fixture for creating multiple Request objects."""
+    """Factory fixture for creating multiple Request objects.
+
+    Requires MLX/Metal — skips if unavailable.
+    """
+    from omlx.request import Request, SamplingParams
 
     def _create_request(
         request_id: str = "test-request-001",
