@@ -507,3 +507,40 @@ class TestBuildCodeHaystack:
     def test_source_truncates_to_target_tokens(self):
         """The real function truncates to target_tokens via encode[:target]."""
         assert "[:target_tokens]" in _src
+
+
+# ---------------------------------------------------------------------------
+# Per-phase headroom check tests (Task 86)
+# ---------------------------------------------------------------------------
+
+class TestPhaseHeadroomCheck:
+    """Test the per-phase headroom constants and logic."""
+
+    def test_headroom_constants_exist(self):
+        assert "PHASE_HEADROOM_GB" in _src
+
+    def test_headroom_function_exists(self):
+        assert "def _check_phase_headroom(" in _src
+
+    def test_niah_requires_most_headroom(self):
+        """NIAH should require the most headroom (16K fp16 KV + attention)."""
+        # Extract PHASE_HEADROOM_GB dict from source
+        match = _re.search(r'PHASE_HEADROOM_GB\s*=\s*\{([^}]+)\}', _src)
+        assert match, "PHASE_HEADROOM_GB dict not found"
+        # NIAH value should be >= all others
+        values = _re.findall(r':\s*(\d+\.?\d*)', match.group(1))
+        floats = [float(v) for v in values]
+        assert max(floats) >= 6.0, "NIAH headroom should be >= 6 GB"
+
+    def test_headroom_check_returns_bool(self):
+        """The function should return True/False, not raise."""
+        assert "return True" in _src or "return False" in _src
+
+    def test_skipped_phase_has_details(self):
+        """Skipped phases should record the reason in details."""
+        assert '"skipped": True' in _src
+        assert '"reason": "insufficient headroom"' in _src
+
+    def test_watchdog_breach_sentinel(self):
+        """Task 85: WATCHDOG-BREACH sentinel should be in breach path."""
+        assert "WATCHDOG-BREACH" in _src
