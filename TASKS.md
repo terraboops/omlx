@@ -2249,3 +2249,18 @@ _(none)_
   - No regression: TTT loop with filter active should produce the same final checkpoint as the baseline loop on a clean trajectory.
 - **Effort**: S (1-2 days: half-day for the Kalman recursion code, half-day for the unit tests, half-day for integration into TTT)
 - **Depends on**: none (pure addition to `omlx/ttt.py`). Composes with task #78 (PRM as one of the state-vector observations) and task #66 (LARU graceful-degradation envelope — both are bound-the-failure-mode patterns).
+
+### 80. Add wall-clock correlation to bench profiler to detect swap-induced stalls
+- **Goal**: 5 (swap pressure), 6 (machine fit under load), plus observability-meta
+- **Derived from**: Hypercar benchmark run 57 (2026-04-15), bench/snapshots/run57_2026-04-15T09-36/. During R57's model load phase, Python logged "Model loaded in 23.0s" but the wall-clock gap between "Loading model" (09:54:42) and "Prefill patch applied" (10:18:53) was **24 minutes 11 seconds** — a 60x discrepancy. The process was paged out for ~99% of that window; Python's internal `time.time()` only ticked while the process was scheduled. The profiler in `omlx/bench/profiler.py` has the same blind spot: samples are taken from within the Python process, so when the OS suspends it, no samples are recorded and num_samples ends up proportional to Python-active time rather than wall-clock. A 24-minute swap-thrash stall leaves zero forensic trace in the bench output files except the log timestamp gap, which is tedious to detect manually.
+- **Change**: In `omlx/bench/profiler.py` (the Task #8 profiler rebuild module):
+  - At profiler start, record `wall_clock_start_monotonic_s = time.monotonic()` AND `wall_clock_start_epoch_s = time.time()`.
+  - At profiler stop (when writing /tmp/hypercar_profile.json), compute `wall_clock_elapsed_s = time.monotonic() - wall_clock_start_monotonic_s` and add it to the `summary` dict alongside `total_seconds` (which is the Python-accounted elapsed time).
+  - Add a derived field `cpu_scheduling_fraction = total_seconds / wall_clock_elapsed_s` to the summary. A value of 1.0 means the process ran without interruption; a value of 0.02 means the process got 2% of wall-clock (severe swap/co-tenant pressure).
+  - In `omlx/bench/hypercar_bench.py` near `_finish()` (end of run), check `cpu_scheduling_fraction` and emit a WARNING-level log line if it falls below 0.9: `WARNING: CPU scheduling fraction was {frac:.2f} (wall {wall}s vs Python {cpu}s) — heavy co-tenancy or swap-thrashing detected, numeric results may be valid but timing metrics should be interpreted with caution`.
+- **Verify**:
+  - `.venv/bin/python -m omlx.bench.hypercar_bench --quick` on a clean box produces profile.json with `cpu_scheduling_fraction >= 0.95` and no warning log.
+  - Simulate pressure: run `.venv/bin/python -c "import time; time.sleep(60)" &` in a tight loop with some large memory allocations, then run `--quick`. Verify `cpu_scheduling_fraction` drops below 0.9 and the warning fires.
+  - Read bench/snapshots/run57_2026-04-15T09-36/env.json for the exact symptom this task is meant to catch automatically.
+- **Effort**: S (2-3 hours: add 10 lines to profiler.py, add 5-line check in hypercar_bench.py _finish, write one unit test that mocks time.monotonic drift, smoke test manually)
+- **Risk**: Minimal. `time.monotonic()` is guaranteed to tick during OS suspension on Darwin (it's based on `mach_absolute_time` which continues even when the process is swapped out), so the computation is reliable. Only risk is forgetting to use monotonic (time.time() can go backward).

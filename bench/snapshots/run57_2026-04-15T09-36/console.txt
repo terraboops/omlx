@@ -1,0 +1,11 @@
+09:54:42 omlx.bench.hypercar INFO KV mode: duo, bits: 3
+09:54:42 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+09:54:42 omlx.bench.hypercar INFO System memory: 51.5 GB
+09:54:42 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+09:54:42 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+09:54:42 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+09:54:42 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+10:18:53 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+10:18:53 omlx.bench.hypercar INFO Model loaded in 23.0s (lazy — first forward will materialize)
+10:18:53 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===

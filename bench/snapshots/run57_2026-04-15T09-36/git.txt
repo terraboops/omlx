@@ -1,0 +1,4 @@
+048280b55ef1d73228a58f5f69a4447e4c0218d6
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run57_2026-04-15T09-36/console.txt
+?? bench/snapshots/run57_2026-04-15T09-36/git.txt
