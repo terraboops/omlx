@@ -54,10 +54,14 @@ class ProfileResult:
     cpu_peak_pct: float = 0.0
     swap_peak_gb: float = 0.0
     swap_io_peak_mb_per_s: float = 0.0
+    wall_clock_elapsed_s: float = 0.0
+    cpu_scheduling_fraction: float = 1.0
 
     def summary(self) -> dict:
         return {
             "total_seconds": round(self.total_seconds, 2),
+            "wall_clock_elapsed_s": round(self.wall_clock_elapsed_s, 2),
+            "cpu_scheduling_fraction": round(self.cpu_scheduling_fraction, 4),
             "metal_peak_gb": round(self.metal_peak_gb, 2),
             "metal_avg_gb": round(self.metal_avg_gb, 2),
             "rss_peak_gb": round(self.rss_peak_gb, 2),
@@ -183,6 +187,7 @@ class Profiler:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._start_time: float = 0.0
+        self._wall_clock_start: float = 0.0  # time.monotonic() at start
         self._swap_baseline: float = 0.0
         self._psutil_proc = None  # Reused across samples (fix: CPU always 0.0)
         self._prev_swap_bytes: int = 0
@@ -193,6 +198,7 @@ class Profiler:
         self.result = ProfileResult()
         self._stop.clear()
         self._start_time = time.perf_counter()
+        self._wall_clock_start = time.monotonic()
         self._swap_baseline = _get_swap_gb()
 
         # Reuse ONE psutil.Process() across all samples so cpu_percent()
@@ -216,6 +222,14 @@ class Profiler:
         if self._thread:
             self._thread.join(timeout=5)
         self.result.total_seconds = time.perf_counter() - self._start_time
+        self.result.wall_clock_elapsed_s = time.monotonic() - self._wall_clock_start
+        if self.result.wall_clock_elapsed_s > 0:
+            expected_samples = self.result.wall_clock_elapsed_s / self.sample_interval
+            actual_samples = len(self.result.samples)
+            self.result.cpu_scheduling_fraction = min(
+                actual_samples / expected_samples if expected_samples > 0 else 1.0,
+                1.0,
+            )
         self._compute_aggregates()
         return self.result
 

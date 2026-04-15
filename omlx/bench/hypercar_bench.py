@@ -1969,6 +1969,18 @@ def _finish(phases: List[PhaseResult], watchdog: MemoryWatchdog,
     profiler_result = watchdog.stop()
     total_elapsed = time.perf_counter() - total_t0
 
+    # Wall-clock correlation check: detect swap-induced stalls (Task 80)
+    sched_frac = profiler_result.cpu_scheduling_fraction
+    wall_s = profiler_result.wall_clock_elapsed_s
+    python_s = profiler_result.total_seconds
+    if sched_frac < 0.9:
+        logger.warning(
+            f"CPU scheduling fraction was {sched_frac:.2f} "
+            f"(wall {wall_s:.0f}s vs {len(profiler_result.samples)} samples "
+            f"in {python_s:.0f}s) — heavy co-tenancy or swap-thrashing "
+            f"detected, timing metrics should be interpreted with caution"
+        )
+
     # Phase 5: Memory check
     logger.info("\n=== Phase 5: Memory Profile ===")
     p5 = phase5_memory_check(profiler_result, limits)

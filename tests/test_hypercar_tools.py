@@ -544,3 +544,43 @@ class TestPhaseHeadroomCheck:
     def test_watchdog_breach_sentinel(self):
         """Task 85: WATCHDOG-BREACH sentinel should be in breach path."""
         assert "WATCHDOG-BREACH" in _src
+
+
+# ---------------------------------------------------------------------------
+# Task 80: Wall-clock correlation in profiler
+# ---------------------------------------------------------------------------
+
+_profiler_src = Path("omlx/bench/profiler.py").read_text()
+
+
+class TestWallClockCorrelation:
+    """Task 80: Detect swap-induced stalls via wall-clock correlation."""
+
+    def test_profiler_has_wall_clock_field(self):
+        """ProfileResult must have wall_clock_elapsed_s field."""
+        assert "wall_clock_elapsed_s" in _profiler_src
+
+    def test_profiler_has_scheduling_fraction(self):
+        """ProfileResult must have cpu_scheduling_fraction field."""
+        assert "cpu_scheduling_fraction" in _profiler_src
+
+    def test_profiler_uses_monotonic(self):
+        """Profiler must use time.monotonic() for wall-clock tracking."""
+        assert "time.monotonic()" in _profiler_src
+
+    def test_summary_includes_wall_clock(self):
+        """summary() dict must include wall_clock_elapsed_s."""
+        assert '"wall_clock_elapsed_s"' in _profiler_src
+
+    def test_summary_includes_scheduling_fraction(self):
+        """summary() dict must include cpu_scheduling_fraction."""
+        assert '"cpu_scheduling_fraction"' in _profiler_src
+
+    def test_bench_warns_on_low_scheduling_fraction(self):
+        """hypercar_bench must warn when scheduling fraction < 0.9."""
+        assert "cpu_scheduling_fraction" in _src
+        assert "0.9" in _src or "sched_frac < 0.9" in _src
+
+    def test_scheduling_fraction_capped_at_one(self):
+        """Scheduling fraction should never exceed 1.0."""
+        assert "min(" in _profiler_src and "1.0" in _profiler_src

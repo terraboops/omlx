@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 33 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 34 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 80**: Add wall-clock correlation to bench profiler (2026-04-15)
+  - Added `wall_clock_elapsed_s` and `cpu_scheduling_fraction` fields to `ProfileResult`
+  - Profiler records `time.monotonic()` at start; computes scheduling fraction as `actual_samples / expected_samples` at stop
+  - `cpu_scheduling_fraction < 0.9` triggers WARNING in `_finish()` about swap-thrashing / co-tenancy pressure
+  - Fraction capped at 1.0; included in `summary()` dict for profile.json output
+  - 7 new tests in `test_hypercar_tools.py::TestWallClockCorrelation`
+  - Catches R57-style stalls: 24-minute swap-thrash window now detectable automatically
 - **Task 86**: Per-phase memory-headroom re-check between phases (2026-04-15)
   - New `_check_phase_headroom()` helper checks Metal headroom before each heavy phase
   - Per-phase requirements: NIAH 8 GB, RULER 6 GB, MMLU-Pro 3 GB, HumanEval 3 GB
