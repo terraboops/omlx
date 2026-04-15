@@ -7,9 +7,34 @@ MLX-dependent imports are deferred to fixture bodies so that tests
 which don't need MLX (tool tests, eval tests) can run without GPU.
 """
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
+
+# --- MLX-safe collection filtering ---
+# Most test files in this directory import omlx.* which triggers MLX Metal
+# device init (SIGABRT if Metal unavailable). Only collect known-safe files
+# unless MLX_AVAILABLE=1 is set in the environment.
+_SAFE_WITHOUT_MLX = {
+    "test_hypercar_tools.py",
+    "test_eval_mmlu_pro.py",
+    "test_ttt_verifier.py",
+}
+
+collect_ignore = []
+if not os.environ.get("MLX_AVAILABLE"):
+    # Build ignore list: any test_*.py that imports omlx (chains to MLX SIGABRT)
+    _tests_dir = Path(__file__).parent
+    for _f in _tests_dir.rglob("test_*.py"):
+        if _f.name in _SAFE_WITHOUT_MLX:
+            continue
+        try:
+            _content = _f.read_text(encoding="utf-8")
+            if "from omlx" in _content or "import omlx" in _content:
+                collect_ignore.append(str(_f))
+        except Exception:
+            pass
 
 import pytest
 
