@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 37 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 38 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 24-b**: Probe MLX argpartition speed for Quest top-K page selection (2026-04-15)
+  - ALL configurations PASS (<200µs/head budget) — Quest is viable as written
+  - At 1M context (8K pages): ~40µs/head. At 8M context (64K pages): ~80µs/head
+  - argpartition and argsort have identical speed on MLX 0.31.1 (~30-80µs/head)
+  - K value (16-256) has negligible impact on timing — slice is free
+  - No custom Metal top-K kernel needed; Task 3's Quest implementation can ship
 - **Task 32**: ProMoE offline expert activation frequency profiling (2026-04-15)
   - New `scripts/moe_profile_expert_activation.py` — hooks 48 MoE router gates via TrackedGate wrapper
   - 4379 tokens of mixed coding prompts across 8 calibration prompts (Python, Rust, JS, SQL, etc.)
