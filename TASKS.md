@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-14 — 27 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-14 — 31 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
