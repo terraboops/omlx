@@ -1,0 +1,47 @@
+10:56:44 omlx.bench.hypercar INFO KV mode: duo, bits: 3
+10:56:44 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+10:56:44 omlx.bench.hypercar INFO System memory: 51.5 GB
+10:56:44 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+10:56:44 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+10:56:44 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+10:56:44 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+10:56:45 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 20593.96it/s]
+10:56:56 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+10:56:56 omlx.bench.hypercar INFO Model loaded in 11.4s (lazy — first forward will materialize)
+10:56:56 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+10:57:38 omlx.bench.hypercar INFO   Warmup done in 42.0s (Metal cache primed, memory cleared)
+10:57:38 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+10:57:38 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+10:57:38 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:38 omlx.bench.hypercar INFO   Smoke output: ' This is my first post on this blog. I'
+10:57:38 omlx.bench.hypercar INFO   Prefill: 88 tok/s  Decode: 50.2 tok/s
+10:57:38 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+10:57:38 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:39 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+10:57:39 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:40 omlx.bench.hypercar INFO   Code check: PASS — '\nprint("Hello, World!")\n\nprint("Hello, World!")<|endoftext|>'
+10:57:40 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+10:57:40 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:41 omlx.bench.hypercar INFO   PASS: factorial
+10:57:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:41 omlx.bench.hypercar INFO   PASS: reverse_string
+10:57:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:41 omlx.bench.hypercar INFO   PASS: is_palindrome
+10:57:41 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:43 omlx.bench.hypercar INFO   PASS: fibonacci
+10:57:43 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:44 omlx.bench.hypercar INFO   PASS: flatten_list
+10:57:44 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+10:57:44 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+10:57:44 omlx.bench.hypercar INFO   NIAH @ 4K context...
+10:57:44 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+10:57:55 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Here is some code:\n'
+10:57:56 omlx.bench.hypercar INFO   NIAH @ 16K context...
+10:57:56 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+11:00:11 omlx.bench.hypercar ERROR MEMORY BREACH: Swap delta 12.9GB > 12.9GB limit

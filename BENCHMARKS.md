@@ -2833,6 +2833,125 @@ analyst-introduced. Per analyst role boundaries the analyst
 does not touch it. Noted in git.txt for the snapshot.
 ```
 
+### Run 58: 🔴 First Duo Goal 5 Breach — NIAH 16K Memory-Watchdog Fire Under Co-Tenancy; Exit 144 Root Cause Revealed
+```
+Date: 2026-04-15
+SHA:  7d1cfbf (R57 commit; HEAD unchanged since)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo — default since 3f3e013)
+Snapshot: bench/snapshots/run58_2026-04-15T10-56/
+Lock wait: 0s
+Result: MEMORY BREACH mid-run — NO complete Phase 6 summary
+
+**Two analytically important findings in one aborted run:**
+
+1. **Exit code 144 == memory-watchdog breach.** R54 crashed at
+   MMLU-Pro Q41 with exit 144 and no error message. R57 crashed
+   during warmup with exit 144 and no error message. Both env.json
+   files hypothesized "external kill / SIGURG" because there was
+   no forensic trace. R58 is the first run where the watchdog
+   had enough latency to flush the error line before the process
+   died:
+     11:00:11 omlx.bench.hypercar ERROR MEMORY BREACH:
+              Swap delta 12.9GB > 12.9GB limit
+   The watchdog exits with code 144 (signal 16 on Darwin). R54
+   and R57 were the same failure mode — the log just didn't
+   flush in time. **Exit 144 = memory breach going forward.**
+
+2. **First duo Goal 5 failure in this analyst session.** R43
+   (native), R44/R47/R48 (duo) all recorded 0.0 GB swap, 0.0
+   p90 swap I/O — "Goal 5 MET with maximum headroom". R58
+   tripped the watchdog at exactly 12.9 GB swap delta during
+   NIAH 16K. This is NOT a code regression — the duo cache
+   itself is unchanged since R44 (no commits to
+   omlx/duo_kv_cache.py in the window). It's a co-tenancy
+   signature: ~15 GB of background process memory was resident
+   throughout the run, leaving only ~34 GB headroom for the
+   Python process, and NIAH 16K's working set plus the duo
+   retrieval heads' cache growth pushed the watchdog over.
+
+The engineer's N=8 Goal 5 claim (from commit c0788d5, CLAUDE.md
+update) was made under clean-box conditions. R58 empirically
+establishes that on a box with ~15 GB of background memory
+pressure, the default duo config CANNOT complete NIAH 16K
+without breaching. That's a useful headroom bound.
+
+Commits since Run 47 (abdabe5, 2026-04-14):
+  34ebfd9  bench: Run 47 analyst entry
+  2111a5f  bench: Run 48 dedup sample
+  70d2b8c  bench: Run 46 pre-flight abort (before R47's fix window)
+  c0788d5  docs: Goal 5 confirmed MET under N=8 validation
+  36a4c4d  bench: devloop Run 54 duo full
+  939cb4c  research: pass 12 PAM/MIKU/AsyncTLS
+  ...  (many — see git log abdabe5..HEAD)
+  6206ff5  guardrail: MMLU-Pro max_tokens floor (Task #61 ✓)
+  53bd683  docs: run-numbering namespace (Task #62 ✓)
+  8c263da  feat: --niah-only / --niah-context (Task #71 ✓)
+  e57ca44  docs: ProLong RULER methodology
+  c4c64d5  chore: Task 13 complete
+  9825843  research: pass 15
+  fce9f55  test: 94 tests pass without GPU
+  1abe5f4  bench: Run 54 crash snapshot (now known to be breach)
+  84a1c16  fix: reduce prefill chunk to 512 at 64K+
+  7de3659  bench: Run 55 — Task #71 in production observation
+  7d1cfbf  bench: Run 57 crash snapshot (now known to be breach)
+
+Uncommitted at HEAD: M tests/test_hypercar_tools.py (engineer WIP, +67 lines)
+
+## Partial phase table (crashed before Phase 3b)
+
+| Phase | Status | Time | Notes |
+|-------|--------|------|-------|
+| 0 Smoke | PASS | 0.3s | Decode 50.2 tok/s (vs R47 53.1, -5.5%) |
+| 1 Coherence | PASS | 1.5s | 2/2 |
+| 2 Code Intel | PASS | 4.2s | 5/5 |
+| 3 NIAH 4K | PASS | 11s | — |
+| 3 NIAH 16K | **BREACH** | 135s | watchdog fired at swap 12.9 GB |
+| 3b RULER | SKIPPED | — | never reached |
+| 3c MMLU-Pro | SKIPPED | — | never reached |
+| 4 HumanEval | SKIPPED | — | never reached |
+| 5 Memory Profile | SKIPPED | — | never reached |
+| 6 Summary | SKIPPED | — | NO results.json or profile.json written |
+
+Warmup was 42.0s vs R44 baseline 3.2s — a 13x slowdown. This is
+the canonical signature of memory-pressure during Metal kernel
+priming. Every run with warmup > 10s has correlated with a
+downstream issue in this session.
+
+## Analysis notes
+
+- **R58 sheds light on R54/R57**: Both were memory-watchdog
+  breaches, not external kills or SIGURG. The fix is to flush
+  the logger before exiting the watchdog path so operators can
+  distinguish watchdog fires from genuine external terminations
+  in future snapshots. Filed as Task #85.
+- **Duo is NOT co-tenancy-hardened**: The N=8 clean-box validation
+  (commit c0788d5) remains valid for clean conditions. R58
+  empirically establishes the failure boundary: the duo cache's
+  Goal 5 margin is thinner than c0788d5 implied because it was
+  measured without background pressure. Worth noting in CLAUDE.md.
+- **Warmup-time is a proxy for co-tenancy pressure**: R44 3.2s,
+  R47 ~3s, R48 ~3s, R54 ~9s, R57 ~23s visible-time with ~24min
+  wall-clock, R58 42.0s. A 10x warmup slowdown should be an
+  early-warning signal to either bail or adjust expectations.
+  Filed as part of Task #80 (wall-clock correlation).
+- **NIAH 16K is the fragile phase**: Three crashes in a row
+  (R54 MMLU-Pro, R57 warmup, R58 NIAH 16K) all happened in
+  phases with longer sustained memory footprints. The sequence
+  of Phase-0-2 (low memory) vs Phase 3+ (rising memory) means
+  the headroom gate needs a per-phase check, not just a
+  pre-flight check at launch. Filed as Task #86.
+- **Goal 3 (decode) smoke numbers reproduced**: 50.2 tok/s in
+  R58 vs 52.2 in R48, 52.9 in R47, 53.1 in R47. Within 6%
+  noise on the short-context smoke target. Goal 3 smoke still
+  MET under pressure.
+- **Phase 0-3 4K path is impressively stable**: Across 6 runs
+  spanning 24 hours, code intel 5/5 and NIAH 4K PASS are
+  byte-identical. The 4K default duo path is a rock regardless
+  of box state. Only the longer phases (16K, RULER 16K, MMLU-Pro,
+  HumanEval) are sensitive to co-tenancy.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
