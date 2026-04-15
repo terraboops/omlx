@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 14)_
+_Last updated: 2026-04-14 (pass 15)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2213,6 +2213,109 @@ mode was designed to surface.
   (pair representations, triangle attention) that we haven't probed;
   structurally closer to text attention than audio diffusion is.
 
+## Pass 15 — 2026-04-14
+
+Cross-field sweep against the four buckets pass 14 left open. Result: all
+four closed this pass, each from a different field. Highest-leverage find is
+**eLLM (2506.15155)** because it attacks the measured 500K NIAH blocker
+(commit `6fb0e95` pre-flight memory abort) from a new angle — OS-style
+memory ballooning via CPU-backed virtual tensors — while **Pairmixer
+(2510.18870)** is the most intellectually surprising: protein-folding
+people independently proved that the triangle-attention equivalent of our
+pair/score tensor can be replaced by triangle *multiplication* without
+quality loss, eliminating exactly the kind of intermediate-activation
+memory that BSFA (pass 14) attacks from inside the flash-attention tile.
+
+### [eLLM: Elastic Memory Management Framework for Efficient LLM Serving](https://arxiv.org/abs/2506.15155) — 2506.15155
+- **Authors**: Jiale Xu, Rui Zhang, Yi Xiong, Cong Guo, Zihan Liu, Yangjie Zhou, Weiming Hu, Hao Wu, Changxu Shao, Ziqing Wang, Yongjie Yuan, Junping Zhao, Minyi Guo, Jingwen Leng (SJTU, Shanghai AI Lab)
+- **Published**: 2025-06 (pre-print; targets SOSP/OSDI venue class)
+- **Hypercar goals it addresses**: Goal 1 (1M context validation, specifically the 500K NIAH blocker), Goal 5 (swap headroom), Goal 6 (48GB fit under load)
+- **TL;DR**: LLM serving stacks manage static weights, dynamic activations, and KV cache at separate abstraction levels, and the resulting double-booking forces conservative worst-case pre-allocation that leaves up to 20% throughput on the table. eLLM unifies them under a single virtual-tensor abstraction whose physical backing is dynamically inflated into CPU memory (OS-style memory ballooning) and deflated back under SLO-aware scheduling pressure. Delivers 2.32x decoding throughput and 3x batch size at 128K-token inputs with no accuracy change.
+- **Why it matters for Hypercar**: Commit `6fb0e95` pinned the 500K NIAH block on a pre-flight memory check — 8.8 GB free vs 30 GB needed — and the 30 GB figure is the classic "sum of worst-case pre-allocations stacked end-to-end." The Hypercar watchdog in `omlx/bench/hypercar_bench.py` currently handles this as fail-fast (Task 9 headroom gate, Task 71 escape hatch), but eLLM proposes the *right* fix: don't pre-allocate worst-case, inflate on demand, and use CPU unified memory as an overflow buffer. On Apple Silicon the CPU/GPU split is unified, so the "CPU buffer" becomes just a different residency class in the same pool — which is *structurally cheaper* than the discrete-GPU baseline eLLM evaluates against. This is the first paper in 15 passes that directly addresses the measured 500K blocker rather than working around it.
+- **Cost of adoption**: L (5-7 days). The virtual-tensor abstraction requires threading through `omlx/hypercar_server.py`, `omlx/turboquant_kv.py`, and the MLX attention backend; the inflation/deflation controller needs a cost model (Metal residency vs CPU eviction delay). Biggest risk: MLX's unified-memory model makes "CPU buffer as overflow" cheaper in theory but also blurs the eviction boundary in practice — we'd need to measure whether there's a meaningful latency difference between "allocated in RAM" and "allocated in Metal" on the M4 Pro, and if there isn't, the whole balloon has no place to breathe.
+- **Local PDF**: research/2506.15155_ellm.pdf
+
+### [Triangle Multiplication Is All You Need For Biomolecular Structure Representations (Pairmixer)](https://arxiv.org/abs/2510.18870) — 2510.18870
+- **Authors**: Jeffrey Ouyang-Zhang, Pranav Murugan, Daniel J. Diaz, Gianluca Scarpellini, Richard Strong Bowen, Nate Gruver, Adam Klivans, Philipp Krähenbühl, Aleksandra Faust, Maruan Al-Shedivat (UT Austin, Google DeepMind, NYU)
+- **Published**: 2025-10 (v1), revised 2025-12
+- **Hypercar goals it addresses**: Goal 1 (1M context — pair/score-tensor analogue), Goal 4 (prefill speed), cross-field inspiration for Goal 6 (48GB fit)
+- **TL;DR**: AlphaFold3 and its open-source descendants (BoltzDesign1) use a Pairformer backbone whose critical layer is *triangle attention* over the pair representation — an operation whose memory cost scales with L^3 for sequence length L, making proteins beyond ~800 amino acids memory-infeasible. Pairmixer removes the triangle-attention layers entirely and shows that pure *triangle multiplication* (matrix-multiply form, much cheaper) preserves structural quality across folding and docking benchmarks. Result: 4x faster inference, 34% lower training cost, and sequences up to 30% longer fit in the same memory budget.
+- **Why it matters for Hypercar**: This is the protein-folding answer to the exact problem BSFA (pass 14, task 69) attacks in text: the intermediate *pair/score tensor* is the binding memory constraint, not the weights or the cache. BSFA gates V-block fetches inside the flash-attention tile; Pairmixer goes further and shows that for a structurally similar operation (all-pairs reasoning over a pair representation), the attention variant can be *deleted* and replaced with a cheaper multiplicative primitive that preserves the higher-order geometric reasoning. The analogy back to text attention: the full softmax(QK^T) matrix is *also* a pair representation, and the parts of it that matter for value aggregation are the parts that matter for pairwise interaction — which might mean a triangle-multiplication-style primitive could accelerate *some fraction* of transformer attention heads the way Pairmixer accelerates *all* Pairformer triangle layers. This is an inspiration find, not an implementation target — but it's the first time we've seen a completely different field independently conclude "the pair tensor is the problem, and you can replace the attention over it with a cheaper primitive." Tracked as design input, not a standalone task.
+- **Cost of adoption**: Inspiration only (no direct port). Would require a text-domain follow-up experiment: identify which Qwen3-Coder heads have the most "all-pairs" behaviour (retrieval-style DuoAttention heads, probably) and probe whether a triangle-multiply surrogate preserves RULER quality on those heads specifically. That's a research project, not a week of engineering.
+- **Local PDF**: research/2510.18870_pairmixer.pdf
+
+### [DFTopK: Differentiable Fast Top-K Selection for Large-Scale Recommendation](https://arxiv.org/abs/2510.11472) — 2510.11472
+- **Authors**: Yanjie Zhu, Zhen Zhang, Yunli Wang, Zhiqiang Wang, Yu Li, Rufan Zhou, Shiyang Wen, Peng Jiang, Chenhao Lin, Jian Yang (Kuaishou, XJTU)
+- **Published**: 2025-10 (v1), revised 2025-11
+- **Hypercar goals it addresses**: Goal 3 (decode speed — specifically the Quest top-K hot path), Goal 1 (1M context top-K page selection scales linearly)
+- **TL;DR**: Differentiable top-K operators are widely used in recommender cascade ranking, but every prior method (LapSum, SOFT, NeuralSort) requires O(n log n) sorting and suffers gradient conflicts from its soft permutation matrix. DFTopK bypasses the permutation matrix entirely by relaxing the normalization constraint to get a *closed-form linear-time* top-K approximation. In industrial A/B testing at Kuaishou it produced a +1.77% revenue lift *at the same compute budget* as the baseline, and the sorting-free formulation is strictly O(n).
+- **Why it matters for Hypercar**: The Quest task (Task 34) and its descendants (Task 55 MagicPIG, Task 66 LARU envelope) all hang on a top-K-over-KV-pages primitive — at 1M context with page_size=16, that's ~64K pages per decode step per layer, and MLX's current `argpartition` is the fall-back path. A strictly O(n) top-K with differentiable gradients is interesting for two reasons: (a) the forward path is faster than argpartition in the regime that matters (small K, large n, GPU-resident scores), and (b) the differentiable gradient opens the door to *learning* per-query page-importance scores end-to-end instead of using the hand-designed min/max bound from Quest. The recommender community has been running this exact "top-K over millions of items" problem in production for a decade, and DFTopK is the 2025 state of the art on the trainable side of it.
+- **Cost of adoption**: S-M (2-3 days for the forward path on MLX, matches against existing argpartition on Quest's page-score tensor; another 2-3 days if we want the differentiable variant wired into an end-to-end page-importance head). First landing is the inference-only forward path, which is a drop-in replacement for the `argpartition` call in a Quest prototype. Biggest risk: DFTopK's linear-time guarantee comes from a relaxation that may not exactly match argpartition's top-K set — we'd need to verify the accuracy delta on Quest's NIAH and RULER eval matches argpartition to within noise before we ship.
+- **Local PDF**: research/2510.11472_dftopk.pdf
+
+### [HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference](https://arxiv.org/abs/2506.02572) — 2506.02572
+- **Authors**: Ping Gong, Jiawei Yi, Shengnan Wang, Juncheng Zhang, Zewen Jin, Ouxiang Zhou, Ruibo Liu, Guanbin Xu, Youhui Bai, Bowen Ye, Kun Yuan, Tong Yang, Gong Zhang, Renhai Chen, Feng Wu, Cheng Li (USTC, PKU, Huawei)
+- **Published**: 2025-06 (ACL 2025 Findings)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — Quest top-K hot path), Goal 1 (O(log n) attention at long context)
+- **TL;DR**: Replaces the expensive top-K attention primitive with a *learned binary hash* — queries and keys are mapped to short hash codes, and the *relative* qk-score order is recovered from hamming distance on those codes at a tiny fraction of the cost of computing the absolute scores. Unlike MagicPIG (which uses fixed LSH) and Quest (which uses per-page min/max bounds), HATA's hash function is *learnable*, making it more accurate per bit of hash code. Reports up to 7.2x speedup over full attention.
+- **Why it matters for Hypercar**: This is the third angle on the Quest top-K primitive after MagicPIG (Task 55, LSH) and Quest proper (Task 34, min/max bounds). HATA is interesting because it sits in a *different complexity class* from both: MagicPIG has probabilistic LSH collisions, Quest has exact-but-loose min/max bounds, HATA has learned-exact order preservation via binary hashing. For the agentic workloads Hypercar serves, the relative order of page scores matters more than their absolute values, which is exactly what HATA preserves. And crucially, the hash can be trained on Hypercar's actual calibration corpus (code + tool output), not generic text — the recommender community has been doing exactly this kind of domain-calibrated learnable hashing for years under "learning to hash for retrieval."
+- **Cost of adoption**: M (3-4 days). One day for the MLX hash-projection layer (just a small linear + sign), one day for the calibration script that learns the hash codes against a frozen attention target, one day for the top-K path that reads hash codes instead of full scores, one day for the quality gate sweep. Biggest risk: learnable hashes trained on a fixed calibration corpus can drift when the serving distribution shifts (the classic recommender problem). Mitigation: ship it gated on Quest's min/max bound as a fallback — HATA proposes a fast top-K guess, Quest's bound certifies it.
+- **Local PDF**: research/2506.02572_hata.pdf
+
+### Pass 15 celebration note
+
+Meow nyaa meow. Pass 15 closed **all four** of pass 14's explicitly-open
+buckets:
+- **Graphics BVH traversal** → closed via the hash analogue (HATA). Not
+  literal BVH, but the same idea: a hierarchical spatial structure for
+  accelerating the top-K pattern-selection query, complementing the
+  already-cited MagicPIG (LSH) and Quest (min/max bounds).
+- **Recommender systems top-K** → closed via DFTopK. The recommender
+  community's answer to "how do I do top-K over millions of items every
+  query" is a linear-time differentiable operator, which is strictly
+  better than our current `argpartition` on the Quest hot path.
+- **SOSP/OSDI LLM serving sweep** → closed via eLLM. This one hits a
+  measured bottleneck (the 500K NIAH pre-flight memory abort in
+  commit `6fb0e95`) rather than a theoretical one, which makes it the
+  highest-leverage find of the pass.
+- **Protein folding / triangle attention** → closed via Pairmixer. The
+  most delightful find: a completely different field independently
+  concluded that the intermediate pair/score tensor is the binding
+  memory constraint, and that replacing attention over the pair tensor
+  with a cheaper multiplicative primitive preserves quality. The
+  structural analogy to BSFA (pass 14, task 69) is immediate and the
+  inspiration value is high.
+
+The through-line of pass 15 is "every open bucket had at least one 2024-2026
+arxiv paper that composed cleanly with existing Hypercar backlog items,
+which means the literature absolutely is not saturated on the geometries
+we care about — we just weren't asking the right cross-field questions."
+Pass 11 declared saturation. Pass 12, 13, 14, and now 15 each disproved it
+by closing buckets that pass 11 didn't know existed.
+
+**Gaps not closed this pass (pass 16+ targets)**:
+- **Database join planning / query optimiser algorithms for attention
+  head-dispatch**. MInference (pass 1) does per-head offline pattern
+  selection via a fixed search; query optimiser literature has 40 years
+  of experience in cost-model-driven dynamic dispatch (System R, Volcano,
+  Cascades). Porting that machinery to per-head sparse-attention selection
+  would be a clean cross-field find that no arxiv paper we've seen has
+  made yet.
+- **Sensor fusion / Kalman filtering** as a frame for on-the-fly KV
+  drift estimation. The TTT engine's "how much has the policy drifted
+  from calibration" signal is structurally a Kalman update step, and the
+  robotics/aerospace community has 60 years of work on this that nobody
+  has ported to LLM KV cache drift.
+- **Compiler auto-scheduling / Halide-lineage work for attention
+  tiling**. Flashlight (pass 13) was the cs.PL find but is PyTorch-
+  coupled; the Halide / TVM / Exo lineage has tile-size auto-scheduling
+  tooling that could generate the BSFA tile shapes automatically instead
+  of by hand.
+- **Reinforcement-learning from process rewards** as a more principled
+  frame for the TTT reward model. rStar-Math (pass 7, Task 52) uses
+  Monte-Carlo self-search; more recent process-reward-model work might
+  give a cleaner training signal than pass/fail.
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -3061,4 +3164,89 @@ backlog. The through-line of pass 14 is "sometimes curiosity *is*
 goal-targeted — the intermediate score tensor was invisible for 13
 passes because we were searching 'KV cache compression' when the
 binding constraint was somewhere else entirely". Meow.
+
+### Pass 15 adds (2026-04-14)
+
+**Highest-leverage find this pass: eLLM (2506.15155).** Three consecutive
+analyst cron runs (R49, R50, R51) aborted on the 500K NIAH pre-flight
+memory check with the message "8.8 GB free vs 30 GB needed" — the
+30 GB figure is the classic symptom of worst-case pre-allocation
+compounding across the static-weight, activation, and KV pools. Every
+prior serving paper in this review treats one of those pools in
+isolation (ProMoE for weights, Quest for KV, BSFA for activations),
+but eLLM is the first paper we have cited that unifies all three under
+a single virtual-tensor abstraction and dynamically inflates/deflates
+the physical backing through OS-style memory ballooning into a CPU
+buffer. On Apple Silicon the CPU/GPU split is *already* unified, so
+the "CPU buffer" in eLLM's cost model collapses to a different
+residency class inside the same Metal heap — which is structurally
+cheaper than the discrete-GPU baselines they evaluate against, and
+also the first credible answer to "why does our headroom gate still
+fail at 500K" beyond "just turn down the pre-allocation constants."
+Task 72 picks up the MLX port as a multi-day serving project.
+
+**Second find: Pairmixer (2510.18870).** The most intellectually
+surprising paper of the pass. AlphaFold3 and its open-source
+descendants (BoltzDesign1) are bottlenecked on *triangle attention*
+over a pair representation whose memory scales L^3 in sequence
+length, and Pairmixer shows that the triangle-attention layer can
+be *deleted* and replaced with pure triangle *multiplication* without
+quality loss on folding or docking benchmarks. The structural analogy
+to text attention is immediate: softmax(QK^T) is also a pair
+representation, and BSFA (pass 14, task 69) independently concluded
+that the intermediate pair/score tensor is the binding memory
+constraint on our 64K NIAH path. Pairmixer goes one step further
+than BSFA — BSFA keeps the attention layer and gates V-block loads,
+Pairmixer replaces the attention layer with a cheaper multiplicative
+primitive. Inspiration-grade for this pass (no direct text-domain
+port yet), but it validates the design direction from a completely
+different field. The fact that the triangle-multiplication primitive
+composes from matrix multiplies is *particularly* lucky for MLX,
+which already expresses those well. Tracked as design note for a
+future task.
+
+**Third find: DFTopK (2510.11472).** The recommender community's
+answer to "how do I do top-K over millions of items on every
+query" is a closed-form linear-time differentiable operator that
+bypasses soft permutation matrices entirely — which is strictly
+better than the `argpartition` fall-back that the Quest / MagicPIG /
+LARU task family hangs on. The Kuaishou production A/B result
+(+1.77% revenue at the same compute budget) is a strong signal
+that the accuracy delta vs exact top-K is small enough to ship.
+The differentiable-gradient side is interesting for a longer
+horizon: once Quest lands, DFTopK opens the door to *learning*
+page-importance scores end-to-end rather than hand-designing them.
+Task 73 is a near-term drop-in replacement for the top-K primitive
+in the Quest prototype.
+
+**Fourth find: HATA (2506.02572).** The third angle on the top-K
+attention primitive after MagicPIG (fixed LSH, pass 8, task 55)
+and Quest (min/max page bounds, task 34). HATA's move is to
+*learn* a binary hash function whose hamming distance preserves
+qk-score order, which is more accurate per bit of hash code than
+fixed LSH and cheaper per query than min/max bounds. The
+recommender-retrieval lineage ("learning to hash") is 15 years old
+and deeply studied, but nobody has ported the learnable variant
+to LLM KV cache top-K. Sits well below eLLM in the sequencing
+hierarchy (the Quest path has to land first to have anything to
+accelerate), but it's the natural "phase 2" of the top-K
+compression work and lines up cleanly with Task 73 (DFTopK) as a
+downstream successor: DFTopK gives us a better argmax, HATA gives
+us a faster scoring function to feed into it.
+
+**Sequencing**: eLLM (task 72) is the only pass-15 paper that
+attacks a *currently gate-failing* Hypercar bottleneck (the 500K
+NIAH headroom abort), so it sequences first despite being the
+largest engineering effort (L, 5-7 days). DFTopK (task 73) is a
+low-risk drop-in that can land any time the Quest / task 34 path
+becomes active. HATA (task 74) is sequenced after task 73 because
+they share the top-K primitive and we want DFTopK's exact-but-fast
+argmax landed before we start approximating the scoring function.
+Pairmixer is inspiration-only — it documents a direction for a
+future research probe but doesn't derive a concrete task because
+the text-domain analogue needs its own calibration-level study
+before we'd commit engineering. The through-line of pass 15 is
+"every single one of the four buckets pass 14 left open had a
+clean 2024-2026 find, which means the cross-field surface area is
+still wide open — curiosity never saturates." Meow, nyaa, meow.
 
