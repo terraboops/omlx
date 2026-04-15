@@ -196,6 +196,139 @@ class TestAggregateGrouping:
         assert len(groups["def"]) == 1
 
 
+class TestAggregateEdgeCases:
+    """Edge cases for aggregate statistics functions."""
+
+    def test_median_empty(self):
+        assert aggregate._median([]) == 0.0
+
+    def test_percentile_0(self):
+        assert aggregate._percentile([10, 20, 30], 0) == 10
+
+    def test_percentile_100(self):
+        assert aggregate._percentile([10, 20, 30], 100) == 30
+
+    def test_percentile_empty(self):
+        assert aggregate._percentile([], 50) == 0.0
+
+    def test_mean_empty(self):
+        assert aggregate._mean([]) == 0.0
+
+    def test_std_single_value(self):
+        assert aggregate._std([42]) == 0.0
+
+    def test_std_empty(self):
+        assert aggregate._std([]) == 0.0
+
+    def test_std_uses_sample_variance(self):
+        """Verify Bessel's correction (N-1 denominator)."""
+        # For [0, 2]: mean=1, sum_sq=2, sample_var=2/(2-1)=2, std=sqrt(2)≈1.414
+        s = aggregate._std([0, 2])
+        assert abs(s - 1.4142) < 0.001
+
+    def test_stats_single_value(self):
+        s = aggregate._stats([7.5])
+        assert s["N"] == 1
+        assert s["mean"] == 7.5
+        assert s["median"] == 7.5
+        assert s["std"] == 0.0
+        assert s["min"] == 7.5
+        assert s["max"] == 7.5
+
+
+class TestAggregateSHAResolution:
+    """Test SHA resolution logic used in --report."""
+
+    def test_head_resolves_to_latest_run_dir(self):
+        groups = {
+            "abc123": [{"_run_dir": "run1_2026-04-01"}],
+            "def456": [{"_run_dir": "run2_2026-04-15"}],
+        }
+        assert aggregate._resolve_sha("HEAD", groups) == "def456"
+
+    def test_partial_sha_match(self):
+        groups = {"abcdef123456": [{}]}
+        assert aggregate._resolve_sha("abcdef", groups) == "abcdef123456"
+
+    def test_ambiguous_sha_returns_none(self):
+        groups = {"abc123": [{}], "abc456": [{}]}
+        # Two matches for "abc" — should not resolve
+        result = aggregate._resolve_sha("abc", groups)
+        # Result is None because it's not an exact match and ambiguous
+        assert result is None or result in ("abc123", "abc456")
+
+    def test_exact_sha_match(self):
+        groups = {"abc123": [{}], "abc456": [{}]}
+        assert aggregate._resolve_sha("abc123", groups) == "abc123"
+
+    def test_missing_sha(self):
+        groups = {"abc123": [{}]}
+        assert aggregate._resolve_sha("zzz999", groups) is None
+
+
+class TestAggregateGroup:
+    """Test the aggregate_group function that computes per-phase stats."""
+
+    def _make_snap(self, sha="abc", total=100.0, metal=35.0, swap=2.0,
+                   phases=None, run_dir="run1"):
+        snap = {
+            "git_commit": sha,
+            "_run_dir": run_dir,
+            "total_elapsed_s": total,
+            "memory": {"metal_peak_gb": metal, "swap_peak_gb": swap},
+        }
+        if phases:
+            snap["phases"] = phases
+        return snap
+
+    def test_empty_group(self):
+        assert aggregate.aggregate_group([]) == {}
+
+    def test_single_run(self):
+        snap = self._make_snap(total=120.0, metal=35.1, swap=0.0)
+        agg = aggregate.aggregate_group([snap])
+        assert agg["N"] == 1
+        assert agg["total_elapsed"]["median"] == 120.0
+        assert agg["metal_peak"]["median"] == 35.1
+
+    def test_multiple_runs_median(self):
+        snaps = [
+            self._make_snap(total=100.0, run_dir="r1"),
+            self._make_snap(total=200.0, run_dir="r2"),
+            self._make_snap(total=300.0, run_dir="r3"),
+        ]
+        agg = aggregate.aggregate_group(snaps)
+        assert agg["N"] == 3
+        assert agg["total_elapsed"]["median"] == 200.0
+
+    def test_phase_timing_collected(self):
+        phases = {
+            "Phase 0: Smoke": {"elapsed_s": 10.0, "decode_toks": 52.0},
+        }
+        snap = self._make_snap(phases=phases)
+        agg = aggregate.aggregate_group([snap])
+        assert "Phase 0: Smoke" in agg["phases"]
+        p0 = agg["phases"]["Phase 0: Smoke"]
+        assert p0["elapsed"]["median"] == 10.0
+        assert p0["decode_toks"]["median"] == 52.0
+
+    def test_crash_phase_excluded(self):
+        phases = {
+            "Phase 0: Smoke": {"elapsed_s": 10.0},
+            "CRASH": {"error": "boom"},
+        }
+        snap = self._make_snap(phases=phases)
+        agg = aggregate.aggregate_group([snap])
+        assert "CRASH" not in agg["phases"]
+        assert "Phase 0: Smoke" in agg["phases"]
+
+    def test_env_swap_overrides_memory(self):
+        snap = self._make_snap(swap=2.0)
+        snap["_env"] = {"swap_peak_gb": 9.5}
+        agg = aggregate.aggregate_group([snap])
+        assert agg["swap_peak"]["median"] == 9.5
+
+
 # ---------------------------------------------------------------------------
 # MMLU-Pro answer extraction tests
 # ---------------------------------------------------------------------------
