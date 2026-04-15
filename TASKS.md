@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 34 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 35 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 87**: MLX softmax fused-reduction audit + microbench harness (2026-04-15)
+  - New `omlx/bench/softmax_bench.py` microbench: mx.softmax, SDPA, unfused attention at production shapes
+  - Measured mx.softmax at 4.92ms @2K on M4 Pro/MLX 0.31.1 — 5.7x faster than paper's M1 (27.91ms)
+  - Softmax is ~30% of unfused attention; SDPA gives 2.6-2.8x speedup via steel_attention tiling
+  - **VERDICT: Gap closed. No fused shader needed.** Bucket closed, zero follow-on work.
+  - Research note at `research/mlx_softmax_audit.md`, raw data at `research/mlx_softmax_audit.json`
 - **Task 80**: Add wall-clock correlation to bench profiler (2026-04-15)
   - Added `wall_clock_elapsed_s` and `cpu_scheduling_fraction` fields to `ProfileResult`
   - Profiler records `time.monotonic()` at start; computes scheduling fraction as `actual_samples / expected_samples` at stop
