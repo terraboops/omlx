@@ -9,7 +9,9 @@ loop selecting a task to work on, pick from here FIRST. Only fall through
 to the regular sections below if this section is empty or its tasks are
 all in `## In Progress`.
 
-### 22. [HIGH PRIORITY] Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify
+_(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero swap in duo mode.)_
+
+### 22. [COMPLETED] Fix 8-bit model Goal 5 violation — apply `--kv-bits 2` and verify
 - **Goal**: 5 (swap throughput headroom), 6 (M4 Pro 48 GB fit)
 - **Why this is highest priority**: Across 10 benchmark runs
   (Runs 23-32, 2026-04-13), the 8-bit model STRUCTURALLY violates
@@ -655,11 +657,12 @@ _(none)_
   - Depth 16-32: 2-3% agreement — MoE routing makes every layer critical
   - Verdict: **LayerSkip NOT VIABLE** for this MoE model. Expert selection per-layer prevents early exit.
   - Results at `omlx/patches/layerskip_thresholds/qwen3_coder_30b_a3b_instruct_8bit.json`
-- **Task 13** (partial): DuoAttention two-storage-class KV cache scaffolding (2026-04-14)
-  - New `omlx/duo_kv_cache.py` — DuoKVCache class with StreamingKVCache (ring buffer) + QuantizedKVCache (retrieval)
-  - `--kv-mode duo` CLI flag wired into bench
-  - BLOCKED: QuantizedKVCache returns tuples, StreamingKVCache returns arrays — concatenation fails
-  - Needs: per-head attention dispatch that handles mixed cache types, or fp16-only retrieval heads
+- **Task 13**: DuoAttention two-storage-class KV cache — SHIPPED as default mode (2026-04-14)
+  - New `omlx/duo_kv_cache.py` — DuoKVCache with fp16 KVCache (retrieval) + StreamingKVCache ring buffer (streaming)
+  - `--kv-mode duo` is the DEFAULT mode for both bench and server
+  - Original blocker (QuantizedKVCache tuples) resolved by using fp16 KVCache for retrieval heads
+  - Results: MMLU-Pro 64% (was 48%), HumanEval 95% (was 90%), zero swap, 52.4 tok/s decode
+  - ALL GATES PASS in duo mode — 5 of 6 Hypercar goals met
 - **Task 20**: Identify root cause of per-task bimodal timing (2026-04-13)
   - Root cause: Metal shader JIT compilation on first forward pass (~9s on M4 Pro)
   - Evidence: `--warmup` eliminates cold-start (Phase 0: 9s→0.3s, decode: 20→45 tok/s)
