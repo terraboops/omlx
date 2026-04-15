@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 35 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 36 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,14 @@ _(none)_
 
 ## Completed
 
+- **Task 28**: EAGLE-2 tree-attention feasibility probe for MLX (2026-04-15)
+  - `mx.fast.scaled_dot_product_attention` SUPPORTS tree masks — additive mask works correctly
+  - Numerical accuracy vs NumPy reference: max error < 1e-6 across all tested shapes
+  - Tree mask overhead: only 1.03-1.12x vs no-mask baseline (essentially free)
+  - Vanilla fallback would cost 1.4-1.6x — fused path is preferred
+  - At 8K prefix + 21 draft tokens: 1.12ms per verification pass
+  - **VERDICT: EAGLE-2 is FEASIBLE on MLX** — fused SDPA handles tree masks efficiently
+  - Probe script at `scripts/probe_eagle_tree_attn.py`
 - **Task 87**: MLX softmax fused-reduction audit + microbench harness (2026-04-15)
   - New `omlx/bench/softmax_bench.py` microbench: mx.softmax, SDPA, unfused attention at production shapes
   - Measured mx.softmax at 4.92ms @2K on M4 Pro/MLX 0.31.1 — 5.7x faster than paper's M1 (27.91ms)
