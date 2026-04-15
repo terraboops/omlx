@@ -2176,3 +2176,29 @@ _(none)_
 - **Effort**: M (3-4 days). Day 1: hash projection + forward. Day 2: calibration script + training loop. Day 3: wire into the Quest path with defensive Quest-certification. Day 4: quality sweep.
 - **Risk**: Learned hashes trained on a fixed calibration corpus drift when the serving distribution shifts — this is the classic "learning to hash" failure mode. Mitigation is baked into the design: Quest's min/max bounds always certify the final top-K set, so HATA can only ever *propose* faster, never *decide* less accurately. Secondary risk: training a hash projection requires a supervision signal (frozen attention scores), and generating that supervision on Hypercar's target workload is a one-time cost that needs enough prompt diversity to generalise.
 - **Depends on**: Task 34 (Quest prototype) and Task 73 (DFTopK), both of which must land first because HATA is a scoring-function swap *inside* the top-K primitive that those tasks own. If Task 73 lands and materially changes the top-K path, HATA's integration point shifts correspondingly.
+
+
+## Research-derived tasks (from LIT_REVIEW.md pass 16, 2026-04-14)
+
+### 75. Port MegaFold's staged-scratchpad EvoAttention pattern to MLX flash attention
+- **Goal**: 4 (prefill speed), 5 (swap headroom under long-context load)
+- **Derived from**: MegaFold (2506.20686)
+- **Change**:
+  - Add a tiled-score-tensor code path to the MLX attention backend used by `omlx/hypercar_server.py`. Unlike BSFA (Task 69) which gates V-block loads, this path always materialises the score tiles but *never holds the full (N, N) tensor resident* — each tile is consumed by the V-aggregation step before the next tile is computed.
+  - Implementation option A: lean on `mx.fast.scaled_dot_product_attention` if it already does internal tiling we can configure.
+  - Implementation option B: write a `mx.compile`-wrapped chunked attention function that takes explicit `tile_m` and `tile_n` parameters and materialises the score in chunks of `(tile_m, tile_n)`, streaming output accumulation across tiles.
+  - Target: peak intermediate attention memory at 64K context should drop from the 16 GB observed in commit `5d9d207` to under 1 GB.
+- **Verify**: run `omlx.bench.hypercar_bench --full --kv-mode native --mem-profile` at 64K NIAH. Success: peak intermediate attention memory under 1 GB (a 16x reduction) AND decode tok/s within 5% of baseline AND HumanEval 18/20 unchanged.
+- **Effort**: M (2-3 days: 1d investigation of MLX attention internals, 1d implementation, 1d profiling + gate sweep)
+- **Depends on**: none — complements Task 69 (BSFA) but does not require it
+
+### 76. Jagged-tensor scheduler design note for two-tier KV cache (HSTU-CP inspiration)
+- **Goal**: 1 (1M context sharding), 3 (decode parallelism)
+- **Derived from**: HSTU Context Parallelism (2508.04711) — inspiration paper, not direct port
+- **Change**:
+  - Write a design note at `research/design_notes/jagged_kv_schedule.md` that captures the HSTU context-parallelism framing (jagged tensors need jagged schedulers) as applied to DuoAttention's retrieval/streaming head split.
+  - The note should identify: (a) where in `omlx/turboquant_kv.py` the jaggedness lives after Task 13 lands, (b) which MLX primitives (if any) support jagged-shape dispatch, (c) what the minimum viable "jagged scheduler" looks like for a single-device M4 Pro setting (hint: it's likely just careful ordering of compute-vs-residency-hint operations, not true multi-stream parallelism).
+  - This is a *design note* task — it produces a markdown file, not code. It informs Tasks 64 and 65 when they're designed in detail.
+- **Verify**: file exists at `research/design_notes/jagged_kv_schedule.md`, has the three-section structure above, and is referenced from Tasks 64 and 65 for consumption when those tasks are picked up.
+- **Effort**: S (half a day)
+- **Depends on**: none

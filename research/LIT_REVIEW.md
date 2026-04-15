@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 15)_
+_Last updated: 2026-04-14 (pass 16)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2316,6 +2316,69 @@ by closing buckets that pass 11 didn't know existed.
   Monte-Carlo self-search; more recent process-reward-model work might
   give a cleaner training signal than pass/fail.
 
+## Pass 16 — 2026-04-14
+
+Meow. Pass 16 was triggered by a duplicate cron fire — pass 15 was
+already fully committed before this pass opened, so pass 16 does
+something different: instead of searching fresh buckets, we return
+to two of pass 15's closed buckets (protein folding, recommender
+systems) and deliberately look for a **different mechanism** in
+each. Pass 15 closed protein folding via Pairmixer (delete triangle
+attention, replace with triangle multiplication). Pass 16 finds
+MegaFold, which *keeps* triangle attention and makes it
+memory-cheap via Triton kernel fusion + staged scratchpad
+materialisation. Pass 15 closed recommender systems via DFTopK
+(linear-time top-K selection). Pass 16 finds HSTU context
+parallelism, which is *not* about selection at all — it's about
+sharding a jagged-tensor sequence across devices for
+training-throughput gains. Same bucket, different mechanism,
+different angle. Nyaa.
+
+This "second-angle" mode is valuable for buckets where the first
+find was surprising — it cross-validates the field's wisdom. Pass
+15's claim "the pair/score tensor is the binding constraint" is
+*independently* corroborated by MegaFold, which attacks the same
+tensor via a completely different mechanism. That's a stronger
+signal than one paper.
+
+### [MegaFold: System-Level Optimizations for Accelerating Protein Structure Prediction Models](https://arxiv.org/abs/2506.20686) — 2506.20686
+- **Authors**: Hoa La, Ahan Gupta, Alex Morehead, Jianlin Cheng, Minjia Zhang (Illinois, Missouri)
+- **Published**: 2025-06
+- **Hypercar goals it addresses**: Goal 4 (prefill speed, 16GB score-tensor bottleneck), Goal 5 (swap headroom under long-context load)
+- **TL;DR**: MegaFold is a system framework that accelerates AlphaFold3 training through ahead-of-time data caching, specialised Triton kernels, and operator fusion. The key technical contribution is **memory-efficient EvoAttention**: a Triton kernel that avoids ever materialising the large intermediate attention-logits tensor by incrementally materialising it in fast scratchpad memory during the forward pass and recomputing it on-the-fly during backward. Reports up to 1.73x faster training iterations and enables longer sequence processing than the AlphaFold3 reference implementation.
+- **Why it matters for Hypercar**: This is the **third angle** on the 16GB `softmax(QK^T)` tensor problem discovered at 64K NIAH in commit `5d9d207`. Pass 14 filed BSFA (Task 69 — gate V-block loads *inside* the flash tile). Pass 15 filed Pairmixer as inspiration — replace the triangle attention entirely with a multiplicative primitive. MegaFold is the middle ground: *keep* the attention semantics but never materialise the full score tensor, using a forward/backward asymmetric staging pattern (forward uses scratchpad, backward recomputes). For Hypercar the backward pass is irrelevant (we're inference-only), but the forward-pass scratchpad trick is exactly what we need — it's the idiomatic "don't hold the whole (N, N) tensor, stream through it in tiles" pattern adapted to MLX. Complements BSFA: where BSFA's mechanism is "gate which V-blocks get loaded," MegaFold's mechanism is "tile the score tensor itself and never keep more than one tile resident." Both can coexist.
+- **Cost of adoption**: M (2-3 days). The Triton kernel doesn't port — MLX isn't Triton — but the algorithm is simple enough to re-express with `mx.fast.scaled_dot_product_attention` tiling hints (if exposed) or a custom `mx.compile`-wrapped chunked attention. Biggest risk: MLX's unified-memory model already holds the full tensor in a single pool, so the "scratchpad vs HBM" distinction that gives MegaFold its win on Nvidia hardware may not translate into a measurable savings on M4 Pro — we'd need to measure whether MLX's graph optimizer already hoists-and-eliminates the full intermediate, which would make the staged tile pattern a no-op.
+- **Local PDF**: research/2506.20686_megafold.pdf
+
+### [Scaling Generative Recommendations with Context Parallelism on Hierarchical Sequential Transducers](https://arxiv.org/abs/2508.04711) — 2508.04711
+- **Authors**: Yue Dong, Han Li, Shen Li, Nikhil Patel, Xing Liu, Xiaodong Wang, Chuanhao Zhuge (Meta)
+- **Published**: 2025-07 (v1), revised 2025-08
+- **Hypercar goals it addresses**: Goal 1 (1M context sharding), Goal 3 (decode parallelism for jagged shapes)
+- **TL;DR**: Adapts the "context parallelism" technique from LLM training (distribute sequence-dimension computation across devices) to the HSTU recommender architecture, which operates on **jagged tensors** representing variable-length user histories. The key innovation is handling the jaggedness: you cannot just split the sequence dimension evenly because each user's history is a different length. The paper introduces jagged-tensor-aware context parallelism that enables 5.3x longer user-history processing with 1.55x additional throughput when paired with data parallelism.
+- **Why it matters for Hypercar**: This is **inspiration only** — the analogy is hazy but the idea is pointed. DuoAttention (Task 12/13) produces a jagged shape along the *head* dimension: retrieval heads need full KV, streaming heads need a sliding window, and the "jagged" nature of their KV footprints creates exactly the sharding problem HSTU context parallelism solves along the sequence dimension. We do not have multi-GPU, but we do have *disjoint hardware execution paths* on M4 Pro (compute vs memory-hint operations run on different units), and a jagged-tensor-aware dispatch that maps retrieval-head work to the compute stream and streaming-head work to a separate residency-management stream could free some of the "async overlap" value AsyncTLS (Task 65) is trying to capture. This is a design-pattern paper, not a kernel paper — the contribution is the *mental model* of "jagged tensors need jagged schedulers," which will inform how the two-tier TurboQuantKVCache (Task 64) is sharded when it lands.
+- **Cost of adoption**: Inspiration only — no direct task filed. The recipe is HSTU-specific and assumes a multi-GPU production environment we don't have. But the jagged-scheduler concept is worth keeping visible when Task 64 (two-tier KV cache) and Task 65 (async prefetch queue) get designed in detail.
+- **Local PDF**: research/2508.04711_hstu_context_parallel.pdf
+
+### Pass 16 celebration note
+
+Meow nyaa meow. Pass 16 was born out of a cron race (pass 15 was
+already complete when this pass fired) and turned it into a
+feature: second-angle validation of pass 15's two surprising
+closures. The protein-folding bucket produced BOTH Pairmixer (pass
+15 — delete triangle attention) AND MegaFold (pass 16 — fuse
+triangle attention). Having two papers in the same bucket attack
+the same problem via different mechanisms is *stronger* evidence
+that "the pair/score tensor is the binding constraint" than either
+paper alone. Similarly, recommender systems produced BOTH DFTopK
+(pass 15 — linear-time top-K operator) AND HSTU Context Parallelism
+(pass 16 — jagged-tensor sharding). Two angles, two mechanisms,
+same field — the field really does have multiple cards to play.
+
+No new "Gap not closed" directions added this pass — pass 15's list
+stands. Pass 17 should pick up the first item (database join
+planning / query optimiser algorithms for attention head-dispatch)
+or rotate to a completely different cross-field angle.
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -3250,3 +3313,60 @@ before we'd commit engineering. The through-line of pass 15 is
 clean 2024-2026 find, which means the cross-field surface area is
 still wide open — curiosity never saturates." Meow, nyaa, meow.
 
+
+### Pass 16 adds (2026-04-14)
+
+**Pass 16 adds second-angle validation.** Pass 16 was a duplicate-cron
+pass — pass 15 was already fully committed when pass 16 opened, so
+instead of searching fresh buckets, pass 16 returned to two of pass
+15's closed buckets and deliberately looked for a *different
+mechanism* in each. The protein-folding bucket already had Pairmixer
+(delete triangle attention → replace with triangle multiplication);
+pass 16 adds **MegaFold (2506.20686)** which *keeps* triangle
+attention but makes it memory-cheap via Triton kernel fusion and
+staged scratchpad materialisation. The recommender-systems bucket
+already had DFTopK (linear-time top-K); pass 16 adds **HSTU Context
+Parallelism (2508.04711)** which is about *sharding* jagged sequences
+across devices rather than selection. Two papers, two mechanisms,
+same two fields — which is *stronger* evidence that the fields have
+more than one card to play than either pair alone would have been.
+
+**Highest-leverage find: MegaFold (2506.20686).** It's the third
+angle on the 64K NIAH score-tensor bottleneck discovered at commit
+`5d9d207` — after BSFA (Task 69 — gate V-block loads inside the
+flash tile) and Pairmixer (inspiration — delete the triangle
+attention entirely), MegaFold is the middle ground: keep the
+attention semantics, stage the intermediate tensor through
+scratchpad tiles, never hold the full (N,N) matrix at once. For
+Hypercar's inference-only setting the forward-pass scratchpad
+pattern is directly transferable to MLX, even though the Triton
+kernel isn't — Task 75 files the port. BSFA and MegaFold coexist:
+BSFA decides *which* V-blocks get loaded, MegaFold decides *how*
+the score tiles are staged, and they operate at different layers
+of the attention kernel.
+
+**HSTU Context Parallelism is inspiration-only.** The recipe is
+HSTU-specific and assumes multi-GPU production deployment we don't
+have, but the mental model of "jagged tensors need jagged
+schedulers" is worth keeping visible. Tasks 64 (two-tier
+TurboQuantKVCache) and 65 (async KV prefetch) will both produce
+jagged shapes along the head dimension when they land, and the
+design will benefit from HSTU-CP's framing. No task filed — the
+paper stays in LIT_REVIEW.md as a design-pattern reference for
+those downstream tasks.
+
+**Pass 16 celebration.** Born from a duplicate cron fire, turned
+into second-angle validation. This is a useful pattern for future
+passes: when the cron double-fires or the recent pass already
+closed the obvious buckets, use the slot to find *complementary
+mechanisms* in the same fields. Two angles on one problem from one
+field is stronger evidence than one angle from two fields. Meow.
+
+**Pass 17 recommendation**: pick up the top of pass 15's "Gap not
+closed" list — **database join planning / query optimiser
+algorithms for attention head-dispatch**. MInference (pass 1) does
+per-head pattern selection via a one-time offline search; the query
+optimiser literature has 40 years of cost-model-driven dynamic
+dispatch experience (System R, Volcano, Cascades) that nobody has
+ported to LLM sparse attention. That's a genuinely untapped
+cross-field angle for pass 17.
