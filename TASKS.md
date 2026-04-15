@@ -510,6 +510,11 @@ _(none)_
 
 ## Completed
 
+- **Task 86**: Per-phase memory-headroom re-check between phases (2026-04-15)
+  - New `_check_phase_headroom()` helper checks Metal headroom before each heavy phase
+  - Per-phase requirements: NIAH 8 GB, RULER 6 GB, MMLU-Pro 3 GB, HumanEval 3 GB
+  - Phases with insufficient headroom are SKIPPED with WARNING instead of crashing
+  - Prevents R54/R57/R58 pattern: bench completes remaining phases under co-tenancy
 - **Task 85**: Flush logger before exit in memory-watchdog breach path (2026-04-15)
   - Added immediate handler flush + stderr flush + `WATCHDOG-BREACH` sentinel to `_set_breach()`
   - Fixes R54/R57 silent exit 144 — breach reason now always visible in console.txt

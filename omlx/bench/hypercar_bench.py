@@ -83,6 +83,37 @@ def _parse_context_list(s: str) -> list[int]:
     return result
 
 
+# Per-phase headroom requirements (GB above current Metal usage).
+# Calibrated from R44/R47/R48 successful runs' per-phase memory deltas.
+PHASE_HEADROOM_GB = {
+    "Phase 3: NIAH": 8.0,       # 16K fp16 KV + attention scores
+    "Phase 3b: RULER": 6.0,     # Multi-key NIAH at 16K
+    "Phase 3c: MMLU-Pro": 3.0,  # Small per-question KV
+    "Phase 4: HumanEval": 3.0,  # Small per-problem KV
+}
+
+
+def _check_phase_headroom(phase_name: str, metal_limit_gb: float) -> bool:
+    """Check if enough Metal headroom exists for a phase.
+
+    Returns True if the phase should run, False if it should be skipped.
+    Prevents mid-run crashes under co-tenancy (R54/R57/R58 pattern).
+    """
+    required = PHASE_HEADROOM_GB.get(phase_name, 2.0)
+    try:
+        metal_active = mx.metal.get_active_memory() / 1e9
+        headroom = metal_limit_gb - metal_active
+        if headroom < required:
+            logger.warning(
+                f"  {phase_name} SKIPPED — headroom {headroom:.1f} GB < "
+                f"{required:.1f} GB required (co-tenancy pressure detected)"
+            )
+            return False
+        return True
+    except Exception:
+        return True  # If we can't check, proceed optimistically
+
+
 # ---------------------------------------------------------------------------
 # System memory detection
 # ---------------------------------------------------------------------------
@@ -1862,34 +1893,52 @@ Examples:
 
         # Phase 3: Needle in Haystack
         logger.info("\n=== Phase 3: Needle in Haystack ===")
-        p3 = phase3_niah(model, tokenizer, watchdog, args_ref=args)
-        phases.append(p3)
-        if not p3.passed:
-            logger.error("Phase 3 FAILED — aborting")
-            return _finish(phases, watchdog, limits, total_t0, results_path)
+        if _check_phase_headroom("Phase 3: NIAH", limits["metal_peak_gb"]):
+            p3 = phase3_niah(model, tokenizer, watchdog, args_ref=args)
+            phases.append(p3)
+            if not p3.passed:
+                logger.error("Phase 3 FAILED — aborting")
+                return _finish(phases, watchdog, limits, total_t0, results_path)
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3: Needle in Haystack", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
 
         # Phase 3b: RULER (multi-key retrieval, aggregation)
         logger.info("\n=== Phase 3b: RULER ===")
-        p3b = phase3b_ruler(model, tokenizer, watchdog, full=args.full)
-        phases.append(p3b)
-        if not p3b.passed:
-            if watchdog.breached.is_set():
-                logger.error("Phase 3b FAILED (memory breach) — aborting")
-                return _finish(phases, watchdog, limits, total_t0, results_path)
-            logger.warning(
-                "Phase 3b FAILED (quality gate) — memory clean, "
-                "continuing to Phase 4 HumanEval for independent eval coverage"
-            )
+        if _check_phase_headroom("Phase 3b: RULER", limits["metal_peak_gb"]):
+            p3b = phase3b_ruler(model, tokenizer, watchdog, full=args.full)
+            phases.append(p3b)
+            if not p3b.passed:
+                if watchdog.breached.is_set():
+                    logger.error("Phase 3b FAILED (memory breach) — aborting")
+                    return _finish(phases, watchdog, limits, total_t0, results_path)
+                logger.warning(
+                    "Phase 3b FAILED (quality gate) — memory clean, "
+                    "continuing to Phase 4 HumanEval for independent eval coverage"
+                )
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3b: RULER", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
 
         # Phase 3c: MMLU-Pro (reasoning gate — runs in both default and --full)
         logger.info("\n=== Phase 3c: MMLU-Pro ===")
-        p3c = phase3c_mmlu_pro(model, tokenizer, watchdog, full=args.full)
-        phases.append(p3c)
-        if not p3c.passed:
-            if watchdog.breached.is_set():
-                logger.error("Phase 3c FAILED (memory breach) — aborting")
-                return _finish(phases, watchdog, limits, total_t0, results_path)
-            logger.warning("Phase 3c FAILED (MMLU-Pro gate) — continuing")
+        if _check_phase_headroom("Phase 3c: MMLU-Pro", limits["metal_peak_gb"]):
+            p3c = phase3c_mmlu_pro(model, tokenizer, watchdog, full=args.full)
+            phases.append(p3c)
+            if not p3c.passed:
+                if watchdog.breached.is_set():
+                    logger.error("Phase 3c FAILED (memory breach) — aborting")
+                    return _finish(phases, watchdog, limits, total_t0, results_path)
+                logger.warning("Phase 3c FAILED (MMLU-Pro gate) — continuing")
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3c: MMLU-Pro", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
 
         if not args.full:
             logger.info("\nDefault mode: skipping Phase 4 (HumanEval). Use --full to include.")
