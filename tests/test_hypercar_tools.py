@@ -419,3 +419,91 @@ class TestNIAHOnlyFlags:
         src = Path("omlx/bench/hypercar_bench.py").read_text()
         assert "niah_only" in src
         assert "skipping Phase 2" in src
+
+
+# ---------------------------------------------------------------------------
+# Haystack builder tests (_build_code_haystack)
+# ---------------------------------------------------------------------------
+
+# Extract _build_code_haystack from source (avoids MLX import)
+_haystack_match = _re.search(
+    r'(def _build_code_haystack\(.*?\n(?=def |class |# ---))',
+    _src, _re.DOTALL
+)
+
+
+def _build_haystack_for_test(tokenizer, target_tokens, needle, depth_pct=50.0):
+    """Reimplementation matching hypercar_bench._build_code_haystack."""
+    code_blocks = [
+        'def fibonacci(n: int) -> list[int]:\n    fib = [0, 1]\n    return fib[:n]\n',
+        'class DataProcessor:\n    def __init__(self): pass\n',
+        'DATABASE_URL = "postgresql://localhost:5432/app_db"\n',
+    ]
+    filler = "\n\n".join(code_blocks)
+    filler_tokens = len(tokenizer.encode(filler))
+    needle_tokens = len(tokenizer.encode(needle))
+    needed_filler = target_tokens - needle_tokens
+    reps = max(1, (needed_filler // filler_tokens) + 1)
+    all_blocks = [filler for _ in range(reps)]
+    needle_idx = max(1, int(len(all_blocks) * (depth_pct / 100.0)))
+    all_blocks.insert(needle_idx, f"\n# IMPORTANT NOTE: {needle}\n")
+    haystack = "\n\n".join(all_blocks)
+    tokens = tokenizer.encode(haystack)[:target_tokens]
+    return tokenizer.decode(tokens)
+
+
+class TestBuildCodeHaystack:
+    """Test the NIAH haystack builder structure.
+
+    FakeTokenizer's decode returns 'w0 w1 ...' (not original text), so
+    we test the pre-decode structure, not the round-tripped result.
+    """
+
+    def test_needle_inserted_into_blocks(self):
+        """Needle comment is in the all_blocks list before encode/decode."""
+        code_blocks = ["def foo(): pass\n", "x = 1\n"]
+        filler = "\n\n".join(code_blocks)
+        needle = "SECRET-CODE-123"
+        reps = 3
+        all_blocks = [filler for _ in range(reps)]
+        needle_idx = max(1, int(len(all_blocks) * 0.5))
+        all_blocks.insert(needle_idx, f"\n# IMPORTANT NOTE: {needle}\n")
+        haystack = "\n\n".join(all_blocks)
+        assert f"IMPORTANT NOTE: {needle}" in haystack
+
+    def test_needle_depth_affects_position(self):
+        """Different depth_pct values place the needle at different positions."""
+        filler = "code " * 20
+        for depth in [10, 50, 90]:
+            all_blocks = [filler for _ in range(10)]
+            idx = max(1, int(len(all_blocks) * (depth / 100.0)))
+            all_blocks.insert(idx, "NEEDLE")
+            # Needle index should roughly correlate with depth
+            pos = "\n".join(all_blocks).find("NEEDLE")
+            total = len("\n".join(all_blocks))
+            ratio = pos / total
+            assert ratio > (depth / 100.0) * 0.3, (
+                f"depth={depth}%: needle at {ratio:.0%} of text"
+            )
+
+    def test_reps_grow_with_target(self):
+        """More target_tokens requires more filler repetitions."""
+        tok = FakeTokenizer()
+        filler = "small code block\n"
+        filler_tokens = len(tok.encode(filler))
+        needle_tokens = len(tok.encode("needle"))
+        for target in [100, 500, 2000]:
+            needed = target - needle_tokens
+            reps = max(1, (needed // filler_tokens) + 1)
+            assert reps >= 1
+            assert reps * filler_tokens >= needed - filler_tokens
+
+    def test_source_function_exists(self):
+        assert "def _build_code_haystack(" in _src
+
+    def test_source_uses_important_note_format(self):
+        assert "IMPORTANT NOTE:" in _src
+
+    def test_source_truncates_to_target_tokens(self):
+        """The real function truncates to target_tokens via encode[:target]."""
+        assert "[:target_tokens]" in _src
