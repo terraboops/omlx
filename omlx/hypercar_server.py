@@ -55,11 +55,28 @@ def apply_progress_logging(log_every: int = 8, max_think_tokens: int = 4096) -> 
     original = gen_mod.stream_generate
     _logger = logging.getLogger("hypercar.generate")
 
+    # Load spec-decode gate for advisory logging
+    try:
+        from omlx.specdec_gate import SpecDecGate, load_constants
+        _specdec_gate = SpecDecGate(load_constants())
+    except Exception:
+        _specdec_gate = None
+
     def logged_stream_generate(model, tokenizer, prompt, **kwargs):
         prompt_len = len(prompt) if hasattr(prompt, '__len__') else 0
         t_start = time.perf_counter()
         t_first_token = None
         n_tokens = 0
+
+        # Spec-decode gate advisory (logged, not enforced — no spec-decode
+        # runtime exists yet; this prepares the integration point)
+        if _specdec_gate is not None and prompt_len > 0:
+            should, decision = _specdec_gate.should_speculate(prompt_len)
+            if should:
+                _logger.debug(
+                    f"spec-decode gate: YES at {prompt_len} tokens "
+                    f"({decision.projected_speedup:.2f}x projected)"
+                )
 
         # Think token tracking
         think_start_id = getattr(tokenizer, 'think_start_id', None)
