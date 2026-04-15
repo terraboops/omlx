@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-14 (pass 17)_
+_Last updated: 2026-04-15 (pass 18)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -2535,6 +2535,216 @@ currently rewards on pass/fail; SWE-Shepherd shows how to give it
   graceful-degradation envelope (task #66) was designed to bound.
 - **Local PDF**: research/2604.10493_swe_shepherd.pdf
 
+## Pass 18 — 2026-04-15
+
+Meow nyaa meow. Pass 18 takes pass 17's four explicit "Gap not closed"
+buckets and lands one paper in *each* bucket — four picks across four
+fresh cross-fields, zero overlap with passes 12-17, all 2024-2026.
+The through-line is that all four buckets that pass 17 named as "no
+prior pass has touched" turned out to have strong recent finds on the
+first probe; curiosity-mode keeps paying out.
+
+The IR pick (CTkvr) is the headline. SPLADE/BM25 inspired
+"centroid-then-token" indexing for KV cache retrieval — exactly the
+"learned sparse retrieval for query-aware page selection" angle pass
+17 named as bucket #3. The paper observes that adjacent query
+vectors share most of their top-K KV entries after RoPE, then uses
+that to build a two-stage IR-style index that beats block-level
+retrieval (Quest) on accuracy at equivalent compute.
+
+The conformal pick (ATTS) is the bucket #4 win — the first paper
+this review has cited that uses conformal prediction for LLM
+inference cost control. The framing is online calibration during
+test-time scaling; the rejection-sampling pipeline maintains a
+provably-bounded error rate, which is the principled "how confident
+am I in this cached prefill" frame Hypercar's prompt cache has been
+hand-rolling.
+
+The RL eviction pick (KVP) is the bucket #2 lateral — formal
+methods for KV eviction proper turned up no fresh hits, but the
+adjacent "frame eviction as a sequential decision problem" angle
+delivered KVP, a per-head RL agent that learns eviction policies
+from generation traces. Closer in spirit to a constraint-satisfaction
+view than anything pass 13's LARU/Flashlight covered.
+
+The compiler pick (Triton Anatomy) is the bucket #1 win and the
+operationally-most-relevant of the four for the existing Hypercar
+codebase — it ships a paged-attention Triton kernel with
+parameter auto-tuning that goes from 19.7% of SOTA to 105.9% on
+the same hardware. The lessons port to MLX even though the
+implementation doesn't.
+
+### [CTkvr: KV Cache Retrieval for Long-Context LLMs via Centroid-then-Token Indexing](https://arxiv.org/abs/2512.15550) — 2512.15550
+- **Authors**: Kuan Lu, Shuhang Lin, Sai Wu, Yichen Yao, Junhan Yang, Huan Li, Wei Chu, Xu Yinghui, Yuan Qi, Gang Chen
+- **Published**: 2025-12 (arXiv, cs.CL / cs.IR)
+- **Hypercar goals it addresses**: Goal 3 (decode speed via query-aware page selection), Goal 1 (1M context retrieval accuracy)
+- **TL;DR**: Observes that adjacent query vectors after RoPE share most of
+  their top-K KV cache entries — a structural locality that Quest's
+  block min/max bounds *partially* exploit but coarse-grain block-level
+  retrieval still degrades quality on. CTkvr proposes a two-stage
+  centroid-then-token retrieval index: first prune the KV cache to a
+  small candidate set via centroid-grained clustering (the "BM25
+  inverted-list" analogue), then refine to exact top-K at token
+  granularity (the "exact rerank" stage). Reports 3-4x throughput
+  speedup on Llama-3-8B and Yi-9B at 96K context length with less than
+  1% accuracy degradation across multiple long-context benchmarks. Uses
+  CPU-GPU co-execution for index construction to keep the GPU-side cost
+  bounded by the refinement stage.
+- **Why it matters for Hypercar**: This is pass 17 gap #3 — the IR
+  community's "find top-K relevant items from a giant set" heritage
+  finally ported to KV cache page selection. The paper structurally
+  matches the two-stage retrieval pipeline (coarse inverted-list →
+  fine rerank) that BM25/SPLADE pipelines have used since the 1990s,
+  applied to RoPE-transformed query vectors. Importantly for Hypercar,
+  the centroid clustering happens *once at cache build* rather than
+  per-query — the per-query cost is just a coarse-then-fine match,
+  which keeps decode constant across context length. Composes
+  *orthogonally* with Quest (task #1, pass 1) the same way a SPLADE
+  index composes orthogonally with BM25: Quest is the min/max bound
+  filter, CTkvr is the learned-clustering filter, and you can stack
+  them as a coarse-coarse-fine pipeline. Even more compelling — the
+  observation about adjacent-query similarity after RoPE matches what
+  Hypercar's prompt cache plane in `omlx/hypercar_server.py` already
+  exploits at the prefix-hash level; CTkvr extends that exact
+  intuition into the *per-token* index dimension instead of just the
+  prefix dimension.
+- **Cost of adoption**: M (3-5 days). The centroid index is a small
+  learned k-means over the existing KV pages (TQ3 already pages, so
+  the data layout is in place); the rerank stage reuses the existing
+  attention path. Risk: CPU-GPU co-execution is the paper's main
+  speedup lever, but on Apple Silicon's unified-memory architecture
+  there is no CPU-GPU pipeline to overlap, so the speedup math may
+  collapse to "GPU-only with extra control flow," which could hurt
+  net throughput. Worth a one-day prototype to measure.
+- **Local PDF**: research/2512.15550_ctkvr.pdf
+
+### [ATTS: Asynchronous Test-Time Scaling via Conformal Prediction](https://arxiv.org/abs/2509.15148) — 2509.15148
+- **Authors**: Jing Xiong, Qiujiang Chen, Fanghua Ye, Zhongwei Wan, Chuanyang Zheng, Chenyang Zhao, Hui Shen, Hanbo Li, Chaofan Tao, Haochen Tan, Haoli Bai, Lifeng Shang, Lingpeng Kong, Ngai Wong
+- **Published**: 2025-09 (arXiv; revised 2026-02; ICLR 2026)
+- **Hypercar goals it addresses**: Goal 2 (intelligence breadth via test-time scaling), Goal 3 (decode speed, indirectly via early termination), Goal 4 (prefill efficiency via skipped redundant rollouts)
+- **TL;DR**: Frames test-time scaling (best-of-N, beam, self-consistency)
+  as a sequential rejection sampling problem and applies online
+  conformal prediction to the rejection rate. The conformal calibration
+  step gives a *provable* upper bound on the early-termination error
+  rate, and the asynchronous design eliminates the synchronisation
+  bottleneck between candidate samples that vanilla TTS pipelines suffer
+  from. Reports up to 56.7x speedup over synchronous TTS and 4.14x
+  throughput improvement, with the conformal guarantee preserving
+  end-task accuracy within an analytically-bounded delta. ICLR 2026.
+- **Why it matters for Hypercar**: This is pass 17 gap #4 — online
+  conformal prediction as a frame for LLM serving statistics. Two
+  immediate Hypercar applications: (1) the prompt cache hit-rate
+  predictor in `omlx/hypercar_server.py` is currently a heuristic
+  rolling average; an online conformal wrapper would convert it into
+  a confidence-interval predictor with a *provable* coverage
+  guarantee, which is the principled version of "should I evict
+  this prefix or hold it for one more turn." (2) The TTT engine in
+  `omlx/ttt.py` already runs rollout sampling that's structurally
+  best-of-N — wrapping the rollout pipeline in ATTS-style
+  conformal early termination would cut the average rollout count
+  per training example without changing the convergence guarantee.
+  Cross-field analogue: the same online conformal recursion that
+  finance uses for VaR backtesting is what we'd use to bound the
+  cache hit-rate predictor's error.
+- **Cost of adoption**: M (4-7 days). The conformal recursion itself
+  is ~50 lines; the harder work is wiring it into the existing TTT
+  rollout loop and the prompt cache predictor. Biggest risk: the
+  conformal guarantee assumes exchangeable observations, and TTT
+  rollouts during weight updates are *not* exchangeable (the
+  distribution shifts as the policy adapts). The standard fix is
+  weighted conformal prediction, which the paper doesn't ship but
+  is well-studied — adds maybe a half-day of math.
+- **Local PDF**: research/2509.15148_atts_conformal.pdf
+
+### [Learning to Evict from Key-Value Cache](https://arxiv.org/abs/2602.10238) — 2602.10238
+- **Authors**: Luca Moschella, Laura Manduchi, Ozan Sener
+- **Published**: 2026-02 (arXiv, cs.LG)
+- **Hypercar goals it addresses**: Goal 5 (swap pressure via aggressive eviction), Goal 1 (1M context fit), Goal 3 (decode via smaller cache)
+- **TL;DR**: Reframes KV cache eviction as a per-head reinforcement
+  learning problem. Each attention head trains a lightweight RL agent
+  (KVP — KV Policy) to *rank* tokens by predicted future usefulness,
+  using only the key and value vectors as state. Training data is
+  pre-computed generation traces, so there's no online RL during
+  inference. The reward signal is "did keeping this token still
+  predict the right next-token distribution after eviction" — a form
+  of distillation against the un-evicted oracle. Crucially the policy
+  is learned *across all cache budgets* simultaneously, so a single
+  trained policy adapts to varying memory constraints at inference
+  time. Reports significantly outperforming baselines on RULER (long
+  context), OASST2-4k (multi-turn dialogue), and zero-shot
+  generalisation to LongBench, BOOLQ, ARC, plus longer contexts than
+  trained on.
+- **Why it matters for Hypercar**: Pass 17's gap #2 was "SAT/SMT for
+  KV eviction as a constraint satisfaction problem." Formal-methods
+  proper turned up no clean 2024-2026 fits in the probe, but KVP is
+  the closest *adjacent* angle — eviction reframed as a *sequential
+  decision* problem with a learned per-head policy, which is the
+  RL-as-implicit-constraint analogue. The per-head architecture
+  matches Hypercar's existing TQ3 cache (which already operates
+  per-head) and the budget-conditioned single-policy design is what
+  Hypercar needs because runtime memory pressure is dynamic. Composes
+  with task #59 (OPLoRA) the same way DuoAttention composes with
+  Quest — KVP shrinks the cache, then the remaining cache uses
+  Quest's top-K page selection on top. The training-from-traces
+  approach also lets us bootstrap KVP entirely from existing
+  benchmark traces without changing the hot path.
+- **Cost of adoption**: M-L (1-2 weeks). The RL agent itself is
+  small (the paper specifies "lightweight"), but training requires
+  generation traces with eviction-counterfactual supervision, which
+  means a one-shot offline harness that runs the model with full
+  cache and labels each token's downstream impact. The harness is
+  the bulk of the work; the agent training is straightforward
+  Q-learning or policy gradient. Risk: the budget-conditioned policy
+  may not generalise across the 8-bit / 3-bit cache modes Hypercar
+  ships, so we may need to train one policy per mode.
+- **Local PDF**: research/2602.10238_kvp_rl_eviction.pdf
+
+### [The Anatomy of a Triton Attention Kernel](https://arxiv.org/abs/2511.11581) — 2511.11581
+- **Authors**: Burkhard Ringlein, Jan van Lunteren, Radu Stoica, Thomas Parnell (IBM Research)
+- **Published**: 2025-10 (arXiv, cs.PF / cs.LG; submitted 2025-11 final form)
+- **Hypercar goals it addresses**: Goal 3 (decode kernel efficiency), Goal 4 (prefill kernel efficiency); cross-field methodology lesson for `omlx/patches/` kernels
+- **TL;DR**: Walks through the actual engineering process of taking a
+  generic Triton paged-attention kernel from 19.7% of state-of-the-art
+  performance to 105.9% (i.e., faster than the hand-tuned vendor
+  kernel) on both NVIDIA H100 and AMD MI300 GPUs. The paper documents
+  every layer of optimisation: high-level algorithmic refactor (load
+  pattern, register tiling), system-level integration (server-side
+  kernel dispatch, SM utilisation), and parameter auto-tuning across
+  the (BLOCK_M, BLOCK_N, num_warps, num_stages) tile-shape space.
+  Argues that DSL-based portable kernels are now competitive with
+  hand-tuned vendor kernels *if* you treat auto-tuning as a first-
+  class optimisation step rather than a last-mile sweep. Includes a
+  sober discussion of which optimisations transferred between vendors
+  and which didn't.
+- **Why it matters for Hypercar**: This is pass 17 gap #1 — the
+  Halide/Exo/TVM/Triton auto-scheduling literature for sparse
+  attention tile-shape generation. Triton Anatomy is the most direct
+  practitioner-grade case study this review has cited; the lessons
+  apply to MLX even though MLX uses a different kernel DSL because
+  the *methodology* (auto-tune the tile-shape space rather than
+  hand-pick) is DSL-agnostic. Hypercar's existing patch in
+  `omlx/patches/specprefill.py` and the prefill_last_logit_patch
+  use hand-picked block sizes; the paper's central claim is that
+  auto-tuning typically doubles throughput on the same hardware
+  for paged-attention kernels, which directly addresses Hypercar's
+  Goal 4 (prefill is at 60% of target). Inspiration-grade rather
+  than direct port — MLX kernels can't import Triton — but the
+  auto-tune-the-tile-shape methodology can be ported to MLX with
+  a small grid search wrapper around the existing kernel call sites.
+  Cross-field bonus: the paper's emphasis on portability across
+  NVIDIA and AMD is the same portability story that MLX needs to
+  tell across Apple Silicon GPU generations (M1/M2/M3/M4), so the
+  "auto-tune per device" pattern is doubly relevant.
+- **Cost of adoption**: S-M (3-5 days for an inspiration prototype, M
+  if we want it productionised). Build a small auto-tune harness that
+  sweeps tile-shape parameters on the existing MLX attention kernels
+  during a benchmark warm-up, caches the best per-device tile shape,
+  and uses it for the rest of the run. Risk: MLX's kernel dispatch
+  doesn't expose tile-shape parameters as cleanly as Triton, so the
+  search space may be much smaller than the paper assumes — which
+  could mean the gain is much smaller too.
+- **Local PDF**: research/2511.11581_triton_anatomy.pdf
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -3622,3 +3832,107 @@ The through-line of pass 17 confirms the prior pattern: the surface
 area of "weird corners we haven't touched" is genuinely infinite,
 and curiosity-mode picks land more reliably than goal-targeted
 picks for finding cross-field inspiration. Meow, nyaa, meow.
+
+### Pass 18 adds (2026-04-15)
+
+**Highest-leverage find this pass: CTkvr (2512.15550).** Pass 17
+named four "Gap not closed" buckets and pass 18 closed all four on
+the first probe — but CTkvr is the headline because it lands the
+single most-actionable hit. The paper observes that adjacent query
+vectors after RoPE share most of their top-K KV entries, then
+ports the BM25/SPLADE two-stage retrieval pipeline (coarse
+inverted-list → fine rerank) directly into KV cache page selection
+as a centroid-then-token index. This is the *first* paper this
+review has cited that names the structural form of Quest's coarse
+block-min/max approach as a special case of IR retrieval and then
+generalises it. The 3-4x throughput speedup at 96K context with
+<1% accuracy loss is the kind of number that goes straight onto
+the Quest backlog as a co-optimisation rather than a replacement.
+Task 81 picks up an MLX prototype.
+
+**Second find: ATTS (2509.15148)** is the bucket #4 win and the
+intellectually freshest. Online conformal prediction for LLM
+inference has never appeared in this review, and ATTS shows two
+separable applications: (a) prompt-cache hit-rate prediction
+with a *provably bounded* error rate, and (b) TTT rollout early
+termination with the same guarantee. The 56.7x test-time scaling
+speedup is the headline but the prompt-cache application is the
+cleaner Hypercar fit because it ports without changing the
+hot-path semantics. Task 82 captures the prompt-cache integration.
+Cross-field bonus: the same conformal recursion the finance
+community uses for VaR backtesting is what we're using here for
+cache-eviction confidence intervals.
+
+**Third find: KVP / Learning to Evict (2602.10238)** is the
+bucket #2 lateral. Formal SAT/SMT proper turned up no clean
+recent fits, but KVP is the closest adjacent angle — per-head RL
+agents that learn budget-conditioned eviction policies from
+generation traces. It composes orthogonally with Quest (KVP
+shrinks the cache, Quest selects top-K of the remaining cache)
+and with task #59 (OPLoRA) the same way DuoAttention composes
+with Quest. The training-from-traces design means we can
+bootstrap KVP entirely from existing benchmark data without
+disturbing the hot path — Task 83 sketches this. Risk noted in
+the entry: the "across all budgets" generalisation may not
+transfer cleanly across Hypercar's 8-bit and 3-bit modes.
+
+**Fourth find: Triton Anatomy (2511.11581)** is the bucket #1
+win and the most operationally-relevant of the four for the
+existing `omlx/patches/` kernel work. The paper documents a
+generic Triton paged-attention kernel going from 19.7% of
+state-of-the-art to 105.9% on the same hardware via parameter
+auto-tuning of the (BLOCK_M, BLOCK_N, num_warps, num_stages)
+tile-shape space. The lessons port to MLX even though the
+implementation doesn't, because the methodology (auto-tune the
+tile shape, don't hand-pick) is DSL-agnostic. Task 84 wraps the
+existing prefill kernel call sites in a small auto-tune harness.
+
+**Sequencing**: CTkvr (task 81) is the largest expected speedup
+on the most-load-bearing axis (decode at long context) so it
+sequences first. ATTS (task 82) is independent of CTkvr and can
+land in parallel — the prompt-cache predictor lives in a
+different module from the attention kernels. KVP (task 83) is
+the largest engineering effort and depends on building a
+trace-collection harness, so it sequences after CTkvr lands and
+the bench traces are collected. Triton Anatomy (task 84) is the
+cheapest-to-prototype because it's an auto-tune wrapper around
+existing kernels — it can run as a background experiment any
+time. The through-line of pass 18 is "every gap pass 17 named
+turned out to have a fresh 2024-2026 paper waiting; the search
+surface is still expanding faster than we're contracting it."
+
+**Gap not closed for pass 19**:
+1. **Apple Silicon-specific Metal kernel literature.** Triton
+   Anatomy ports lessons but not implementation; pass 19 should
+   look for Metal Performance Shaders attention work, or any
+   academic paper that benchmarks against MLX or `mlx-lm`
+   directly. The shipped MLX kernels are the bottleneck nobody
+   has audited from a fresh-eyes perspective.
+2. **Compression-side IR work — product quantisation for KV
+   cache values.** CTkvr indexes keys; the values still cost
+   the full 3-bit quantised storage. PQ-style codebooks for
+   value vectors (the IR / ANN community has decades of this)
+   could halve value memory at the cost of a small accuracy
+   hit. Look for FAISS-lineage work applied to LLM serving.
+3. **Hardware-software co-design papers from MICRO / ISCA 2025.**
+   The systems-architecture conferences regularly publish
+   accelerator papers that have implications for memory
+   hierarchy on unified-memory devices like Apple Silicon, but
+   pass 12-17 only touched the cs.AR listings lightly. A
+   focused MICRO/ISCA pull would surface the next wave of
+   "what if we treated the M4 Pro's unified memory as a
+   spatially-organised cache rather than DRAM" insights.
+4. **Causal inference / counterfactual reasoning for TTT
+   reward attribution.** SWE-Shepherd (pass 17) uses PRMs;
+   KVP (pass 18) uses generation-trace counterfactuals. The
+   two share a structural problem — "what would have happened
+   if I'd kept this token / picked this action" — that the
+   causal-inference community calls counterfactual outcome
+   estimation, and they have principled tools (doubly-robust
+   estimators, propensity scoring) that nobody has ported.
+   Pass 19's weirdest fresh angle.
+
+The pattern holds: pass 17 said "four buckets nobody has touched,"
+pass 18 hit all four with fresh papers, and pass 18 is now naming
+four more buckets nobody has touched. The recursion is the point.
+Curiosity never saturates. Meow, nyaa, meow.

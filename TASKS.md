@@ -2264,3 +2264,69 @@ _(none)_
   - Read bench/snapshots/run57_2026-04-15T09-36/env.json for the exact symptom this task is meant to catch automatically.
 - **Effort**: S (2-3 hours: add 10 lines to profiler.py, add 5-line check in hypercar_bench.py _finish, write one unit test that mocks time.monotonic drift, smoke test manually)
 - **Risk**: Minimal. `time.monotonic()` is guaranteed to tick during OS suspension on Darwin (it's based on `mach_absolute_time` which continues even when the process is swapped out), so the computation is reliable. Only risk is forgetting to use monotonic (time.time() can go backward).
+
+## Research-derived tasks (from LIT_REVIEW.md pass 18, 2026-04-15)
+
+### 81. CTkvr centroid-then-token KV index for query-aware page selection
+- **Goal**: 3 (decode speed via top-K page selection), 1 (1M context retrieval accuracy)
+- **Derived from**: CTkvr (2512.15550)
+- **Change**:
+  - In `omlx/turboquant_kv.py` (or a sibling module), build a centroid index over the existing KV pages: at cache build time, run a small k-means (k=64-256) over the page-mean key vectors and store the centroid table alongside the page metadata. The page-to-centroid assignment is fixed at build; new pages get assigned to the nearest centroid as they are appended.
+  - Add a two-stage retrieval path that runs *before* Quest's existing min/max bound: stage 1 picks the top-M centroids by query-vs-centroid dot product (M ~ 8), stage 2 takes the union of pages assigned to those centroids and runs Quest's existing top-K page selection over that reduced candidate set. The output is the same shape as today's Quest path, so the downstream attention call sites are unchanged.
+  - Calibrate k and M offline against `omlx/bench/hypercar_bench.py --quick` traces — the goal is "smallest k, M such that NIAH 64K still passes."
+  - Compose with Quest (task 1, pass 1): CTkvr is the coarse filter, Quest is the bound filter, both run before the dense top-K. Quest's existing implementation does not need to change.
+- **Verify**:
+  - Unit test: synthetic KV cache with known page-to-relevance mapping; CTkvr stage 1 must include the relevant page in its top-M centroids 100% of the time.
+  - Integration test: NIAH 64K passes with the CTkvr stage active. Decode tok/s at 32K context improves by ≥ 20% on `hypercar_bench --quick` vs Quest-only path. Less than 1% accuracy degradation on the existing coherence eval.
+  - Memory check: centroid table memory is < 1% of KV cache memory at 1M context.
+- **Effort**: M (3-5 days: 1d for the k-means and centroid index, 1-2d for the two-stage dispatch, 1-2d for calibration and bench)
+- **Depends on**: Task 1 (Quest) for the existing top-K page abstraction. The two compose; CTkvr is not a replacement.
+- **Risk**: CPU-GPU co-execution (the paper's headline lever) does not apply on Apple Silicon's unified memory, so the speedup math may collapse to "GPU-only with extra control flow." A one-day microbenchmark on the centroid stage alone gates the rest of the work.
+
+### 82. ATTS-style online conformal predictor for prompt-cache hit rate
+- **Goal**: 4 (prefill efficiency via better cache decisions), 5 (swap pressure via principled eviction)
+- **Derived from**: ATTS (2509.15148)
+- **Change**:
+  - In `omlx/hypercar_server.py`, instrument the existing prompt-cache lookup path to emit a (prefix_hash, hit | miss, age_seconds, prefix_length) record per request. The instrumentation is read-only; the cache itself doesn't change.
+  - Add an online conformal predictor module that takes the rolling stream of records and produces a per-prefix "probability of next-N-turn hit, with provably bounded coverage error" estimate. Use a weighted-conformal recursion (the standard fix for non-exchangeable observations) since the active session's request distribution is non-stationary. Math is ~50 lines.
+  - Use the predictor's lower-bound estimate to drive cache eviction: when the cache is at the budget ceiling, evict the prefix with the lowest lower-bound hit probability rather than the LRU prefix. The conformal coverage guarantee bounds the worst-case eviction error rate.
+  - Add a server-side `/metrics/cache` endpoint that exposes the rolling lower-bound estimates so we can debug eviction decisions.
+- **Verify**:
+  - Unit test: a synthetic request trace with known prefix-reuse pattern (e.g., 80% of requests hit a single hot prefix); the predictor's lower-bound estimate for the hot prefix must be ≥ 0.7 within 50 requests, and the eviction policy must keep the hot prefix in cache under memory pressure.
+  - Integration test: an OpenCode-style turn-by-turn session against the server with manual eviction triggered every K turns; verify that the conformal-driven eviction loses fewer subsequent cache hits than the LRU baseline on the same trace.
+  - Coverage gate: the conformal coverage error rate measured offline against a logged trace must be within 5% of the nominal target (e.g., 0.95 nominal coverage → empirical coverage ≥ 0.90).
+- **Effort**: M (4-7 days: 1d for the instrumentation, 1d for the conformal recursion, 2d for the eviction wiring, 1d for the metrics endpoint, 1-2d for the integration trace tests)
+- **Depends on**: none. Independent of CTkvr (task 81) and Halo (task 77) — the predictor is a different layer entirely.
+- **Risk**: TTT rollouts during weight updates are non-exchangeable; weighted conformal handles this but the variance of the estimate can be high in the early-session regime. Mitigation: warm-start the predictor with a uniform prior over the first N requests and only switch to the conformal lower bound after N is reached.
+
+### 83. KVP per-head RL eviction policy trained on Hypercar bench traces
+- **Goal**: 5 (swap pressure via aggressive eviction), 1 (1M context fit on M4 Pro 48GB)
+- **Derived from**: Learning to Evict from KV Cache / KVP (2602.10238)
+- **Change**:
+  - Build a generation-trace harness that runs the existing benchmark prompts (humaneval, NIAH, coherence) at full KV cache and logs, for every token, its position, its key vector, its value vector, and its eventual downstream impact (measured as KL between the un-evicted next-token distribution and the distribution after that token's eviction).
+  - Train a small per-head RL agent (one Q-network per attention head, ~50K params each) that takes the (key, value, position, current cache budget) state and outputs an eviction priority score. Use the trace KL signal as the reward. Single training run produces 48 head-policies (one per layer's attention heads).
+  - Wire the trained policies into `omlx/turboquant_kv.py` as an alternative eviction backend behind a `--kv-eviction kvp` server flag. The default eviction stays LRU; KVP is opt-in.
+  - The trained policies are budget-conditioned, so the same checkpoint serves both the 8-bit and 3-bit KV cache modes — but verify this assumption empirically.
+- **Verify**:
+  - Offline metric: per-head policy AUC on a held-out trace must exceed 0.7 vs random eviction baseline.
+  - End-to-end metric: with KVP eviction active, NIAH 64K still passes; HumanEval pass rate unchanged ± 1pp; peak Metal memory at 1M context drops by ≥ 10% vs LRU eviction.
+  - Mode-transfer check: a policy trained on 8-bit cache traces, evaluated on 3-bit cache traces, must still pass NIAH 64K. If not, train one policy per cache mode.
+- **Effort**: M-L (1-2 weeks: 2-3d for the trace harness, 2-3d for the per-head RL training, 2-3d for the eviction backend integration, 1-2d for the bench validation)
+- **Depends on**: none for the core work; composes with task 81 (CTkvr — KVP shrinks the cache, CTkvr selects top-K of the remaining) and task 59 (OPLoRA safety rail).
+- **Risk**: per-head RL agents are 48 separate trained models, which is operationally heavy. Mitigation: start with a single shared agent across all heads as a baseline, then go per-head only if shared-agent quality is insufficient.
+
+### 84. Tile-shape auto-tuning harness for MLX prefill kernels (Triton Anatomy methodology)
+- **Goal**: 4 (prefill speed), 3 (decode kernel efficiency, secondarily)
+- **Derived from**: The Anatomy of a Triton Attention Kernel (2511.11581)
+- **Change**:
+  - Build a tile-shape auto-tune harness in `omlx/patches/` (sibling to `specprefill.py` and `prefill_last_logit_patch.py`) that wraps the existing prefill kernel call sites. The harness sweeps a small grid of (block_size, num_warps_equivalent, prefetch_depth) parameters that MLX exposes for its attention kernels; for each candidate it runs a 5-token prefill probe and measures wall-clock time.
+  - At server startup (or first request), run the harness once per (model, sequence-length-bucket) pair, cache the best tile shape per bucket in `~/.cache/hypercar/tile_shapes.json`, and use the cached shape for the rest of the session. The buckets are coarse: {<2K, 2K-16K, 16K-128K, 128K+}.
+  - Add a `--no-autotune` flag to the server for forensic comparison vs the hand-picked baseline.
+  - The auto-tune is per-device: M1 Pro, M2 Pro, M3 Pro, M4 Pro all get their own tile-shape cache file because the optimal varies with GPU SM count and memory bandwidth.
+- **Verify**:
+  - Unit test: harness runs to completion in < 30s on a cold server start; the resulting cache file contains an entry per bucket; loading the cache on subsequent server starts skips the tuning step.
+  - Bench gate: `omlx.bench.hypercar_bench --quick` prefill tok/s at 16K context improves by ≥ 15% on the M4 Pro vs the hand-picked baseline. NIAH 64K still passes. HumanEval pass rate unchanged.
+  - Cross-device check: an auto-tune cache generated on M4 Pro should *not* be used on a different device — verify the harness regenerates the cache when the device fingerprint changes.
+- **Effort**: S-M (3-5 days for the inspiration prototype, 5-7 days for productionised version: 1d for the harness sweep loop, 1-2d for the cache management, 1-2d for the bench validation, 1d for the per-device fingerprint logic)
+- **Depends on**: none. Independent of all other tasks; the auto-tune sits below them in the stack.
+- **Risk**: MLX's kernel dispatch may not expose tile-shape parameters as cleanly as Triton, so the search space may be much smaller than the paper assumes — which could mean the gain is much smaller too. Mitigation: a half-day spike to enumerate the actual MLX tunables before committing the rest of the work.
