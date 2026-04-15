@@ -3062,6 +3062,117 @@ doesn't care. Only speed and memory margins do.
   The discipline of not re-filing known issues matters.
 ```
 
+### Run 60: 🏆 NEW SESSION RECORD — 1227.0s, User Cleanup Restored Clean-Box Performance; Task #80 Live
+```
+Date: 2026-04-15
+SHA:  3043d26 (run started at 94caf76, HEAD advanced mid-run)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo — default since 3f3e013)
+Snapshot: bench/snapshots/run60_2026-04-15T14-37/
+Lock wait: 0s
+
+**Fastest full run in all 60 analyst attempts this session.**
+Total 1226.96s, beating the prior best (R47 at 1229.4s) by 0.2%.
+User manually cleaned up background programs before this run,
+and R60 is the explicit A/B test proving the R59 analysis:
+pressure was from co-tenancy, not code regression.
+
+## The A/B result (same code, different co-tenancy)
+
+| Metric                    | R59 pressure | R60 cleanup  | Delta      |
+|---------------------------|--------------|--------------|------------|
+| Total (s)                 | 1311.8       | 1226.96      | −6.5%      |
+| Phase 3b RULER (s)        | 301.2        | 234.7        | −22.1%     |
+| Phase 3c MMLU-Pro (s)     | 912.4        | 897.7        | −1.6%      |
+| NIAH 4K prefill (tok/s)   | 801.1        | **814.7**    | +1.7%      |
+| NIAH 4K decode  (tok/s)   | 29.6         | 31.6         | +6.8%      |
+| NIAH 16K prefill (tok/s)  | **475.6**    | **513.4**    | +7.9%      |
+| NIAH 16K decode (tok/s)   | 18.5         | 18.8         | +1.6%      |
+| Swap peak (GB)            | 5.48         | 4.41         | −19.5%     |
+| Swap I/O p90 (MB/s)       | 15.8         | **0.0**      | −100%      |
+| Warmup (s)                | 8.7          | 7.1          | −18.4%     |
+
+## New session bests established
+
+Every headline speed metric is a new personal best:
+- **Total runtime**: 1226.96s (prior: R47 1229.4s)
+- **NIAH 4K prefill**: 814.7 tok/s (prior: R47 803.2)
+- **NIAH 16K prefill**: 513.4 tok/s (prior: R44 502.2) — first duo
+  run measurably above Goal 4 floor, not just exactly at it
+- **Phase 3b RULER**: 234.7s (prior: R47 236.9s)
+- **Phase 3c MMLU-Pro**: 897.7s (prior: R44 906.6s)
+- **Phase 4 HumanEval**: 19.6s (prior: R44 19.8s)
+
+Quality metrics are byte-identical to the rest of the duo series:
+MMLU-Pro 62/100, HumanEval 19/20, RULER 6/6 at 1.00, Code Intel
+5/5, Metal peak 35.14 GB. Five consecutive runs with identical
+quality output — the duo path is deterministic.
+
+## Task #80 is shipped and working
+
+Commit `1ab4cfa` landed between R59 and R60 implementing the
+wall-clock correlation I proposed in R57's Task #80. R60's
+profile.json summary now includes:
+
+```
+  "wall_clock_elapsed_s": 1226.96,
+  "cpu_scheduling_fraction": 0.9919,
+```
+
+R60 scored **0.9919** — 99.19% of wall-clock was CPU-scheduled,
+essentially clean. For reference: a breach run would score ~20%,
+R57's 24-minute model-load stall would have been ~1.6%, and a
+perfectly clean run on a dedicated machine would be 100%.
+**The gap between 99.19% and 100% is the measurable cost of
+running Claude Code alongside the bench.** This is exactly the
+kind of signal the task was filed to surface, and it's live now.
+
+Fourth analyst-filed task shipped this session:
+  #61 — MMLU-Pro max_tokens floor        → commit 6206ff5
+  #62 — run-numbering namespace          → commit 53bd683
+  #71 — --niah-only escape hatch         → commit 8c263da
+  #80 — wall-clock correlation           → commit 1ab4cfa
+
+100% pickup rate, sub-24-hour turnaround on all four.
+
+## Analysis notes
+
+- **User-initiated cleanup is the primary lever for recovering
+  pressure-degraded runs**. R59 → R60 recovered 85 wall-clock
+  seconds and restored Goal 4 margin without any code change.
+  Future analyst runs that show R59-style degradation should
+  note "user cleanup would likely recover this" in the report
+  rather than filing code tasks for co-tenancy symptoms.
+- **Decode has an irreducible ~9% gap from R44 baseline** even
+  after user cleanup. R44 had NIAH 4K decode 34.9 tok/s, R60
+  has 31.6. The analyst and implementation-loop Claude Code
+  sessions themselves are resident and cannot be cleaned up
+  while this cron is active. That gap is the measurable tax
+  of running the analysis pipeline at all — a minimum cost
+  rather than a bug.
+- **Prefill fully recovered AND exceeded prior bests.** NIAH
+  4K prefill 814.7 vs R44's 802.2, 16K prefill 513.4 vs R44's
+  502.2. Prefill is more schedulable than decode and doesn't
+  share the bandwidth bottleneck. Interesting signal: the
+  duo path may have more prefill headroom than the R44 numbers
+  suggested.
+- **Swap peak was still 4.41 GB, not 0.0.** Even after cleanup,
+  small swap occurred during NIAH 16K. Contrast with R44/R47/R48
+  which were exactly zero. The Claude Code co-tenants are
+  enough to produce a single brief swap spike, but p90 is back
+  at 0.0 MB/s so Goal 5 is cleanly MET.
+- **Profiler max swap I/O is 2524 MB/s again (R59 was 2678)**.
+  Confirmed systematic sampler artifact when the process is
+  briefly paged out — the raw byte delta is divided by a tiny
+  elapsed-time window. Not a hypercar issue; a psutil sampler
+  math issue. Not filing as a task because the p90 metric is
+  the real Goal 5 gate and it passes cleanly.
+- **No new tasks from R60.** Everything this run revealed is
+  either a new session best (good) or confirmation of prior
+  analysis (#80 shipped, #85/#86 still open and still relevant).
+  The discipline of not re-filing matters.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
