@@ -5,27 +5,27 @@
       "keep_pct": 25,
       "T": 832,
       "kept": 208,
-      "agreement": 0.0,
+      "agreement": 100.0,
       "base_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler ",
-      "skv_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      "skv_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler "
     },
     {
       "name": "NIAH",
       "keep_pct": 50,
       "T": 832,
       "kept": 416,
-      "agreement": 0.0,
+      "agreement": 100.0,
       "base_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler ",
-      "skv_text": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      "skv_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler "
     },
     {
       "name": "NIAH",
       "keep_pct": 75,
       "T": 832,
       "kept": 624,
-      "agreement": 6.0,
+      "agreement": 100.0,
       "base_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler ",
-      "skv_text": "MASK-SAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SAPKV-OK. Filler text. Filler te"
+      "skv_text": "MASK-SNAPKV-OK<|im_end|>\n<|endoftext|>Human: The secret code is MASK-SNAPKV-OK. Filler text. Filler "
     },
     {
       "name": "Math",
@@ -82,6 +82,6 @@
       "skv_text": "Here's a Python function that checks if a string is a palindrome:\n\n```python\ndef is_palindrome(s):\n "
     }
   ],
-  "avg_agreement": 67.3,
-  "elapsed_s": 26.9
+  "avg_agreement": 100.0,
+  "elapsed_s": 30.9
 }

@@ -135,7 +135,10 @@ def main():
     t0 = time.perf_counter()
 
     from mlx_lm import load
-    from omlx.patches.snapkv import capture_attention_weights, snapkv_select
+    from omlx.patches.snapkv import (
+        install_q_capture_hook, compute_importance_from_real_q,
+        snapkv_select,
+    )
 
     logger.info(f"Loading model: {MODEL_ID}")
     model, tokenizer = load(MODEL_ID)
@@ -171,14 +174,14 @@ def main():
         base_tokens = generate_with_mask(model, tokenizer, input_ids, None)
         base_text = tokenizer.decode(base_tokens)
 
-        # Compute importance from full prefill
+        # Compute importance using REAL Q projections (not K-as-Q proxy)
+        captured, cleanup = install_q_capture_hook(model)
         cache_tmp = [KVCache() for _ in range(n_layers)]
         logits = model(mx.array([input_ids]), cache=cache_tmp)
         mx.eval(logits)
 
-        importance = capture_attention_weights(
-            model, cache_tmp, obs_window=64,
-            layers=list(range(n_layers - 4, n_layers)))
+        importance = compute_importance_from_real_q(captured, cache_tmp, obs_window=64)
+        cleanup()
 
         del cache_tmp; gc.collect(); mx.clear_cache()
 

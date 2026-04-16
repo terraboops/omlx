@@ -103,6 +103,177 @@ def compute_attention_importance(
     return importance
 
 
+def install_q_capture_hook(model, target_layers: list[int] | None = None):
+    """Install hooks on Attention modules to capture Q after RoPE.
+
+    Monkey-patches the Attention.__call__ to store the last set of
+    query projections (after RoPE). These are needed for accurate
+    SnapKV importance computation.
+
+    Args:
+        model: Loaded model with .layers[i].self_attn
+        target_layers: Which layers to hook (default: last 4)
+
+    Returns:
+        captured: dict mapping layer_idx → mx.array of queries (B, H_q, L, D)
+        cleanup: callable to remove the hooks
+    """
+    import types
+
+    n_layers = len(model.layers)
+    if target_layers is None:
+        target_layers = list(range(max(0, n_layers - 4), n_layers))
+
+    captured = {}
+
+    for layer_idx in target_layers:
+        attn = model.layers[layer_idx].self_attn
+        original_call = attn.__class__.__call__
+
+        def make_hooked(orig, lid):
+            def hooked_call(self, x, mask=None, cache=None):
+                B, L, D = x.shape
+                queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+                queries = self.q_norm(queries.reshape(B, L, self.n_heads, -1)).transpose(0, 2, 1, 3)
+                keys = self.k_norm(keys.reshape(B, L, self.n_kv_heads, -1)).transpose(0, 2, 1, 3)
+                values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+
+                if cache is not None:
+                    queries = self.rope(queries, offset=cache.offset)
+                    keys = self.rope(keys, offset=cache.offset)
+                    keys, values = cache.update_and_fetch(keys, values)
+                else:
+                    queries = self.rope(queries)
+                    keys = self.rope(keys)
+
+                # CAPTURE: store queries after RoPE
+                captured[lid] = queries
+
+                from mlx_lm.models.base import scaled_dot_product_attention
+                output = scaled_dot_product_attention(
+                    queries, keys, values, cache=cache, scale=self.scale, mask=mask)
+                output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+                return self.o_proj(output)
+            return hooked_call
+
+        # Replace the Attention class's __call__ for this layer's instance
+        # by wrapping the entire decoder layer to intercept Q
+        layer = model.layers[layer_idx]
+        original_layer_call = layer.__class__.__call__
+
+        def make_layer_hook(orig_layer_call, lid, attn_module):
+            def hooked_layer(self, x, mask=None, cache=None):
+                # Run input layernorm
+                normed = self.input_layernorm(x)
+                B, L, D = normed.shape
+
+                # Run Q/K/V projections manually to capture Q
+                sa = self.self_attn
+                queries, keys, values = sa.q_proj(normed), sa.k_proj(normed), sa.v_proj(normed)
+                queries = sa.q_norm(queries.reshape(B, L, sa.n_heads, -1)).transpose(0, 2, 1, 3)
+                keys = sa.k_norm(keys.reshape(B, L, sa.n_kv_heads, -1)).transpose(0, 2, 1, 3)
+                values = values.reshape(B, L, sa.n_kv_heads, -1).transpose(0, 2, 1, 3)
+
+                if cache is not None:
+                    queries = sa.rope(queries, offset=cache.offset)
+                    keys = sa.rope(keys, offset=cache.offset)
+                    keys, values = cache.update_and_fetch(keys, values)
+                else:
+                    queries = sa.rope(queries)
+                    keys = sa.rope(keys)
+
+                # CAPTURE Q
+                captured[lid] = queries
+
+                from mlx_lm.models.base import scaled_dot_product_attention
+                attn_out = scaled_dot_product_attention(
+                    queries, keys, values, cache=cache, scale=sa.scale, mask=mask)
+                attn_out = attn_out.transpose(0, 2, 1, 3).reshape(B, L, -1)
+                h = x + sa.o_proj(attn_out)
+
+                # Run MLP (post-attention)
+                r = self.mlp(self.post_attention_layernorm(h))
+                return h + r
+            return hooked_layer
+
+        layer._hooked_call = make_layer_hook(original_layer_call, layer_idx, attn)
+        layer._original_class_call = original_layer_call
+        layer.__class__ = type(
+            f'Hooked_{layer.__class__.__name__}_{layer_idx}',
+            (layer.__class__,),
+            {'__call__': lambda self, *a, **kw: self._hooked_call(self, *a, **kw)}
+        )
+
+    def cleanup():
+        for layer_idx in target_layers:
+            layer = model.layers[layer_idx]
+            if hasattr(layer, '_original_class_call'):
+                # Restore original class
+                layer.__class__ = type(layer).__mro__[1]  # parent class
+                del layer._hooked_call
+                del layer._original_class_call
+
+    return captured, cleanup
+
+
+def compute_importance_from_real_q(
+    captured_queries: dict,
+    cache: list,
+    obs_window: int = 64,
+) -> mx.array:
+    """Compute importance using real Q projections captured by the hook.
+
+    This is the correct importance computation — uses actual query
+    vectors (after RoPE) rather than K-as-Q proxy.
+
+    Args:
+        captured_queries: dict from install_q_capture_hook (layer_idx → Q)
+        cache: KVCache list (for K values)
+        obs_window: Observation window size
+
+    Returns:
+        importance: (B, H_kv, T) — aggregated importance
+    """
+    all_importance = []
+
+    for layer_idx, queries in captured_queries.items():
+        keys = cache[layer_idx].state[0]  # (B, H_kv, T, D)
+        B, H_kv, T, D = keys.shape
+        H_q = queries.shape[1]
+        gqa_ratio = H_q // H_kv
+        scale = D ** -0.5
+
+        # Use observation window from queries
+        obs_start = max(0, queries.shape[2] - obs_window)
+        Q_obs = queries[:, :, obs_start:, :]  # (B, H_q, obs_len, D)
+        obs_len = Q_obs.shape[2]
+
+        # Expand K for GQA
+        K_expanded = mx.repeat(keys, gqa_ratio, axis=1)  # (B, H_q, T, D)
+
+        # Attention scores
+        scores = (Q_obs @ K_expanded.swapaxes(-1, -2)) * scale
+
+        # Causal mask
+        q_pos = mx.arange(obs_start, obs_start + obs_len).reshape(1, 1, obs_len, 1)
+        k_pos = mx.arange(T).reshape(1, 1, 1, T)
+        scores = mx.where(k_pos <= q_pos, scores, mx.array(float('-inf')))
+
+        weights = mx.softmax(scores, axis=-1)  # (B, H_q, obs_len, T)
+
+        # Pool: max over obs window, then max across GQA group
+        max_weights = mx.max(weights, axis=2)  # (B, H_q, T)
+        max_weights = max_weights.reshape(B, H_kv, gqa_ratio, T)
+        importance = mx.max(max_weights, axis=2)  # (B, H_kv, T)
+        mx.eval(importance)
+        all_importance.append(importance)
+
+    stacked = mx.stack(all_importance, axis=0)
+    result = mx.max(stacked, axis=0)
+    mx.eval(result)
+    return result
+
+
 def capture_attention_weights(
     model,
     cache: list,
