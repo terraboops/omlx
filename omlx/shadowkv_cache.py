@@ -201,3 +201,105 @@ class ShadowKVCache:
                            + B * H * rank * 4      # S (float32)
                            + B * H * rank * D * 2) # Vt
         return (full_bytes - compressed_bytes) / 1e9
+
+
+# ---------------------------------------------------------------------------
+# Offline projection-based compression (uses pre-computed SVD from Step 1)
+# ---------------------------------------------------------------------------
+
+class ShadowKVProjections:
+    """Pre-computed per-head K projection matrices (from offline SVD).
+
+    Loaded from omlx/patches/shadowkv_projections/ and used by
+    compress_k_with_projections() to compress K cache without
+    runtime SVD. Much faster than ShadowKVCache's online SVD.
+    """
+
+    def __init__(self, projections: list[list[mx.array]], meta: dict):
+        # projections[layer][head] = V_k: (D, r)
+        self.projections = projections
+        self.meta = meta
+        self.n_layers = len(projections)
+
+    @classmethod
+    def load(cls, path: str | Path = None) -> "ShadowKVProjections":
+        """Load pre-computed projections from disk."""
+        if path is None:
+            path = Path(__file__).parent / "patches" / "shadowkv_projections" / "qwen3_coder_30b_a3b"
+        path = Path(path)
+
+        meta = json.loads((path / "meta.json").read_text())
+        projections = []
+
+        for layer_data in meta["per_layer"]:
+            layer_idx = layer_data["layer"]
+            npz = mx.load(str(path / f"layer_{layer_idx}.npz"))
+            heads = []
+            for head_idx in range(layer_data["H_kv"]):
+                heads.append(npz[f"head_{head_idx}"])
+            projections.append(heads)
+
+        logger.info(f"ShadowKV projections: {len(projections)} layers, "
+                    f"median rank {meta['summary']['median_rank']}")
+        return cls(projections, meta)
+
+    @property
+    def median_rank(self) -> int:
+        return self.meta["summary"]["median_rank"]
+
+    @property
+    def mean_error(self) -> float:
+        return self.meta["summary"]["mean_rel_error"]
+
+
+def compress_k_with_projections(
+    cache: list,
+    projections: ShadowKVProjections,
+    min_tokens: int = 512,
+) -> int:
+    """Compress K cache in-place using pre-computed per-head projections.
+
+    For each layer/head: K → K @ V_k @ V_k.T (project to low-rank subspace).
+    V cache is untouched.
+
+    This is faster than ShadowKVCache's runtime SVD because the projection
+    matrices are pre-computed. Quality is equivalent at the same rank.
+
+    Args:
+        cache: List of KVCache objects (one per layer)
+        projections: Loaded ShadowKVProjections
+        min_tokens: Only compress if cache has >= this many tokens
+
+    Returns:
+        Number of layers compressed
+    """
+    compressed_count = 0
+
+    for layer_idx in range(min(len(cache), projections.n_layers)):
+        c = cache[layer_idx]
+        keys = c.state[0]  # (B, H_kv, T, D)
+
+        if keys.shape[2] < min_tokens:
+            continue
+
+        B, H_kv, T, D = keys.shape
+        layer_projs = projections.projections[layer_idx]
+        new_heads = []
+
+        for head_idx in range(H_kv):
+            K_head = keys[:, head_idx, :, :]  # (B, T, D)
+            V_k = layer_projs[head_idx].astype(K_head.dtype)  # (D, r)
+
+            # Project and reconstruct: K_approx = K @ V_k @ V_k.T
+            K_low = K_head @ V_k       # (B, T, r)
+            K_approx = K_low @ V_k.T   # (B, T, D)
+            new_heads.append(K_approx)
+
+        K_compressed = mx.stack(new_heads, axis=1)  # (B, H_kv, T, D)
+        c.state = (K_compressed, c.state[1])
+        compressed_count += 1
+
+    if compressed_count > 0:
+        mx.eval(*[c.state[0] for c in cache[:compressed_count]])
+
+    return compressed_count

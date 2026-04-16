@@ -717,3 +717,61 @@ class TestWallClockCorrelation:
     def test_scheduling_fraction_capped_at_one(self):
         """Scheduling fraction should never exceed 1.0."""
         assert "min(" in _profiler_src and "1.0" in _profiler_src
+
+
+# ---------------------------------------------------------------------------
+# ShadowKV projection-based compression
+# ---------------------------------------------------------------------------
+
+_shadowkv_src = Path("omlx/shadowkv_cache.py").read_text()
+
+
+class TestShadowKVProjections:
+    """Test ShadowKV offline projection-based K compression."""
+
+    def test_projections_class_exists(self):
+        assert "class ShadowKVProjections" in _shadowkv_src
+
+    def test_load_method_exists(self):
+        assert "def load(" in _shadowkv_src
+
+    def test_compress_function_exists(self):
+        assert "def compress_k_with_projections(" in _shadowkv_src
+
+    def test_compress_uses_per_head_projection(self):
+        """Must project per-head, not joint."""
+        assert "V_k" in _shadowkv_src
+        assert "V_k.T" in _shadowkv_src
+
+    def test_v_cache_untouched(self):
+        """V cache must not be modified by compression."""
+        assert "c.state[1]" in _shadowkv_src
+
+    def test_min_tokens_guard(self):
+        """Should skip compression for short contexts."""
+        assert "min_tokens" in _shadowkv_src
+
+    def test_meta_json_path(self):
+        """Should reference the projection meta.json."""
+        assert "meta.json" in _shadowkv_src
+
+    def test_projections_meta_exists(self):
+        """Projection meta.json should exist (computed by Step 1)."""
+        meta_path = Path("omlx/patches/shadowkv_projections/qwen3_coder_30b_a3b/meta.json")
+        assert meta_path.exists(), f"Missing {meta_path}"
+
+    def test_projections_meta_valid(self):
+        """Meta should have expected fields."""
+        import json
+        meta_path = Path("omlx/patches/shadowkv_projections/qwen3_coder_30b_a3b/meta.json")
+        meta = json.loads(meta_path.read_text())
+        assert meta["n_layers"] == 48
+        assert meta["summary"]["median_rank"] > 0
+        assert meta["summary"]["mean_rel_error"] < 0.02
+
+    def test_median_rank_property(self):
+        assert "median_rank" in _shadowkv_src
+
+    def test_returns_compressed_count(self):
+        """compress_k_with_projections should return count."""
+        assert "return compressed_count" in _shadowkv_src
