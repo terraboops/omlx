@@ -1,0 +1,36 @@
+{
+  "results": [
+    {
+      "name": "NIAH",
+      "T": 272,
+      "kept": 136,
+      "evicted": 136,
+      "keep_pct": 50.0,
+      "agreement_pct": 6.0,
+      "base_text": "SNAPKV-E2E-PASS<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E-PASS. Filler. Filler. F",
+      "skv_text": "SN<|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end"
+    },
+    {
+      "name": "Math",
+      "T": 22,
+      "kept": 22,
+      "evicted": 0,
+      "keep_pct": 100.0,
+      "agreement_pct": 100.0,
+      "base_text": "I'll solve 17 \u00d7 23 using the standard multiplication algorithm.\n\n```\n   17\n\u00d7 23\n-----\n  5",
+      "skv_text": "I'll solve 17 \u00d7 23 using the standard multiplication algorithm.\n\n```\n   17\n\u00d7 23\n-----\n  5"
+    },
+    {
+      "name": "Code",
+      "T": 26,
+      "kept": 26,
+      "evicted": 0,
+      "keep_pct": 100.0,
+      "agreement_pct": 100.0,
+      "base_text": "```python\ndef reverse_string(s: str) -> str:\n    '''Reverse a string.'''\n    return s[::-1]\n```\n\nThis implementation use",
+      "skv_text": "```python\ndef reverse_string(s: str) -> str:\n    '''Reverse a string.'''\n    return s[::-1]\n```\n\nThis implementation use"
+    }
+  ],
+  "avg_agreement": 68.7,
+  "elapsed_s": 25.0
+}
