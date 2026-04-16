@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-15 (pass 21)_
+_Last updated: 2026-04-16 (pass 22)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -3320,6 +3320,224 @@ Rejected during search:
   GRPO) when the trace divergence point is ambiguous.
 - **Local PDF**: research/2603.16158_egca_execution_grounded_ca.pdf
 
+## Pass 22 — 2026-04-16
+
+Cross-field rotation: complexity theory (communication complexity lower bounds),
+neuroscience (hippocampal sleep-inspired memory consolidation), operations research
+(queueing theory for LLM inference latency), and network systems (TCP congestion
+control for KV cache memory pressure). Closes Gap #1 (fused Metal softmax —
+permanently marked as non-arxiv). Partially closes Gap #2 (formal verification
+of codec selection) via information-theoretic lower bounds. Opens two fresh
+cross-field angles (queueing theory, congestion control) that map directly onto
+Hypercar's memory management and serving latency problems.
+
+Rejected during search:
+- HashEvict (2412.16187): LSH-based pre-attention KV cache eviction. KV eviction
+  bucket declared EXHAUSTED at pass 9; the LSH angle was covered by MagicPIG
+  (2410.16179) in pass 5. Does not clear the high bar.
+- Expected Attention (2510.00636): estimates KV importance from future query
+  distribution. Interesting but within the same SnapKV/attention-weighted eviction
+  family already saturated (pass 9+). Does not add a new angle.
+- Throughput-Optimal Scheduling for LLM Inference (2504.07347): scheduling
+  algorithms for multi-agent LLM. Overlaps heavily with CONCUR (2601.22705)
+  which is more recent and includes the AIMD mechanism.
+
+### [Time and Memory Trade-off of KV-Cache Compression in Tensor Transformer Decoding](https://arxiv.org/abs/2503.11108) — 2503.11108
+- **Authors**: Yifang Chen, Xiaoyu Li, Yingyu Liang, Zhenmei Shi, Zhao Song, Yu Tian
+- **Published**: 2025-03 (arXiv, cs.LG)
+- **Hypercar goals it addresses**: Goal 1 (1M context — fundamental limits on KV compression), Goal 6 (48GB fit — memory lower bounds constrain design space)
+- **TL;DR**: Derives information-theoretic memory lower bounds for KV cache
+  compression in tensor attention transformers via reduction from communication
+  complexity (the Index problem). Shows that for d = Omega(log n), any algorithm
+  computing exact or approximate attention with four cache matrices requires
+  Omega(nd) bits, and with two (precomputed Kronecker) cache matrices requires
+  Omega(n^2 d) bits. Also proves that the two-matrix formulation is faster by
+  Omega(n^2 d) but requires quadratically more memory — an inherent time-memory
+  trade-off. Introduces SubGen4Cache and SubGen2Cache algorithms that are
+  provably optimal in the low-dimensional regime (d = o(log n)) with space
+  complexity O-tilde(d * e^d).
+- **Why it matters for Hypercar**: This is the *theoretical floor* that the
+  attention-weighted codec selection design note has been missing. The Omega(nd)
+  lower bound for the four-matrix case means that Hypercar's 3-bit quantised
+  KV cache (which stores n tokens at d dimensions with ~3 bits/element) is
+  operating within a constant factor of the information-theoretic minimum — no
+  scheme can do fundamentally better for exact attention. The practical implication:
+  further KV compression gains *must* come from approximate methods (SnapKV
+  eviction, Quest page selection) that exploit the sparsity of actual attention
+  patterns rather than from better codecs applied to the full cache. This
+  validates the design note's core claim that attention-weighted selection (which
+  reduces effective n) is the right lever, not better per-element compression
+  (which is already near the floor). The communication complexity proof framework
+  (Alice encodes keys, Bob retrieves via query) is structurally identical to the
+  SnapKV eviction problem: the "message" Alice sends is the compressed cache, and
+  Bob's "index" is the query. The lower bound applies to Bob's retrieval.
+- **Connection to attention-weighted codec selection design note**: The lower bound
+  confirms that retrieval-head compression cannot beat Omega(nd) for the tokens
+  it keeps — validating SnapKV's strategy of keeping fewer tokens at full
+  precision rather than keeping all tokens at reduced precision. The streaming-head
+  SVD compression (ShadowKV) operates in a different regime: distributed attention
+  means the "Index problem" doesn't apply (no single argmax to recover), so SVD's
+  uniform Frobenius error is benign. This gives the first formal justification for
+  *why* different head types need different codecs.
+- **Cost of adoption**: Theory-grade — no implementation change, but the lower
+  bounds constrain the design space and validate existing architecture decisions.
+  No task filed; the paper upgrades the design note's theoretical grounding.
+- **Local PDF**: research/2503.11108_kv_compression_lower_bounds.pdf
+
+### [Learning to Forget: Sleep-Inspired Memory Consolidation for Resolving Proactive Interference in Large Language Models (SleepGate)](https://arxiv.org/abs/2603.14517) — 2603.14517
+- **Authors**: Ying Xie
+- **Published**: 2026-03 (arXiv, cs.AI)
+- **Hypercar goals it addresses**: Goal 1 (1M context — interference resolution enables longer effective context), Goal 2 (intelligence — prevents stale KV entries from degrading retrieval accuracy)
+- **TL;DR**: Proposes SleepGate, a biologically inspired framework that augments
+  transformer KV caches with a learned "sleep cycle" consisting of three modules:
+  (1) a conflict-aware temporal tagger that detects when new entries supersede old
+  ones via semantic signatures, (2) a lightweight forgetting gate network (2-layer
+  MLP, <0.01% parameter overhead) that assigns retention scores to each cache
+  entry, and (3) a consolidation module that merges related surviving entries into
+  compact summaries via cross-attention compression. These activate periodically
+  during inference in "sleep micro-cycles" triggered by attention entropy or
+  conflict density signals. The key mechanism is *soft attention biasing*: retention
+  scores r_i are converted to additive pre-softmax biases b_i = beta * log(r_i),
+  exponentially suppressing stale entries without physically removing them.
+  Theoretical analysis shows interference horizon reduces from O(n) to O(log n).
+  Proof-of-concept on a 4-layer, 793K-parameter transformer achieves 99.5%
+  retrieval accuracy at PI depth 5 and 97.0% at PI depth 10, while all five
+  baselines (full KV, sliding window, H2O, StreamingLLM, decay-only) remain below
+  18%. Performance degrades at PI depth 15+ due to semantic signature capacity
+  limits (d_s = 64).
+- **Why it matters for Hypercar**: The proactive interference (PI) problem is
+  *exactly* the failure mode of SnapKV eviction when the same entity is updated
+  multiple times in a long agentic session. In the Hypercar server's agentic mode
+  (TTT engine, tool calls), the context accumulates corrections and updates to
+  code entities — earlier draft code that gets superseded by later corrections.
+  SnapKV's attention-weighted eviction cannot distinguish "high-attention because
+  important" from "high-attention because frequently referenced but now stale."
+  SleepGate's conflict-aware temporal tagger provides the missing signal: it
+  detects when a new KV entry supersedes an old one based on semantic similarity
+  (cos(s_i, s_j) > delta). The soft attention biasing mechanism (Eq. 10) is
+  particularly relevant because it composes with existing KV cache strategies —
+  the bias is additive in log-space, so it can layer on top of DuoAttention's
+  head classification or Quest's page selection without interfering with their
+  mechanisms.
+- **Connection to attention-weighted codec selection design note**: SleepGate
+  adds a *temporal* dimension to the codec selection framework. Currently, the
+  design note selects codecs based on head type (retrieval vs streaming) and
+  attention pattern (sparse vs distributed). SleepGate adds a third axis:
+  *freshness*. An entry that was once important (high attention weight) but has
+  been superseded (high conflict score) should be evicted regardless of its
+  attention history. This is the biological analogy: hippocampal consolidation
+  selects memories for long-term storage based on *current relevance*, not
+  *historical importance*. The multi-scale sleep hierarchy (micro-cycles every
+  512-2K tokens, meso-cycles every 8K-32K, macro-cycles at document boundaries)
+  maps naturally onto the Hypercar prefill chunking problem (task 94): the
+  adaptive prefill controller could trigger sleep micro-cycles between chunks.
+- **Cost of adoption**: Inspiration-grade for the frozen-model Hypercar deployment
+  (SleepGate requires training a forgetting gate network). However, the soft
+  attention biasing mechanism (Eq. 10) could be approximated at inference time
+  using the existing conflict detection from the temporal tagger — no training
+  required, just a heuristic bias based on cosine similarity between cache entries.
+  This is a lightweight addition to the SnapKV eviction logic.
+- **Local PDF**: research/2603.14517_sleepgate_memory_consolidation.pdf
+
+### [A Queueing Theoretic Perspective on Low-Latency LLM Inference with Variable Token Length](https://arxiv.org/abs/2407.05347) — 2407.05347
+- **Authors**: Yuqing Yang, Yuedong Xu, Lei Jiao
+- **Published**: 2024-07 (arXiv, cs.NI; revised 2025-12)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — latency modeling under variable decode cost), Goal 4 (prefill speed — batch scheduling analysis)
+- **TL;DR**: Applies classical queueing theory (M/G/1 model for single requests,
+  bulk queue for batched inference) to analyze how variable output token length
+  affects inference latency. Key finding: under heavy-tailed output token
+  distributions, a very small fraction of long-generation requests dominates
+  queueing delay. Enforcing a maximum output token limit ("max-token clipping")
+  on this small fraction significantly reduces mean queueing delay. Derives
+  closed-form delay expressions for three batching strategies: dynamic batching
+  (all buffered requests), fixed batching (constant batch size), and elastic
+  batching (no intra-batch waiting). The batch processing time depends jointly on
+  batch size and the maximum token count within the batch, creating a
+  "straggler effect" where one long request penalises all co-batched requests.
+  Validated via event-driven simulation showing close match to the M/G/1 model
+  predictions.
+- **Why it matters for Hypercar**: The Hypercar server currently uses a single-
+  request model (no batching), but the queueing theory framework is directly
+  applicable to the *decode latency variance* problem. At 2K context, decode is
+  52 tok/s; at 16K context, it drops. The decode step's service time distribution
+  is *not* memoryless — it depends on the current KV cache size, which grows
+  monotonically during generation. This is precisely the M/G/1 model's
+  "general service time" distribution. The paper's max-token clipping insight
+  maps onto a concrete Hypercar policy: for agentic workloads with tool calls,
+  setting a max-generation-length per tool-call response avoids the heavy-tail
+  penalty. The bulk queue model for batched inference provides the theoretical
+  framework for the adaptive prefill chunker (task 94): each prefill chunk is a
+  "batch" whose processing time is dominated by the O(n^2) attention cost of the
+  longest chunk, so the controller should match chunk sizes to minimise the
+  straggler effect.
+- **Connection to adaptive prefill chunker (task 94)**: The paper's "elastic
+  batching" model (no intra-batch waiting, process whatever is buffered) is the
+  closest analogue to the adaptive prefill chunker's control law. The controller
+  should minimise the expected delay E[D] = E[S^2] / (2 * E[S] * (1 - rho)),
+  where S is the chunk processing time. Since S grows quadratically with chunk
+  size, the optimal chunk size shrinks as context grows — exactly what the
+  proportional gain controller in task 94 should produce. The M/G/1 framework
+  provides the *theoretical optimum* against which the empirical controller can
+  be calibrated.
+- **Cost of adoption**: Theory-grade — no implementation change, but provides the
+  mathematical framework for calibrating task 94's control law. The M/G/1 delay
+  formula can be used directly to set the proportional gain: target the chunk size
+  that minimises E[D] given measured Metal residency and O(n^2) attention cost.
+  No task filed; the paper upgrades task 94's theoretical grounding.
+- **Local PDF**: research/2407.05347_queueing_llm_inference.pdf
+
+### [CONCUR: High-Throughput Agentic Batch Inference of LLM via Congestion-Based Concurrency Control](https://arxiv.org/abs/2601.22705) — 2601.22705
+- **Authors**: Qiaoling Chen, Zhisheng Ye, Tian Tang, Peng Sun, Boyu Tian, Guoteng Wang, Shenggui Li, Yonggang Wen, Zhenhua Han, Tianwei Zhang
+- **Published**: 2026-01 (arXiv, cs.DC)
+- **Hypercar goals it addresses**: Goal 5 (swap pressure — AIMD prevents memory thrashing), Goal 6 (48GB fit — admission control bounds peak memory)
+- **TL;DR**: Identifies "middle-phase thrashing" — a previously uncharacterised
+  pathology in agentic LLM batch inference where KV cache efficiency collapses as
+  long-lived agents accumulate state over time. During the middle phase, GPU
+  memory is saturated but cache hit rates collapse (from ~90% to <20%), consuming
+  49.1% of end-to-end latency through eviction-recomputation cycles. The paper
+  frames this as a congestion control problem and presents CONCUR, which adapts
+  TCP's AIMD (Additive Increase Multiplicative Decrease) to regulate agent
+  concurrency: additive increase (alpha=2) when cache usage <20%, multiplicative
+  decrease (beta=0.5) when usage >50% AND hit rate <20%. The two-signal approach
+  (usage AND hit rate) prevents false positives where high usage with good hit
+  rates indicates healthy utilisation. Reports up to 4.09x throughput gain on
+  Qwen3-32B and 1.9x on DeepSeek-V3 vs SGLang baseline.
+- **Why it matters for Hypercar**: This is the *network congestion control*
+  angle that pass 21's gap list identified as untouched. The "middle-phase
+  thrashing" phenomenon maps directly onto Hypercar's co-tenancy problem: when
+  the server runs alongside browser/editor/Claude Code, the Metal-resident KV
+  cache competes with other processes for the 48GB unified memory pool. The
+  current watchdog (fail-fast on breach) is the equivalent of TCP's "drop the
+  packet" — a blunt instrument. CONCUR's AIMD provides a graduated response:
+  the server can proactively reduce its KV cache footprint when memory pressure
+  rises (multiplicative decrease) and gradually reclaim capacity when pressure
+  subsides (additive increase). The two-signal approach (Metal usage + cache hit
+  rate) is particularly relevant because Hypercar's Metal-resident memory can be
+  high with good hit rates (normal operation) or high with poor hit rates
+  (thrashing) — the distinction is critical for the correct response.
+
+  The AIMD parameters need reinterpretation for Apple Silicon: the "congestion
+  window" is the number of active KV pages (Quest pages or SnapKV retained
+  tokens), alpha is the number of pages to promote from swap-backed to
+  Metal-resident per decode step, and beta is the fraction of pages to demote on
+  a pressure event. The O(log N) recovery time from multiplicative decrease
+  matches the latency budget: a memory pressure event should resolve within a
+  few decode steps, not a few hundred.
+- **Connection to existing tasks**: CONCUR composes with the adaptive prefill
+  chunker (task 94) and PAM select-in-place scheduling (task 93). Task 94's
+  memory-aware controller provides the "usage" signal; CONCUR's AIMD provides
+  the *response policy*. Task 93's select-in-place evaluation (CPU-side min/max
+  comparison) is the equivalent of CONCUR's "cache hit rate" signal — pages that
+  pass the min/max bounds test are "hits", pages that fail are "misses". The
+  combination: AIMD regulates how many pages are Metal-resident (the "window"),
+  and select-in-place determines *which* pages fill that window.
+- **Cost of adoption**: S (1-2 days). The AIMD controller is ~50 lines of Python
+  wrapping the existing `mx.metal.get_active_memory()` signal and the watchdog's
+  memory limit checks. The "multiplicative decrease" replaces the current fail-fast
+  abort with a graceful cache shrink. The "additive increase" replaces the current
+  static KV budget with a self-tuning budget that discovers the maximum safe
+  cache size under current co-tenancy conditions.
+- **Local PDF**: research/2601.22705_concur_congestion_kv.pdf
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -4863,3 +5081,114 @@ closed, and one gap (fused softmax) confirmed as a non-arxiv problem.
 The pattern holds: deferred gaps eventually yield the highest-leverage
 finds when finally pursued. Curiosity never saturates. Meow, nyaa,
 meow.
+
+### Pass 22 adds (2026-04-16)
+
+**Highest-leverage find this pass: CONCUR (2601.22705).** The network
+congestion control angle had been on the gap list since pass 21's fresh
+angles, and CONCUR delivers the exact paper needed: AIMD applied to KV
+cache memory pressure. The contribution is not just the algorithm (AIMD
+is 40-year-old TCP theory) but the *diagnosis*: "middle-phase thrashing"
+is a precisely characterised pathology where cache efficiency collapses
+while memory remains saturated, consuming 49.1% of end-to-end latency.
+This is the failure mode Hypercar hits under co-tenancy: Metal memory is
+full but the KV pages are the wrong ones (cold pages for background
+processes, not hot pages for the active query). The 4.09x throughput gain
+on Qwen3-32B demonstrates that the right response to memory pressure is
+graduated (AIMD) rather than binary (fail-fast abort). Task 96 captures
+the AIMD controller that replaces the current watchdog.
+
+**Second find: KV compression lower bounds (2503.11108)** partially closes
+Gap #2 (formal verification of codec selection) from an unexpected angle:
+communication complexity rather than probabilistic verification. The
+Omega(nd) lower bound for four-cache-matrix attention means that Hypercar's
+3-bit quantised KV cache is within a constant factor of the information-
+theoretic minimum for exact attention. This has a sharp practical
+implication: further compression gains *must* come from approximate methods
+that reduce effective n (SnapKV eviction, Quest page selection), not from
+better per-element codecs. The paper also provides the first formal
+justification for why retrieval heads need exact values (the Index problem
+applies — a single argmax must be recovered) while streaming heads tolerate
+lossy compression (distributed attention means no single argmax, so the
+Index reduction doesn't bind). No standalone task filed — the paper
+upgrades the attention-weighted codec selection design note's theoretical
+grounding.
+
+**Third find: SleepGate (2603.14517)** is the neuroscience cross-field pick
+— sleep-inspired memory consolidation for KV cache management — and the
+most directly relevant to the TTT engine's agentic workflow. The proactive
+interference problem (stale entries compete with current entries for
+attention mass) is exactly the failure mode when an agentic session
+accumulates corrections to code entities. SleepGate's three-module design
+(conflict-aware tagger, learned forgetting gate, consolidation module)
+maps onto the existing SnapKV eviction pipeline: the tagger adds a
+*freshness* axis to the attention-weighted eviction decision, and the soft
+attention biasing mechanism (additive pre-softmax bias proportional to
+log(retention score)) composes with DuoAttention's head classification
+without interference. The 99.5% retrieval accuracy at PI depth 5 vs <18%
+for all baselines demonstrates that active forgetting is an architectural
+requirement, not a prompting fix. Task 97 captures the freshness-aware
+eviction upgrade.
+
+**Fourth find: Queueing theory for LLM inference (2407.05347)** provides
+the mathematical framework for calibrating the adaptive prefill chunker
+(task 94). The M/G/1 model shows that the optimal chunk size minimises
+E[D] = E[S^2] / (2 * E[S] * (1 - rho)), where S is the chunk processing
+time that grows quadratically with chunk size. This gives a closed-form
+target for the proportional gain controller: shrink chunks as context
+grows, matching the O(n^2) attention cliff. No standalone task filed —
+the paper upgrades task 94's theoretical grounding with the M/G/1 delay
+formula.
+
+**Permanently non-arxiv: Fused Metal softmax shader.** Per pass 21's
+recommendation, pass 22 marks this gap as permanently non-arxiv. Four
+consecutive passes have confirmed that no academic paper addresses Metal
+kernel fusion for softmax. The fix lives in the MLX GitHub commit log,
+the Draw Things community project, and potential WWDC improvements. Future
+passes should not search arxiv for this topic.
+
+**Sequencing**: Task 96 (AIMD memory controller) sequences first because
+it replaces the current fail-fast watchdog with a graduated response —
+the most immediate quality-of-life improvement for co-tenancy. Task 97
+(freshness-aware eviction) sequences after task 46 (SnapKV compact) lands,
+because it extends the eviction logic with a temporal dimension. The
+theory papers (2503.11108, 2407.05347) have no standalone tasks — their
+contributions are design-note upgrades and control-law calibration
+formulas that inform existing tasks (codec design note, task 94).
+
+**Gap not closed for pass 23**:
+1. **Formal probabilistic guarantees for attention-weighted codec
+   selection.** Pass 22's lower bound paper (2503.11108) provides the
+   *floor* (you can't do better than Omega(nd)), but not the *ceiling*
+   (what accuracy does SnapKV eviction guarantee at 50% keep ratio?).
+   The conformal prediction work (ATTS, task 82) gives a probabilistic
+   bound on test-time scaling, but the codec-selection-specific bound
+   remains open. The missing paper would prove: "with probability 1-delta,
+   SnapKV's top-k eviction preserves the argmax of the attention
+   distribution for retrieval heads."
+2. **Ecology / resource-competition framing for MoE expert selection.**
+   Third consecutive pass deferring this angle. The analogy (ProMoE expert
+   caching as competitive ecosystem under memory-budget constraints) is
+   still untouched.
+3. **Auction theory / mechanism design for KV cache budget allocation.**
+   Third consecutive pass. The game-theoretic framing may not port cleanly
+   — CONCUR's AIMD is a control-theoretic solution to the same resource
+   allocation problem, suggesting the field has settled on control theory
+   rather than mechanism design for this domain.
+4. **Multi-scale sleep hierarchy for KV cache management.** SleepGate's
+   multi-scale sleep proposal (micro-cycles every 512-2K tokens, meso-
+   cycles every 8K-32K, macro-cycles at document boundaries) is untested.
+   A paper validating hierarchical cache management at multiple timescales
+   would close this gap.
+
+Twenty-two passes. One hundred and five papers. Four fresh cross-field
+angles searched (complexity theory, neuroscience, queueing theory, network
+congestion control), one gap permanently retired (fused Metal softmax),
+one gap partially closed (formal codec verification via communication
+complexity lower bounds), and two new theoretical frameworks acquired
+(M/G/1 delay model for prefill chunking, AIMD congestion control for
+memory management). The most satisfying result: the lower bound paper
+proves that Hypercar's existing 3-bit KV compression is near-optimal,
+redirecting future effort from codec design to selection policy — exactly
+where the backlog was already heading. Curiosity never saturates. Meow,
+nyaa, meow.
