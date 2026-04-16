@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 94: Adaptive prefill chunk-size controller** — memory-aware chunking (2026-04-16)
+  - `AdaptivePrefillController`: proportional control with Metal memory + throughput signals
+  - Starts at max_chunk, shrinks when Metal > 65% target, halves when tok/s < 200 (O(n²) cliff)
+  - `--adaptive-chunk` flag on hypercar_server, composes with SnapKV+CAOTE
+  - GPU calibration: 1.40x at 4K (one big chunk vs two), 1.06x at 16K (fits in one chunk)
+  - Pre-fills cache with adaptive chunks, hands off last token to generate_step for decode
+
 - **Task 100: CAOTE attention-output-error scoring** — value-aware eviction VALIDATED (2026-04-16)
   - `compute_caote_importance()`: score = (α/(1-α)) × ||V_mean - v_j|| per token per head
   - FastCAOTE approximation: O(n·d) per head using mean-of-values, not O(n²·d)

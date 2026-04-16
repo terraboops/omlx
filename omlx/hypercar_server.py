@@ -301,6 +301,9 @@ def main():
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
     parser.add_argument("--prefill-step-size", type=int, default=8192,
                         help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
+    parser.add_argument("--adaptive-chunk", action="store_true", default=False,
+                        help="Adaptive prefill chunking: auto-adjusts chunk size based on "
+                             "Metal memory pressure and throughput. Overrides --prefill-step-size.")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temp", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -340,7 +343,10 @@ def main():
         logger.info(f"Features:         save/load, rewind, fork (WHT rotation)")
     if args.snapkv_keep > 0:
         logger.info(f"SnapKV keep:      top-{args.snapkv_keep} tokens (eviction at prefill end)")
-    logger.info(f"Prefill step:     {args.prefill_step_size}")
+    if args.adaptive_chunk:
+        logger.info(f"Prefill:          adaptive (max={args.prefill_step_size}, memory-aware)")
+    else:
+        logger.info(f"Prefill step:     {args.prefill_step_size}")
     logger.info(f"Host:Port:        {args.host}:{args.port}")
     logger.info(f"Prompt cache:     {args.prompt_cache_size} entries, "
                 f"{args.prompt_cache_bytes // 1_000_000_000}GB")
@@ -364,6 +370,13 @@ def main():
             logger.info("MInference sparse prefill ENABLED")
         else:
             logger.warning("MInference sparse prefill FAILED — falling back to dense")
+
+    # Apply adaptive prefill if requested (must be BEFORE SnapKV — both wrap generate_step,
+    # adaptive prefill is the outer wrapper that handles prefill, SnapKV is inner for eviction)
+    if args.adaptive_chunk:
+        from omlx.patches.adaptive_prefill import apply_adaptive_prefill
+        apply_adaptive_prefill(max_chunk=args.prefill_step_size)
+        logger.info("Adaptive prefill chunking ENABLED")
 
     # Apply SnapKV eviction if requested (must be AFTER patches, BEFORE server starts)
     if args.snapkv_keep > 0:

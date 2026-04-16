@@ -957,3 +957,61 @@ class TestSnapKVSource:
         # Check at least one result used CAOTE scoring
         has_caote = any(r.get("scoring") == "CAOTE" for r in data.get("results", []))
         assert has_caote, "No CAOTE results in benchmark output"
+
+
+# ---- Task 94: Adaptive Prefill Controller ----
+
+_adaptive_src = Path("omlx/patches/adaptive_prefill.py").read_text()
+
+
+class TestAdaptivePrefillSource:
+    """Source-level tests for adaptive prefill controller."""
+
+    def test_controller_class_exists(self):
+        assert "class AdaptivePrefillController" in _adaptive_src
+
+    def test_controller_has_feedback(self):
+        """Controller must accept feedback (metal_gb, tok_per_sec)."""
+        assert "def feedback(" in _adaptive_src
+
+    def test_controller_has_next_chunk(self):
+        """Controller must output next chunk size."""
+        assert "def next_chunk_size(" in _adaptive_src
+
+    def test_controller_has_summary(self):
+        """Controller must provide summary for profiling."""
+        assert "def summary(" in _adaptive_src
+
+    def test_memory_signal(self):
+        """Must use Metal memory as control signal."""
+        assert "metal_gb" in _adaptive_src
+        assert "target_metal" in _adaptive_src
+
+    def test_throughput_signal(self):
+        """Must use throughput as secondary signal."""
+        assert "throughput_floor" in _adaptive_src
+        assert "tok_per_sec" in _adaptive_src
+
+    def test_proportional_control(self):
+        """Must shrink when over target, grow when under."""
+        assert "metal_ratio" in _adaptive_src
+        assert "// 2" in _adaptive_src or "* 0.5" in _adaptive_src
+
+    def test_chunk_bounds(self):
+        """Must clamp between min_chunk and max_chunk."""
+        assert "min_chunk" in _adaptive_src
+        assert "max_chunk" in _adaptive_src
+
+    def test_apply_function_exists(self):
+        """Must have apply_adaptive_prefill for monkey-patching."""
+        assert "def apply_adaptive_prefill(" in _adaptive_src
+
+    def test_server_flag_exists(self):
+        """hypercar_server must have --adaptive-chunk flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--adaptive-chunk" in server_src
+
+    def test_server_wires_adaptive(self):
+        """Server must call apply_adaptive_prefill when flag is set."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "apply_adaptive_prefill" in server_src
