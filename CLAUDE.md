@@ -41,8 +41,27 @@ any of these — even to improve another — needs explicit justification.
 heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
 
 **5 of 6 goals MET** in duo mode. Full `--full` benchmark ALL 9 GATES PASS (HumanEval 95%, 1481s).
-Only Goal 1 (1M context validation beyond 64K) remains — requires `--kv-mode native` with chunk=512.
+Only Goal 1 (1M context validation beyond 64K) remains — requires KV compression for 128K+ under co-tenancy.
 Per-phase headroom checks (Task 86) now gracefully skip memory-hungry phases under co-tenancy.
+
+### Goal 1 Path (KV compression research, 2026-04-15)
+
+Three approaches tested for post-trained KV cache compression:
+
+| Approach | Result | Why |
+|----------|--------|-----|
+| MLA joint SVD (K+V, d_c=241) | **FAIL** — 7% token agreement | Approximation errors compound across 48 layers during autoregressive decode |
+| ShadowKV per-head SVD (K-only, rank 85) | **POOR** — 100% code, 16% NIAH | Argmax instability: uniform 0.85% error flips sparse attention argmax |
+| SnapKV eviction (attention-guided, exact values) | **VALIDATED** — needle preserved at 25% keep | Zero approximation error on kept tokens |
+
+**Key insight**: SVD rank is the wrong metric for KV compression. What matters is attention-weighted
+correctness, not energy-weighted reconstruction. SnapKV works because it keeps high-attention tokens
+at full precision. See `research/OPTIMIZATION_DECISION_MATRIX.md` for the full 4-tier ranking and
+`research/attention_weighted_codec_selection.md` for the per-head-type codec architecture.
+
+**Next step**: Task 46 (SnapKV compact) needs a custom cache class that supports sparse position IDs —
+MLX's KVCache uses contiguous buffer/offset which breaks physical token removal. Options: attention
+masking (no memory savings) or custom `SparseKVCache` class (M effort).
 
 ## Before Every Commit
 
