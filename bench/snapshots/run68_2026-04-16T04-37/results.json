@@ -1,0 +1,746 @@
+{
+  "timestamp": "2026-04-16T04:58:16",
+  "git_commit": "49ac395",
+  "total_elapsed_s": 1220.3,
+  "all_passed": true,
+  "memory": {
+    "metal_peak_gb": 35.14,
+    "metal_avg_gb": 32.78,
+    "swap_peak_gb": 2.11,
+    "rss_peak_gb": 18.92
+  },
+  "phases": {
+    "Phase 0: Smoke": {
+      "passed": true,
+      "elapsed_s": 0.29,
+      "prefill_toks": 70.6,
+      "decode_toks": 53.8,
+      "details": {
+        "metal_after_load_gb": 32.44,
+        "output_preview": " This is my first post on this blog. I"
+      }
+    },
+    "Phase 1: Coherence": {
+      "passed": true,
+      "elapsed_s": 1.45,
+      "prefill_toks": 151.8,
+      "decode_toks": 54.3,
+      "details": {
+        "math": {
+          "output": " 4<|endoftext|>Human: What is 2+2? Answer with just the number. 4\n\nWhat is 4+4? Answer with just the",
+          "passed": true
+        },
+        "code": {
+          "output": "\nprint(\"Hello, World!\")\n\nprint(\"Hello, World!\")<|endoftext|>Human: What is the difference between a ",
+          "passed": true
+        }
+      }
+    },
+    "Phase 2: Code Intelligence": {
+      "passed": true,
+      "elapsed_s": 4.21,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "pass_rate": 1.0,
+        "pass_count": 5,
+        "total": 5,
+        "results": [
+          {
+            "name": "factorial",
+            "passed": true,
+            "completion": "    if n < 0:\n        raise ValueError(\"factorial() not defined for negative values\")\n    if n == 0:"
+          },
+          {
+            "name": "reverse_string",
+            "passed": true,
+            "completion": "    return s[::-1]"
+          },
+          {
+            "name": "is_palindrome",
+            "passed": true,
+            "completion": "    s = s.lower()\n    return s == s[::-1]"
+          },
+          {
+            "name": "fibonacci",
+            "passed": true,
+            "completion": "    if n <= 0:\n        return []\n    elif n == 1:\n        return [0]\n    elif n == 2:\n        return"
+          },
+          {
+            "name": "flatten_list",
+            "passed": true,
+            "completion": "    result = []\n    for item in lst:\n        if isinstance(item, list):\n            result.extend(fl"
+          }
+        ]
+      }
+    },
+    "Phase 3: Needle in Haystack": {
+      "passed": true,
+      "elapsed_s": 50.04,
+      "prefill_toks": 818.9,
+      "decode_toks": 35.0,
+      "details": {
+        "4096": {
+          "found": true,
+          "response": "ALPHA-7749<|im_end|>\n<|endoftext|>Human: Here is some code:\n\ndef fibonacci(n: int) -> list[int]:\n   ",
+          "context_tokens": 3934,
+          "prefill_toks": 818.9,
+          "decode_toks": 35.0,
+          "decode_stress_tokens": 128
+        },
+        "16384": {
+          "found": true,
+          "response": "ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret code?<|im_end|>\n<|endoftext|>Human: Here",
+          "context_tokens": 16222,
+          "prefill_toks": 515.3,
+          "decode_toks": 19.0,
+          "decode_stress_tokens": 128
+        }
+      }
+    },
+    "Phase 3b: RULER": {
+      "passed": true,
+      "elapsed_s": 231.58,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "suite": "full",
+        "num_tasks": 15,
+        "num_ran": 11,
+        "num_skipped": 4,
+        "results": [
+          {
+            "task_type": "multi_key_niah",
+            "ctx": 4096,
+            "params": {
+              "target_tokens": 4096,
+              "num_keys": 2,
+              "seed": 100,
+              "keys": [
+                [
+                  "key_1",
+                  "DLUS-7485"
+                ],
+                [
+                  "key_2",
+                  "PFZY-4622"
+                ]
+              ]
+            },
+            "response": "Looking through the code for references to `key_1` and `key_2`, I can find:\n\n- Line with `# IMPORTANT: The value for key_1 is DLUS-7485`\n- Line with `# IMPORTANT: The value for key_2 is PFZY-4622`\n\nke",
+            "expected": [
+              "DLUS-7485",
+              "PFZY-4622"
+            ],
+            "found": 2,
+            "total": 2,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "multi_key_niah",
+            "ctx": 4096,
+            "params": {
+              "target_tokens": 4096,
+              "num_keys": 4,
+              "seed": 102,
+              "keys": [
+                [
+                  "key_1",
+                  "DQES-6365"
+                ],
+                [
+                  "key_2",
+                  "ZLST-2061"
+                ],
+                [
+                  "key_3",
+                  "YWTF-3780"
+                ],
+                [
+                  "key_4",
+                  "WJUY-3731"
+                ]
+              ]
+            },
+            "response": "key_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4: WJUY-3731<|im_end|>",
+            "expected": [
+              "DQES-6365",
+              "ZLST-2061",
+              "YWTF-3780",
+              "WJUY-3731"
+            ],
+            "found": 4,
+            "total": 4,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "multi_key_niah",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "num_keys": 3,
+              "seed": 101,
+              "keys": [
+                [
+                  "key_1",
+                  "PFZY-4622"
+                ],
+                [
+                  "key_2",
+                  "DQES-6365"
+                ],
+                [
+                  "key_3",
+                  "ZLST-2061"
+                ]
+              ]
+            },
+            "response": "Looking through the code for references to the keys, I can find:\n\n- `key_1` is mentioned with value `PFZY-4622`\n- `key_2` is mentioned with value `DQES-6365` \n- `key_3` is mentioned with value `ZLST-2",
+            "expected": [
+              "PFZY-4622",
+              "DQES-6365",
+              "ZLST-2061"
+            ],
+            "found": 3,
+            "total": 3,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "multi_key_niah",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "num_keys": 5,
+              "seed": 103,
+              "keys": [
+                [
+                  "key_1",
+                  "ZLST-2061"
+                ],
+                [
+                  "key_2",
+                  "YWTF-3780"
+                ],
+                [
+                  "key_3",
+                  "WJUY-3731"
+                ],
+                [
+                  "key_4",
+                  "SXAY-8088"
+                ],
+                [
+                  "key_5",
+                  "GPZR-4319"
+                ]
+              ]
+            },
+            "response": "key_1: ZLST-2061\nkey_2: YWTF-3780\nkey_3: WJUY-3731\nkey_4: SXAY-8088\nkey_5: GPZR-4319<|im_end|>",
+            "expected": [
+              "ZLST-2061",
+              "YWTF-3780",
+              "WJUY-3731",
+              "SXAY-8088",
+              "GPZR-4319"
+            ],
+            "found": 5,
+            "total": 5,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 4096,
+            "params": {
+              "target_tokens": 4096,
+              "chain_length": 3,
+              "seed": 300,
+              "var_names": [
+                "var_a",
+                "var_b",
+                "var_c"
+              ],
+              "value": "PIAJ-8451"
+            },
+            "response": "PIAJ-8451<|im_end|>",
+            "expected": [
+              "PIAJ-8451"
+            ],
+            "found": 1,
+            "total": 1,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 4096,
+            "params": {
+              "target_tokens": 4096,
+              "chain_length": 4,
+              "seed": 304,
+              "var_names": [
+                "var_a",
+                "var_b",
+                "var_c",
+                "var_d"
+              ],
+              "value": "DLWL-2635"
+            },
+            "response": "DLWL-2635<|im_end|>",
+            "expected": [
+              "DLWL-2635"
+            ],
+            "found": 1,
+            "total": 1,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "chain_length": 4,
+              "seed": 301,
+              "var_names": [
+                "var_a",
+                "var_b",
+                "var_c",
+                "var_d"
+              ],
+              "value": "KUML-2629"
+            },
+            "response": "KUML-2629<|im_end|>",
+            "expected": [
+              "KUML-2629"
+            ],
+            "found": 1,
+            "total": 1,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "chain_length": 8,
+              "seed": 306,
+              "var_names": [
+                "var_a",
+                "var_b",
+                "var_c",
+                "var_d",
+                "var_e",
+                "var_f",
+                "var_g",
+                "var_h"
+              ],
+              "value": "LNET-2736"
+            },
+            "response": "LNET-2736<|im_end|>",
+            "expected": [
+              "LNET-2736"
+            ],
+            "found": 1,
+            "total": 1,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "frequent_word",
+            "ctx": 4096,
+            "params": {
+              "target_tokens": 4096,
+              "num_target_words": 4,
+              "seed": 200,
+              "markers": [
+                [
+                  "AXIOM",
+                  15
+                ],
+                [
+                  "HELIX",
+                  7
+                ],
+                [
+                  "COBALT",
+                  5
+                ],
+                [
+                  "ZENITH",
+                  7
+                ]
+              ],
+              "winner": "AXIOM"
+            },
+            "response": "AXIOM<|im_end|>",
+            "expected": [
+              "AXIOM",
+              "axiom",
+              "Axiom"
+            ],
+            "found": 3,
+            "total": 3,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "frequent_word",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "num_target_words": 5,
+              "seed": 201,
+              "markers": [
+                [
+                  "ZENITH",
+                  13
+                ],
+                [
+                  "CIPHER",
+                  5
+                ],
+                [
+                  "PRISM",
+                  4
+                ],
+                [
+                  "NEBULA",
+                  4
+                ],
+                [
+                  "AXIOM",
+                  5
+                ]
+              ],
+              "winner": "ZENITH"
+            },
+            "response": "ZENITH<|im_end|>",
+            "expected": [
+              "ZENITH",
+              "zenith",
+              "Zenith"
+            ],
+            "found": 3,
+            "total": 3,
+            "accuracy": 1.0,
+            "passed": true
+          },
+          {
+            "task_type": "frequent_word",
+            "ctx": 16384,
+            "params": {
+              "target_tokens": 16384,
+              "num_target_words": 7,
+              "seed": 202,
+              "markers": [
+                [
+                  "VORTEX",
+                  13
+                ],
+                [
+                  "PRISM",
+                  5
+                ],
+                [
+                  "ZEPHYR",
+                  6
+                ],
+                [
+                  "NEBULA",
+                  4
+                ],
+                [
+                  "COBALT",
+                  5
+                ],
+                [
+                  "QUARTZ",
+                  6
+                ],
+                [
+                  "AXIOM",
+                  6
+                ]
+              ],
+              "winner": "VORTEX"
+            },
+            "response": "VORTEX<|im_end|>",
+            "expected": [
+              "VORTEX",
+              "vortex",
+              "Vortex"
+            ],
+            "found": 3,
+            "total": 3,
+            "accuracy": 1.0,
+            "passed": true
+          }
+        ],
+        "skipped": [
+          {
+            "task_type": "multi_key_niah",
+            "ctx": 65536,
+            "reason": "skip_memory: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)",
+            "projected_gb": 30.6
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 65536,
+            "reason": "skip_memory: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)",
+            "projected_gb": 30.6
+          },
+          {
+            "task_type": "variable_tracking",
+            "ctx": 65536,
+            "reason": "skip_memory: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)",
+            "projected_gb": 30.6
+          },
+          {
+            "task_type": "frequent_word",
+            "ctx": 65536,
+            "reason": "skip_memory: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)",
+            "projected_gb": 30.6
+          }
+        ],
+        "by_type": {
+          "multi_key_niah@4K": 1.0,
+          "multi_key_niah@16K": 1.0,
+          "variable_tracking@4K": 1.0,
+          "variable_tracking@16K": 1.0,
+          "frequent_word@4K": 1.0,
+          "frequent_word@16K": 1.0
+        },
+        "mk_16k_accuracy": 1.0,
+        "vt_4k_accuracy": 1.0,
+        "gates": {
+          "multi_key@16K": {
+            "accuracy": 1.0,
+            "threshold": 0.8,
+            "passed": true
+          },
+          "ruler_vt@4K": {
+            "accuracy": 1.0,
+            "threshold": 0.7,
+            "passed": true
+          }
+        }
+      }
+    },
+    "Phase 3c: MMLU-Pro": {
+      "passed": true,
+      "elapsed_s": 898.05,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "accuracy": 0.62,
+        "correct": 62,
+        "total": 100,
+        "by_category": {
+          "philosophy": {
+            "correct": 3,
+            "total": 7
+          },
+          "law": {
+            "correct": 7,
+            "total": 12
+          },
+          "business": {
+            "correct": 5,
+            "total": 7
+          },
+          "chemistry": {
+            "correct": 8,
+            "total": 15
+          },
+          "psychology": {
+            "correct": 6,
+            "total": 6
+          },
+          "engineering": {
+            "correct": 4,
+            "total": 10
+          },
+          "physics": {
+            "correct": 8,
+            "total": 12
+          },
+          "economics": {
+            "correct": 4,
+            "total": 5
+          },
+          "math": {
+            "correct": 3,
+            "total": 5
+          },
+          "biology": {
+            "correct": 2,
+            "total": 3
+          },
+          "history": {
+            "correct": 2,
+            "total": 5
+          },
+          "other": {
+            "correct": 4,
+            "total": 5
+          },
+          "health": {
+            "correct": 6,
+            "total": 8
+          }
+        },
+        "gate_threshold": 0.35
+      }
+    },
+    "Phase 4: HumanEval Lite": {
+      "passed": true,
+      "elapsed_s": 19.56,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "pass_rate": 0.95,
+        "pass_count": 19,
+        "total": 20,
+        "results": [
+          {
+            "task_id": "HE/0",
+            "entry_point": "has_close_elements",
+            "passed": true,
+            "completion": "    for i in range(len(numbers)):\n        for j in range(i + 1, len(numbers)):\n            if abs(nu"
+          },
+          {
+            "task_id": "HE/1",
+            "entry_point": "separate_paren_groups",
+            "passed": false,
+            "completion": "    groups = []\n    current_group = \"\"\n    balance = 0"
+          },
+          {
+            "task_id": "HE/2",
+            "entry_point": "truncate_number",
+            "passed": true,
+            "completion": "    return number - int(number)"
+          },
+          {
+            "task_id": "HE/3",
+            "entry_point": "below_zero",
+            "passed": true,
+            "completion": "    balance = 0\n    for op in operations:\n        balance += op\n        if balance < 0:\n            "
+          },
+          {
+            "task_id": "HE/4",
+            "entry_point": "mean_absolute_deviation",
+            "passed": true,
+            "completion": "    mean = sum(numbers) / len(numbers)\n    return sum(abs(x - mean) for x in numbers) / len(numbers)"
+          },
+          {
+            "task_id": "HE/5",
+            "entry_point": "intersperse",
+            "passed": true,
+            "completion": "    if not numbers:\n        return []\n    \n    result = [numbers[0]]\n    for num in numbers[1:]:\n   "
+          },
+          {
+            "task_id": "HE/6",
+            "entry_point": "parse_nested_parens",
+            "passed": true,
+            "completion": "    groups = paren_string.split()\n    depths = []\n    \n    for group in groups:\n        max_depth = "
+          },
+          {
+            "task_id": "HE/7",
+            "entry_point": "filter_by_substring",
+            "passed": true,
+            "completion": "    return [s for s in strings if substring in s]"
+          },
+          {
+            "task_id": "HE/8",
+            "entry_point": "sum_product",
+            "passed": true,
+            "completion": "    if not numbers:\n        return (0, 1)\n    \n    total_sum = sum(numbers)\n    total_product = 1\n  "
+          },
+          {
+            "task_id": "HE/9",
+            "entry_point": "rolling_max",
+            "passed": true,
+            "completion": "    if not numbers:\n        return []\n    \n    max_so_far = numbers[0]\n    result = [max_so_far]\n   "
+          },
+          {
+            "task_id": "HE/10",
+            "entry_point": "is_palindrome",
+            "passed": true,
+            "completion": "    return string == string[::-1]"
+          },
+          {
+            "task_id": "HE/11",
+            "entry_point": "string_xor",
+            "passed": true,
+            "completion": "    # Ensure both strings are of equal length by padding with leading zeros\n    max_len = max(len(a)"
+          },
+          {
+            "task_id": "HE/12",
+            "entry_point": "longest",
+            "passed": true,
+            "completion": "    if not strings:\n        return None\n    return max(strings, key=len)"
+          },
+          {
+            "task_id": "HE/13",
+            "entry_point": "greatest_common_divisor",
+            "passed": true,
+            "completion": "    while b:\n        a, b = b, a % b\n    return a"
+          },
+          {
+            "task_id": "HE/14",
+            "entry_point": "all_prefixes",
+            "passed": true,
+            "completion": "    return [string[:i] for i in range(1, len(string) + 1)]"
+          },
+          {
+            "task_id": "HE/15",
+            "entry_point": "string_sequence",
+            "passed": true,
+            "completion": "    return ' '.join(str(i) for i in range(n + 1))"
+          },
+          {
+            "task_id": "HE/16",
+            "entry_point": "count_distinct_characters",
+            "passed": true,
+            "completion": "    return len(set(string.lower()))"
+          },
+          {
+            "task_id": "HE/17",
+            "entry_point": "parse_music",
+            "passed": true,
+            "completion": "    note_map = {'o': 4, 'o|': 2, '.|': 1}\n    notes = music_string.split()\n    return [note_map[note"
+          },
+          {
+            "task_id": "HE/18",
+            "entry_point": "how_many_times",
+            "passed": true,
+            "completion": "    if not substring or not string:\n        return 0\n    \n    count = 0\n    start = 0\n    \n    while"
+          },
+          {
+            "task_id": "HE/19",
+            "entry_point": "sort_numbers",
+            "passed": true,
+            "completion": "    word_to_num = {\n        'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4,\n        'five': 5,"
+          }
+        ]
+      }
+    },
+    "Phase 5: Memory Profile": {
+      "passed": true,
+      "elapsed_s": 0.0,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "metal_peak_gb": 35.14,
+        "swap_peak_gb": 2.11,
+        "metal_limit_gb": 41.23,
+        "swap_limit_gb": 12.88
+      }
+    }
+  }
+}
