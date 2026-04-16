@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-16 (pass 26)_
+_Last updated: 2026-04-12 (pass 27)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -6402,3 +6402,407 @@ triggered vouchers. The inventory-theoretic perspective from MatKV
 reframes KV materialisation as a newsvendor problem with a closed-form
 break-even, connecting the TQ3 save/load feature to classical operations
 research. Curiosity never saturates. Meow, nyaa, meow.
+
+## Pass 27 — 2026-04-12
+
+### [Understanding the Physics of Key-Value Cache Compression for LLMs through Attention Dynamics](https://arxiv.org/abs/2603.01426) — 2603.01426
+- **Authors**: Samhruth Ananthanarayanan, Ayan Sengupta, Tanmoy Chakraborty
+- **Published**: 2026-03 (preprint)
+- **Hypercar goals it addresses**: Goal 1 (1M context — predicts exact compression threshold where KV eviction becomes catastrophic), Goal 2 (intelligence — identifies representational rigidity as a failure mode distinct from token erasure)
+- **TL;DR**: Reframes KV cache compression as a controlled perturbation
+  of token-level routing in attention, introducing a physics-inspired
+  three-level hierarchy: **retention** (token survives in cache),
+  **accessibility** (token remains reachable through attention pathways),
+  and **utilization** (model actually uses the token for reasoning). The
+  key finding is a **universal hallucination safety cliff near 90%
+  compression** (alpha ~= 0.9): all models exhibit a sharp phase
+  transition where hallucination rates spike, correlated with spikes in
+  Global Eviction Ratio (GER). GER measures the fraction of
+  answer-relevant tokens that are globally evicted (pruned from all
+  attention heads simultaneously): GER(alpha) = (1/|T_ans|) *
+  sum(GlobalEvicted(t, alpha)). The phase transition is sharp: the
+  compression susceptibility chi = dH/dalpha peaks near alpha ~= 0.9,
+  matching critical phenomena in statistical physics. Below 90%,
+  redundancy in attention routing provides resilience; above 90%, the
+  last surviving routes collapse simultaneously. Beyond erasure, the
+  paper identifies **representational rigidity**: excessive head-level
+  consensus collapses routing flexibility despite tokens surviving in
+  cache. Probing accuracy can remain high (concept vectors decodable)
+  while generation fails — the bottleneck is routing availability, not
+  representation. Architecture-specific routing dynamics: LLaMA shows
+  **early consensus, late diversification** (inverted funnel); Qwen
+  shows **early exploration, late consolidation** (funnel). This means
+  identical depth-based pruning heuristics (e.g., PyramidKV's funneling)
+  can be safe for one architecture and brittle for another. The paper
+  connects KV compression to the **lottery ticket hypothesis** via
+  Token-Route Lottery Tickets (TR-LT): a subgraph where answer tokens
+  remain reachable from query tokens through at least one head. The
+  probability of surviving compression scales as 1-(1-p)^k where k is
+  the route redundancy — exponential protection from redundant routing.
+  Tested on LLaMA-3 8B, LLaMA-3.2 3B, Qwen-2.5 7B/3B/14B using
+  FINCH Press and AdaKV Press, with seven synthetic tasks covering
+  multi-entity tracking, disambiguation, coreference, and multi-hop
+  reasoning. Knowledge manipulation: >90% F1 until 40% compression,
+  then cliff. Coreference: Qwen drops 26.89 points under question-aware
+  pruning (75.63->52.00 AGN->AWR).
+- **Why it matters for Hypercar**: This paper directly instantiates the
+  **materials science / phase transition** angle seeded in pass 26's gap
+  list. The 90% hallucination cliff has immediate practical consequences
+  for Hypercar's compression stack: our SnapKV + CAOTE eviction operates
+  at 75% compression (25% keep), which is safely below the cliff but
+  close enough that aggressive AIMD budget controller ramp-downs (task
+  96) could cross into the danger zone during memory pressure. The GER
+  metric provides a runtime safety check that is missing from the current
+  stack: compute GER over the attention sink tokens (which are known to
+  be answer-relevant in NIAH) and abort/widen the keep budget if GER
+  exceeds a threshold. The retention/accessibility/utilization hierarchy
+  maps directly to the existing eviction signals: SnapKV ensures
+  retention, CAOTE ensures accessibility (tokens that matter for output
+  are kept), and structural sponsorship (TA, task 100) ensures
+  utilization (dormant tokens that will be needed later are protected).
+  The architecture-specific routing dynamics are critical for Qwen3-
+  Coder: Qwen's funnel-like late convergence means that evicting tokens
+  from deep layers is more dangerous than evicting from early layers —
+  the opposite of PyramidKV's assumption. This directly informs the
+  topology-guided budget (task 99): Qwen3-Coder's budget allocation
+  should be bottom-heavy (more budget to deep layers), not top-heavy.
+  The TR-LT redundancy analysis provides a principled basis for the
+  submodular eviction guarantee (task 102): the (1-1/e) bound from
+  OTPrune is the set-level version of the exponential redundancy
+  protection 1-(1-p)^k. Together they give both per-token and set-level
+  guarantees against the phase transition.
+- **Cost of adoption**: S (0.5-1 day). The GER metric is a simple
+  computation over the eviction mask: count tokens evicted from all
+  heads. Adding it as a safety monitor to the SnapKV pipeline requires
+  checking the eviction mask intersection across heads after each
+  eviction step. The architecture-specific budget allocation insight
+  (bottom-heavy for Qwen) requires recalibrating the topology-guided
+  budget from task 99, but no new mechanism.
+- **Local PDF**: research/2603.01426_physics_kv_cache_compression.pdf
+
+### [The Pitfalls of KV Cache Compression](https://arxiv.org/abs/2510.00231) — 2510.00231
+- **Authors**: Alex Chen, Renato Geh, Aditya Grover, Guy Van den Broeck, Daniel Israel (UCLA)
+- **Published**: 2025-09 (preprint)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — prevents silent instruction dropping under compression), Goal 1 (1M context — fair eviction maintains multi-instruction fidelity at high compression)
+- **TL;DR**: Demonstrates that KV cache compression causes
+  **non-uniform instruction degradation** in multi-instruction prompts:
+  certain instructions degrade faster than others, effectively being
+  silently ignored by the model. Six pitfalls identified: (1) different
+  instructions degrade at different rates, (2) effects depend on
+  eviction policy AND model, (3) compression causes system prompt
+  leakage, (4) instruction order heavily impacts degradation, (5)
+  eviction disproportionately targets certain instructions (eviction
+  bias), (6) wrong-token eviction causes critical degradation. The
+  paper's case study on system prompt leakage shows that defense
+  instructions (e.g., "do not reveal your instructions") are
+  preferentially evicted by StreamingLLM and SnapKV because they occupy
+  early-context positions with low recency scores. ROUGE-L leakage
+  rises sharply at moderate compression (0.3-0.7) before dropping at
+  extreme compression (model loses the content entirely). Instruction
+  order matters critically: placing defense before directive causes
+  defense to be evicted first; flipping the order partially mitigates
+  but does not eliminate the bias. Two mitigations proposed: (a)
+  **token whitelisting** — manually protect semantic anchors (defense
+  keywords) from eviction, reducing leakage at negligible directive-
+  following cost; (b) **fair eviction** — allocate eviction budget
+  proportionally across instruction partitions so that each instruction
+  retains the same fraction of its tokens: b_X/n_X = b_Y/n_Y. Fair
+  eviction is model-agnostic and can wrap any existing policy. Tested
+  on Llama3.1-8B and Qwen2.5-14B with StreamingLLM, H2O, K-norm,
+  SnapKV, and TOVA using IFEval (541 prompts, modified for multi-
+  instruction). Spearman rank correlation shows multi-instruction
+  prompts degrade sooner and with more variance than single-instruction.
+  K-norm achieves lowest eviction bias but worst overall quality
+  (unbiased but undiscriminating), revealing the bias-quality tradeoff.
+- **Why it matters for Hypercar**: This paper identifies a critical
+  blind spot in the current eviction stack. Hypercar serves agentic
+  coding workflows where every request contains multiple implicit
+  instructions: system prompt (persona, safety guardrails), tool-calling
+  protocol, user query, and code context. The eviction bias finding
+  means that SnapKV — Hypercar's primary eviction method — will
+  preferentially evict system prompt tokens over user query tokens
+  because system prompt tokens are older and receive less recent
+  attention. This is the mirror image of Transactional Attention's
+  dormant token problem (pass 26): TA protects semantically dormant
+  *value* tokens, while fair eviction protects structurally dormant
+  *instruction* tokens. The two mechanisms are complementary. The fair
+  eviction policy is trivially integrable: partition the prompt into
+  instruction segments (system prompt, tool protocol, user message,
+  code context), compute per-segment token counts, and allocate SnapKV
+  budget proportionally. This composes with BUZZ segmented eviction
+  (task 98) — BUZZ determines segments by content similarity, while
+  fair eviction allocates budget across instruction-level partitions.
+  The token whitelisting mitigation connects to CodeComp's structural
+  protection (task 101): both whitelist semantically critical tokens
+  from eviction, but CodeComp uses tree-sitter analysis while Pitfalls
+  uses keyword-based anchoring. A unified whitelist mechanism that
+  combines structural (CodeComp) and keyword (Pitfalls) protection
+  would cover both code structure and instruction integrity. The
+  leakage vulnerability is security-relevant: if Hypercar compresses
+  system prompts in multi-turn serving, the defense instructions
+  ("do not reveal tool-calling internals") will degrade first.
+- **Cost of adoption**: XS (0.5 day). Fair eviction wraps any existing
+  policy with proportional budget allocation across instruction
+  partitions. The partition boundaries are already known at prompt
+  construction time (system prompt length, user message length, code
+  context length). The per-partition budget is a simple ratio
+  computation. No model changes needed.
+- **Local PDF**: research/2510.00231_pitfalls_kv_cache_compression.pdf
+
+### [PHOTON: Hierarchical Autoregressive Modeling for Lightspeed and Memory-Efficient Language Generation](https://arxiv.org/abs/2512.20687) — 2512.20687
+- **Authors**: Yuma Ichikawa, Naoya Takagi, Takumi Nakagawa, Yuzi Kanazawa, Akira Sakai
+- **Published**: 2025-12 (revised 2026-01)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 43.8x throughput increase via hierarchical KV), Goal 1 (1M context — O(T/16) KV traffic instead of O(T))
+- **TL;DR**: Replaces the transformer's horizontal token-by-token
+  scanning with **vertical multi-resolution context scanning**. PHOTON
+  maintains a hierarchy of latent streams: a bottom-up encoder
+  compresses tokens into low-rate contextual states (C1=4, C2=4, so
+  16x compression at coarsest level), while lightweight top-down
+  decoders reconstruct fine-grained token representations in parallel.
+  **Recursive generation** updates only the coarsest latent stream and
+  eliminates bottom-up re-encoding: (1) run top-down decoders from
+  coarsest state, (2) summarize via chunker, (3) update coarsest
+  stream. This reduces the global KV cache from O(T) to O(T/C_L) =
+  O(T/16). Results at 1.2B scale: decode regime — 10.8x memory
+  reduction (0.390->0.036 GiB/sample), 43.8x throughput increase
+  (1.00->43.80 K tok/s), 475x TPM improvement. WikiText perplexity:
+  19.68->23.79 (moderate degradation). Prefill regime: 10.0x memory
+  reduction, 45.2x throughput increase. Recursive generation at 600M:
+  4.5x TPM boost, 1.9x memory savings, 2.3x throughput improvement.
+  Architecture uses 1D convolution for context expansion in top-down
+  decoders (bounded attention span of R_l + C_l per level). Compared
+  against vanilla LLaMA-architecture transformers and Block Transformer
+  (Ho et al., 2024) at 600M, 900M, 1.2B scales. Zero-shot: HellaSwag
+  45.65->40.70, SciQ 81.50->69.30 (quality-speed tradeoff). No
+  specialised long-context evaluation (NIAH, retrieval) reported.
+- **Why it matters for Hypercar**: PHOTON instantiates the
+  **cartography / map generalisation** angle seeded in pass 26: just as
+  cartographers maintain coastlines at multiple zoom levels while
+  preserving navigational features, PHOTON compresses the token sequence
+  into a hierarchy of resolutions where each level preserves different
+  granularity information. The coarsest level captures document-scale
+  structure (the "country outline"), intermediate levels capture
+  paragraph-scale relationships (the "regional map"), and the finest
+  level captures token-level detail (the "street map"). The decoding
+  process reads coarse-to-fine, exactly like zooming into a map. For
+  Hypercar's architecture, PHOTON is not directly adoptable (it
+  requires training from scratch, not fine-tuning an existing model),
+  but the **hierarchical KV cache concept** is transferable. The tiered
+  GC scheduler (task 104) already implements a hierarchy of temporal
+  granularity; PHOTON suggests an orthogonal hierarchy of *spatial*
+  granularity — compressing old KV entries to coarser representations
+  rather than evicting them entirely. This is a middle ground between
+  eviction (total information loss) and full retention (memory
+  exhaustion): compress-then-retrieve at coarse resolution, with
+  on-demand decompression if the query requires fine-grained detail.
+  The recursive generation mechanism (update only coarsest stream) maps
+  to a possible Hypercar optimisation: during long decode sequences,
+  maintain a compressed "summary" cache alongside the full-resolution
+  recent cache, and let the summary handle attention to distant context.
+  This composes with SnapKV's observation window — the observation
+  window provides fine-grained recent context, the summary cache
+  provides coarse-grained distant context. The 10.8x memory reduction
+  at coarsest level aligns with the memory budget for 1M context: if
+  the 22.5 GB 3-bit KV could be further compressed 10x for distant
+  tokens (keeping only 2.25 GB for 1M coarse context), the total model
+  + KV would drop to ~19.5 GB, leaving 28 GB headroom on 48 GB.
+- **Cost of adoption**: L (1-2 weeks, research prototype). PHOTON
+  requires architectural changes (bottom-up encoder, top-down decoder)
+  that cannot be grafted onto an existing transformer. The transferable
+  concept — hierarchical spatial compression of the KV cache — could
+  be implemented as a "cache summariser" that periodically compresses
+  old KV entries to lower resolution using a lightweight linear
+  projection, but this needs careful quality validation. A minimal
+  prototype would: (1) maintain two KV tiers (full-res recent, low-res
+  distant), (2) compress via mean-pooling over chunks of 4-16 tokens,
+  (3) route attention to the appropriate tier based on relative
+  position.
+- **Local PDF**: research/2512.20687_photon_hierarchical_autoregressive.pdf
+
+### [EchoKV: Efficient KV Cache Compression via Similarity-Based Reconstruction](https://arxiv.org/abs/2603.22910) — 2603.22910
+- **Authors**: Yixuan Wang, Shiyu Ji, Yijun Liu, Qingfu Zhu, Wanxiang Che
+- **Published**: 2026-03 (preprint)
+- **Hypercar goals it addresses**: Goal 1 (1M context — reconstructs discarded KV from retained portions at 0.3x ratio), Goal 6 (M4 Pro 48GB fit — on-demand compression only when memory-pressured)
+- **TL;DR**: Exploits intrinsic inter-layer and intra-layer similarity
+  among attention heads to reconstruct discarded KV cache entries from
+  retained subsets using a lightweight linear network. The key insight
+  is that KV representations across nearby heads and layers are
+  correlated, so a small retained subset (global: full KV from first
+  layer of each group; local: first m heads per layer) can predict the
+  rest. Two-stage fine-tuning: Stage 1 (600 steps, reconstruction MSE
+  loss) initialises weights; Stage 2 (1000 steps, attention output MSE
+  loss) adapts to real attention patterns. Total cost: ~1 A100 GPU-hour
+  for a 7B model. **On-demand switching**: EchoKV maintains full-speed
+  uncompressed inference when memory is ample, and drops into compressed
+  mode only when cache exceeds a budget — no permanent quality penalty
+  for short contexts. LongBench (Llama3.1-8B): at ratio 0.7: 49.08 avg
+  (vs CommonKV 47.13); at ratio 0.5: 48.53 (vs 46.27); at ratio 0.3:
+  45.27 (vs CommonKV 31.08 — a 14-point advantage at aggressive
+  compression). Mistral-7B: at 0.3: 42.78 vs CommonKV 28.20. RULER
+  NIAH (Llama3.1-8B, ratio 0.5): EchoKV-Hybrid 86.45 vs Palu 68.14,
+  CommonKV 69.68. Baselines: Palu (SVD low-rank), CommonKV (cross-layer
+  SVD sharing), ThinK (query-driven key pruning), MiniCache (post-
+  compression merging). The paper notes that compressing keys is harder
+  than compressing values (keys carry positional and structural
+  information that is less redundant across heads).
+- **Why it matters for Hypercar**: EchoKV addresses a fundamental
+  limitation of all eviction-based methods: eviction is irreversible.
+  Once a token is evicted by SnapKV/CAOTE, its information is lost
+  permanently. EchoKV introduces a **reconstruction safety net**: even
+  after eviction, the discarded KV can be approximately recovered from
+  the retained KV using cross-head similarity. For Hypercar, this
+  composes with the existing eviction stack as a post-eviction recovery
+  layer: after SnapKV selects which tokens to retain and CAOTE scores
+  them, EchoKV could reconstruct the evicted tokens' KV from the
+  retained set if a later query needs them. This is the "insurance
+  policy" that the phase transition paper (2603.01426) shows is needed:
+  near the 90% compression cliff, having the ability to reconstruct
+  evicted tokens prevents the catastrophic hallucination spike. The
+  on-demand switching is particularly relevant for Hypercar's memory-
+  aware architecture: at short contexts (< 16K), DuoKVCache runs at
+  full resolution; at medium contexts (16-64K), native 3-bit
+  quantization is sufficient; at long contexts (64K+) with SnapKV
+  eviction, EchoKV could provide the reconstruction layer that prevents
+  quality degradation at aggressive compression ratios. The cross-head
+  similarity insight connects to DuoAttention's head classification
+  (task 12): streaming heads have high inter-head similarity (they all
+  attend to recent tokens similarly), so streaming-head KV is highly
+  reconstructible. Retrieval heads have lower similarity (each head
+  attends to different content tokens), so retrieval-head KV is less
+  reconstructible — matching the intuition that retrieval heads need
+  more careful eviction. The ~1 GPU-hour training cost means EchoKV
+  could be calibrated for Qwen3-Coder on a single cloud instance,
+  making it practical even for a single-user local inference setup.
+  The linear reconstruction network adds minimal overhead: a single
+  matrix multiply per layer per decode step, which on M4 Pro is
+  negligible compared to the model's forward pass.
+- **Cost of adoption**: S-M (2-3 days). The linear reconstruction
+  network requires calibration on Qwen3-Coder (1 GPU-hour on rented
+  A100 or ~4 GPU-hours on M4 Pro at reduced throughput). Integration
+  with the eviction pipeline requires adding a reconstruction step
+  after eviction and before attention computation. The on-demand
+  switching mechanism requires monitoring Metal memory usage to decide
+  when to activate compression — which the existing fail-fast watchdog
+  already provides.
+- **Local PDF**: research/2603.22910_echokv_similarity_reconstruction.pdf
+
+### Pass 27 adds
+
+**Highest-leverage find this pass: the physics of KV cache compression
+(2603.01426) reveals a universal phase transition at 90% compression**
+that has direct implications for Hypercar's eviction safety margins.
+The paper introduces a three-level hierarchy — retention, accessibility,
+utilization — that maps precisely onto the existing eviction stack:
+SnapKV ensures retention, CAOTE ensures accessibility, and Transactional
+Attention ensures utilization. The Global Eviction Ratio (GER) metric
+provides the missing runtime safety check: if GER exceeds a threshold
+(answer-relevant tokens evicted from all heads simultaneously), the
+eviction has crossed the phase transition and should be rolled back.
+The architecture-specific finding that Qwen uses funnel-like late
+convergence (opposite to LLaMA's inverted funnel) means Hypercar's
+topology-guided budget (task 99) should allocate MORE budget to deep
+layers for Qwen3-Coder — the opposite of PyramidKV's default. The
+Token-Route Lottery Ticket framework provides theoretical grounding
+for the submodular eviction guarantee (task 102): route redundancy
+gives exponential protection 1-(1-p)^k. Task 106 captures the GER
+safety monitor.
+
+**Second find: the pitfalls of KV cache compression (2510.00231)
+identify eviction bias as a systematic vulnerability** in multi-
+instruction prompts. For Hypercar's agentic coding workflows — which
+always contain system prompt, tool protocol, user query, and code
+context — the finding that SnapKV preferentially evicts early-context
+instructions (system prompt, safety guardrails) is a security concern.
+The fair eviction policy (proportional budget allocation across
+instruction partitions) is trivially integrable with BUZZ segmented
+eviction and costs essentially nothing. Task 107 captures the fair
+eviction wrapper.
+
+**Third find: PHOTON's hierarchical autoregressive architecture
+(2512.20687) demonstrates the cartography angle** — multi-resolution
+context scanning where coarser levels handle distant context and finer
+levels handle recent context. While not directly adoptable (requires
+training from scratch), the hierarchical KV cache concept transfers:
+compress old KV entries to coarser representations rather than evicting
+entirely. A two-tier KV cache (full-res recent + low-res distant) would
+provide the "map generalisation" property — distant context remains
+navigable at low resolution rather than being erased. This composes
+with the tiered GC scheduler (task 104) as a spatial complement to its
+temporal hierarchy.
+
+**Fourth find: EchoKV's similarity-based reconstruction (2603.22910)
+provides the insurance policy against aggressive eviction** — the
+ability to approximately reconstruct evicted KV from retained portions
+using cross-head similarity. This directly addresses the phase
+transition danger zone: near the 90% cliff, reconstruction capability
+prevents catastrophic failure. The on-demand switching mechanism
+(compress only when memory-pressured) matches Hypercar's architecture
+where DuoKVCache runs at full quality for short contexts and
+compression activates only at long contexts.
+
+**Gap status for pass 28**:
+1. **Phase transition safety margin calibration for Qwen3-Coder.**
+   The 90% cliff is universal across architectures but the shape of the
+   transition (sharp vs gradual) is architecture-dependent. Qwen's
+   funnel routing may shift the cliff location. A Qwen3-Coder-specific
+   GER calibration is needed to determine the safe compression limit.
+2. **Fair eviction integration with existing segmented pipeline.**
+   The fair eviction policy needs to compose with BUZZ segments, CAOTE
+   scoring, and structural protection. The partition boundaries
+   (instruction-level) are orthogonal to BUZZ boundaries (content-
+   similarity-level), so the composition should be clean but needs
+   empirical validation.
+3. **Hierarchical spatial KV compression prototype.** PHOTON's
+   concept of coarse-resolution distant context is untested in a
+   post-hoc setting (applied to an existing transformer). A minimal
+   mean-pooling experiment would determine whether coarse distant KV
+   preserves enough information for NIAH.
+4. **NEW: Reconstruction-augmented eviction.** EchoKV's reconstruction
+   could serve as a fallback when aggressive eviction crosses the
+   phase transition boundary. The integration point is clear (post-
+   eviction, pre-attention), but the reconstruction quality at 3-bit
+   quantized KV is unknown — the paper tests only fp16 KV.
+
+**Fresh weird angles for pass 28** (keep expanding the surface):
+- **Ecology / keystone species**: In an ecosystem, removing a keystone
+  species causes disproportionate collapse. The 90% phase transition
+  is exactly this — the last few "keystone tokens" whose removal
+  triggers hallucination. Ecological resilience theory (Holling 1973)
+  predicts the shape of the collapse curve from the network's
+  connectedness.
+- **Epidemiology (revisited)**: The GER metric is the R_0 of token
+  eviction. When GER < 1 (at least one head retains each answer token),
+  the system is stable. When GER > 1 (answer tokens evicted from all
+  heads), hallucination "infects" the generation — a pandemic. The
+  herd immunity threshold is 1 - 1/R_0, mapping to the minimum route
+  redundancy k needed for safety.
+- **Auction theory / fair division (Cake Cutting)**: Fair eviction is
+  a special case of the classic cake-cutting problem — dividing a
+  resource (eviction budget) among competing claims (instruction
+  partitions) such that each partition receives its proportional share.
+  Envy-free allocation algorithms from fair division theory could
+  provide stronger guarantees than proportional allocation.
+- **Signal processing / Nyquist sampling**: The hierarchical spatial
+  compression from PHOTON is analogous to sampling a signal at
+  different rates. The Nyquist theorem says the sampling rate must be
+  at least 2x the highest frequency. For KV cache, the "frequency" is
+  the attention pattern's spatial variation — high-frequency (rapidly
+  varying attention) requires fine-grained KV, low-frequency (smooth
+  attention) can be downsampled. Anti-aliasing filters from DSP map
+  to pre-compression smoothing of KV representations.
+- **Immunology / adaptive immune system**: EchoKV's reconstruction
+  from partial KV is analogous to the immune system reconstructing
+  pathogen signatures from partial epitope matches. The cross-head
+  similarity that enables reconstruction is like the redundancy of
+  T-cell receptors — many slightly different receptors (heads)
+  recognising the same antigen (token), so losing one receptor doesn't
+  lose the recognition capability.
+
+Twenty-seven passes. One hundred and twenty-three papers. Four fresh
+cross-field angles searched (phase transitions in compression, fair
+division for multi-instruction eviction, multi-resolution cartography
+for hierarchical KV, immunological reconstruction from partial cache).
+The most significant result: the universal 90% hallucination cliff
+from the physics-of-compression paper provides an empirical safety
+bound that directly constrains Hypercar's AIMD budget controller.
+Curiosity never saturates. Meow, nyaa, meow.
