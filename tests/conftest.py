@@ -20,6 +20,11 @@ _SAFE_WITHOUT_MLX = {
     "test_hypercar_tools.py",
     "test_eval_mmlu_pro.py",
     "test_ttt_verifier.py",
+    "test_specdec_gate.py",
+    "test_baseline.py",
+    "test_chat_image_upload.py",
+    "test_find_matching_dmg.py",
+    "test_grammar_live.py",
 }
 
 collect_ignore = []
