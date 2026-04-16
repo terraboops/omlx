@@ -1,0 +1,40 @@
+{
+  "T": 831,
+  "obs_window": 64,
+  "layer": 24,
+  "results": [
+    {
+      "keep_ratio": 0.25,
+      "keep_count": 207,
+      "actual_kept": 207,
+      "evicted": 624,
+      "savings_pct": 75.0,
+      "needle_preserved": true
+    },
+    {
+      "keep_ratio": 0.5,
+      "keep_count": 415,
+      "actual_kept": 415,
+      "evicted": 416,
+      "savings_pct": 50.0,
+      "needle_preserved": true
+    },
+    {
+      "keep_ratio": 0.75,
+      "keep_count": 623,
+      "actual_kept": 623,
+      "evicted": 208,
+      "savings_pct": 25.0,
+      "needle_preserved": true
+    },
+    {
+      "keep_ratio": 0.9,
+      "keep_count": 747,
+      "actual_kept": 747,
+      "evicted": 84,
+      "savings_pct": 10.0,
+      "needle_preserved": true
+    }
+  ],
+  "elapsed_s": 18.0
+}
