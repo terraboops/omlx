@@ -29,7 +29,7 @@ any of these — even to improve another — needs explicit justification.
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), **validated to 64K** (NIAH PASS, 33.9GB Metal on clean system) | Need 128K/256K validation; 64K breaches under co-tenancy (R58) |
+| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), **validated to 64K** (NIAH PASS, 33.9GB Metal). 128K swap-thrashed at ~6GB swap under normal co-tenancy (30min, no progress). | Need ShadowKV K-compression (65% savings, Task 44 validated) to fit 128K+ under co-tenancy |
 | 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62-64%** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
 | 3 | 50 tok/s decode constant | **52.7 tok/s with DuoKVCache — GOAL MET**. | Met in duo mode. Under co-tenancy drops proportionally. |
 | 4 | 500 tok/s prefill constant | **96 tok/s at 2K (duo), 803 at 4K, 501 at 16K — GOAL MET** in duo mode. | O(n²) attention still applies at 64K+. |
