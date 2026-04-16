@@ -166,10 +166,8 @@ def save_projections(projections: list[LatentProjection],
     (path / "meta.json").write_text(json.dumps(meta, indent=2))
 
     for proj in projections:
-        mx.save(str(path / f"layer_{proj.layer_idx}.safetensors"), {
-            "W_down": proj.W_down,
-            "W_up": proj.W_up,
-        })
+        mx.savez(str(path / f"layer_{proj.layer_idx}.npz"),
+                 W_down=proj.W_down, W_up=proj.W_up)
 
     logger.info(f"Saved {len(projections)} projections to {path}")
 
@@ -183,7 +181,7 @@ def load_projections(path: str | Path) -> list[LatentProjection]:
 
     projections = []
     for i in range(meta["n_layers"]):
-        data = mx.load(str(path / f"layer_{i}.safetensors"))
+        data = mx.load(str(path / f"layer_{i}.npz"))
         projections.append(LatentProjection(
             W_down=data["W_down"],
             W_up=data["W_up"],
