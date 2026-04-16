@@ -44,7 +44,7 @@ def main():
     from mlx_lm import load
     from mlx_lm.models.cache import KVCache
     from omlx.patches.snapkv import (
-        compute_attention_importance, compute_multi_layer_importance,
+        capture_attention_weights,
         snapkv_select, get_keep_indices, compact_cache, count_kept,
     )
 
@@ -88,9 +88,9 @@ def main():
         logits = model(mx.array([input_ids]), cache=cache_skv)
         mx.eval(logits)
 
-        # Compute importance from last 4 layers (paper recommendation)
-        importance = compute_multi_layer_importance(
-            cache_skv, model, obs_window=64,
+        # Compute importance from last 4 layers using per-KV-head attention
+        importance = capture_attention_weights(
+            model, cache_skv, obs_window=64,
             layers=list(range(n_layers - 4, n_layers)))
         H_kv = cache_skv[0].state[0].shape[1]
 
