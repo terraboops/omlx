@@ -1,0 +1,67 @@
+22:37:38 omlx.bench.hypercar INFO KV mode: duo, bits: 3
+22:37:38 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+22:37:38 omlx.bench.hypercar INFO System memory: 51.5 GB
+22:37:38 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+22:37:38 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+22:37:38 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+22:37:38 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+22:37:38 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 19957.04it/s]
+22:37:46 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+22:37:46 omlx.bench.hypercar INFO Model loaded in 8.5s (lazy — first forward will materialize)
+22:37:46 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+22:37:49 omlx.bench.hypercar INFO   Warmup done in 3.4s (Metal cache primed, memory cleared)
+22:37:49 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+22:37:49 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+22:37:49 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+22:37:50 omlx.bench.hypercar INFO   Smoke output: ' This is my first post on this blog. I'
+22:37:50 omlx.bench.hypercar INFO   Prefill: 75 tok/s  Decode: 53.4 tok/s
+22:37:50 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+22:37:50 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+22:37:51 omlx.bench.hypercar INFO   Code check: PASS — '\nprint("Hello, World!")\n\nprint("Hello, World!")<|endoftext|>'
+22:37:51 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+22:37:52 omlx.bench.hypercar INFO   PASS: factorial
+22:37:52 omlx.bench.hypercar INFO   PASS: reverse_string
+22:37:53 omlx.bench.hypercar INFO   PASS: is_palindrome
+22:37:55 omlx.bench.hypercar INFO   PASS: fibonacci
+22:37:55 omlx.bench.hypercar INFO   PASS: flatten_list
+22:37:55 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+22:37:55 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+22:37:55 omlx.bench.hypercar INFO   NIAH @ 4K context...
+22:38:05 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Here is some code:\n'
+22:38:05 omlx.bench.hypercar INFO   NIAH @ 16K context...
+22:39:04 omlx.bench.hypercar ERROR MEMORY BREACH: Swap delta 21.3GB > 12.9GB limit
+WATCHDOG-BREACH
+22:47:00 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+22:47:01 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+22:47:01 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+22:47:01 omlx.bench.hypercar ERROR Phase 3b FAILED (memory breach) — aborting
+22:47:01 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+22:47:01 omlx.bench.hypercar INFO   Metal peak: 35.1 GB (limit 41.2GB) PASS
+22:47:01 omlx.bench.hypercar INFO   Swap peak:  34.3 GB (limit 12.9GB) FAIL
+22:47:01 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+22:47:01 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+22:47:01 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (0.3s)
+     [PASS] Phase 1: Coherence                       (1.5s)
+     [PASS] Phase 2: Code Intelligence               (4.3s)
+     [PASS] Phase 3: Needle in Haystack              (545.1s)
+  >> [FAIL] Phase 3b: RULER                          (0.0s)
+  >> [FAIL] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+  >> [GATE FAILURE]  Total: 563.0s
+============================================================
+
