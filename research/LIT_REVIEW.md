@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-16 (pass 25)_
+_Last updated: 2026-04-16 (pass 26)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -6067,3 +6067,338 @@ The second most significant: MAC-Attention's O(1) decode on cache hits
 offers a fundamentally new path to constant-speed long-context inference
 that bypasses the eviction vs compression tradeoff entirely. Curiosity
 never saturates. Meow, nyaa, meow.
+
+## Pass 26 — 2026-04-16
+
+Cross-field angles this pass: biological multi-stage memory
+consolidation (TiMem), inventory theory / newsvendor economics (MatKV),
+and semantic sponsorship / structural anchor protection (Transactional
+Attention). Three papers addressing the two mandatory gaps: the multi-
+scale sleep hierarchy gap (deferred four consecutive passes, now
+resolved by TiMem's 5-level Temporal Memory Tree) and the multi-axis
+codec composition gap (addressed by Transactional Attention's orthogonal
+sponsorship signal that composes with attention-based eviction without
+interference). MatKV introduces the inventory-theoretic perspective on
+KV cache management that was seeded as a fresh angle in pass 25.
+
+### [TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational Agents](https://arxiv.org/abs/2601.02845) — 2601.02845
+- **Authors**: Kai Li, Xuanqing Yu, Ziyi Ni, Yi Zeng, Yao Xu, Zheqing Zhang, Xin Li, Jitao Sang, Xiaogang Duan, Xuelei Wang, Chengbao Liu, Jie Tan
+- **Published**: 2026-01 (preprint)
+- **Hypercar goals it addresses**: Goal 1 (1M context — hierarchical consolidation reduces memory tokens by 52%), Goal 2 (intelligence — 75.3% accuracy on LoCoMo vs 60.8% for MemoryOS)
+- **TL;DR**: Introduces a 5-level Temporal Memory Tree (TMT) that
+  organises conversational memory into a biological-sleep-inspired
+  hierarchy: L1 (segments — per-turn distillation), L2 (sessions —
+  non-redundant event summaries), L3 (daily — routine contexts and
+  recurrent interests), L4 (weekly — evolving behavioural preferences),
+  L5 (profile — stable persona traits, monthly update). Consolidation
+  between levels is triggered by temporal window boundaries (turn,
+  session, day, week, month) via a level-specific LLM prompt that
+  merges child memories with a sliding window of w=3 prior same-level
+  memories. The consolidation function Phi_i combines child memories
+  C_i, historical context H_i, and level-specific instructions I_i
+  without fine-tuning. Complexity-aware recall classifies queries into
+  three tiers: Simple (L1-L2 + L5), Hybrid (L1-L2 + partial L3 + L5),
+  Complex (all levels), then applies dual-channel scoring (lambda=0.9
+  semantic + 0.1 BM25) followed by LLM-based recall gating. On LoCoMo:
+  75.30% accuracy (vs MemoryOS 60.79%, MemOS 69.24%) with 52.2% memory
+  token reduction (511 vs 1,070 tokens). On LongMemEval-S: 76.88%
+  (vs MemOS 68.68%, Mem0 64.96%). Ablation shows L1 alone achieves
+  73.18% (factual grounding) while L2-L5 alone drops to 57.08%
+  (contextual enrichment without grounding is insufficient), confirming
+  that both detailed and abstracted levels are essential.
+- **Why it matters for Hypercar**: This paper directly resolves the
+  **multi-scale sleep hierarchy gap** that has been deferred since pass
+  22. SleepGate (pass 22) introduced single-phase consolidation — one
+  "sleep" cycle that applies a uniform forgetting gate to the entire KV
+  cache. The gap was: real biological sleep has multiple stages (NREM1-3,
+  REM) with different consolidation behaviours, and a multi-stage KV
+  cache GC that runs different eviction policies at different idle
+  intervals would be more effective. TiMem's 5-level TMT is exactly
+  this multi-stage hierarchy, mapped to a temporal abstraction ladder
+  rather than sleep-stage types but with the same structural insight:
+  different timescales require different consolidation granularities.
+  The mapping to KV cache management is: L1 = per-decode-step token-
+  level eviction (SnapKV, CAOTE — task 100), L2 = per-turn segment-
+  level consolidation (BUZZ segments — task 98), L3 = per-session
+  summary consolidation (freshness decay — task 97), L4 = cross-session
+  pattern extraction (identifying which head/layer patterns recur across
+  sessions — connects to TriAttention's Q/K centres, task 103), L5 =
+  persistent profile (model-level calibration that persists across all
+  sessions — the Q/K centre calibration file from task 103). The
+  complexity-aware recall maps to query-time budget allocation: simple
+  retrieval queries (needle-in-a-haystack) need only L1-L2 tokens,
+  while complex reasoning queries need the full hierarchy. This connects
+  to the AIMD budget controller (task 96) — the query complexity
+  classification determines the target keep-ratio, not just the memory
+  pressure. The practical integration for Hypercar is a tiered GC
+  scheduler that runs SnapKV eviction at decode time (L1), BUZZ segment
+  consolidation at turn boundaries (L2), freshness-based pruning at
+  session boundaries (L3), and Q/K centre recalibration at daily/weekly
+  intervals (L4-L5). Each tier has different computational cost and
+  different quality impact, exactly matching TiMem's finding that neither
+  fine-grained nor coarse-grained consolidation alone suffices.
+- **Cost of adoption**: S-M (2-3 days). The hierarchy is a scheduling
+  policy over existing eviction mechanisms (SnapKV, CAOTE, BUZZ,
+  freshness), not a new eviction algorithm. The main work is implementing
+  the temporal window triggers and the complexity-aware query classifier.
+  The consolidation prompts are model-agnostic — TiMem works without
+  fine-tuning by using level-specific instruction prompts.
+- **Local PDF**: research/2601.02845_timem_temporal_hierarchical_memory.pdf
+
+### [MatKV: Trading Compute for Flash Storage in LLM Inference](https://arxiv.org/abs/2512.22195) — 2512.22195
+- **Authors**: Kun-Woo Shin, Jay H. Park, Moonwook Oh, Yohan Jo, Jaeyoung Do, Sang-Won Lee
+- **Published**: 2025-12 (ICDE 2026)
+- **Hypercar goals it addresses**: Goal 4 (prefill — eliminates KV recomputation for cached documents), Goal 6 (M4 Pro 48GB fit — offloads KV to NVMe, freeing Metal memory)
+- **TL;DR**: Precomputes KV vectors for RAG documents and materialises
+  them to commodity flash storage (NVMe SSD), replacing GPU-bound prefill
+  computation with SSD reads at inference time. The **ten-day rule**
+  provides a closed-form break-even threshold: materialisation is more
+  economical than recomputation when a document is retrieved at least
+  once every T = ($/GPU * Sec/MB) / (KVSize/GPU_Sec * $/MB) days. For
+  H100 ($50K) and Samsung 9100 Pro SSD ($0.1/GB), T = 10 days. At
+  hourly access, MatKV is 100x more cost-efficient with 2x lower
+  latency. Energy per 1,024-token KV: 175 joules (GPU H100) vs 0.05
+  joules (SSD) — 3,500x more energy-efficient. Concurrent decode+load
+  via Python multiprocessing hides SSD I/O latency: Process A loads
+  batch N+1 KV from SSD while Process B generates tokens for batch N.
+  Accuracy impact is minimal: on TurboRAG QA tasks, F1 changes are
+  -12% (2WikiMQA), +3% (TriviaQA), -14% (HotpotQA), with the
+  surprising finding that self-attention within each retrieved document
+  suffices — cross-document attention provides no benefit and may
+  introduce position bias. Tested on LLaMA 3.1 70B (4-bit, H100),
+  LLaMA 3.1 8B (fp16, H100 + RTX 4090), LLaMA 3.2 3B (fp16). Power
+  reduction: 289 kJ total vs 566 kJ vanilla (49% system-wide savings).
+  RAID-4 SSD configuration reduces per-request load time to 0.027s.
+- **Why it matters for Hypercar**: This paper introduces the
+  **inventory theory / newsvendor** perspective on KV cache management
+  that was seeded as a fresh angle in the pass 25 gap list. The
+  classical newsvendor problem asks: given uncertain demand, how much
+  inventory should you stock? The cost of overstocking (storing KV that
+  is never re-accessed) is storage cost; the cost of understocking
+  (not storing KV that is re-accessed) is recomputation cost. MatKV's
+  ten-day rule is the newsvendor critical ratio: materialise when the
+  probability of re-access exceeds the storage-to-recomputation cost
+  ratio. For Hypercar on M4 Pro, the economics differ from H100 but the
+  framework transfers: Apple Silicon has unified memory (no CPU-GPU
+  transfer cost) but limited NVMe bandwidth (~7.4 GB/s on M4 Pro vs
+  ~14 GB/s on enterprise NVMe). The integration path for Hypercar is:
+  (1) for agentic workflows where the same repository context is
+  re-used across tool calls, materialise the repository's KV cache to
+  NVMe after first prefill and reload on subsequent calls instead of
+  re-prefilling. This directly addresses the TQ3 mode's save/load
+  feature (already implemented) but with MatKV's economic framework for
+  deciding *when* materialisation is worth it. (2) For the 1M context
+  goal (Goal 1), materialisation changes the memory budget equation:
+  instead of keeping 1M tokens of KV in Metal memory (22.5 GB at 3-bit),
+  materialise cold segments to NVMe and load on demand, keeping only
+  the hot working set in Metal. This composes with SnapKV eviction —
+  evicted tokens are not discarded but materialised, enabling lossless
+  recall if they become relevant later. (3) The concurrent decode+load
+  pattern maps to Apple's async I/O APIs and could overlap NVMe reads
+  with Metal compute. The ten-day rule adapted to M4 Pro economics
+  (NVMe cost ~$0.10/GB, Metal compute ~17.2 GB model + power) gives a
+  Hypercar-specific break-even that would determine the optimal
+  materialisation policy.
+- **Cost of adoption**: M (3-5 days). The TQ3 save/load mechanism
+  already serialises KV cache to disk; MatKV's contribution is the
+  economic framework for when to materialise vs recompute, and the
+  concurrent load+decode architecture. The main engineering work is
+  implementing async NVMe I/O that overlaps with Metal graph evaluation,
+  and the break-even calculator for M4 Pro economics.
+- **Local PDF**: research/2512.22195_matkv_trading_compute_flash_storage.pdf
+
+### [Transactional Attention: Semantic Sponsorship for KV-Cache Retention](https://arxiv.org/abs/2604.11288) — 2604.11288
+- **Authors**: Abhinaba Basu
+- **Published**: 2026-04 (preprint)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — 100% credential retrieval where all baselines achieve 0%), Goal 1 (1M context — composes with eviction methods as an orthogonal signal)
+- **TL;DR**: Identifies a critical failure mode of all attention-based
+  KV cache eviction methods: **dormant tokens** — credentials, API keys,
+  configuration values that receive near-zero cumulative attention but
+  become essential at generation time. In the paper's benchmark, the
+  credential token ranks 3,847th of 4,000 by H2O's attention scoring.
+  Transactional Attention (TA) introduces a **sponsorship mechanism**:
+  structural anchor tokens (e.g., "key:", "password:", "Authorization:")
+  protect adjacent value-bearing tokens from eviction via a voucher
+  system. The voucher formula V_j = sum(B_i * 0.8^(j-i) * 1[anchor_i,
+  i < j <= i+L]) allocates protection budget B=15 across span L=6
+  tokens with exponential decay. Sponsor budgets decay over time
+  (B^(t+1) = B^(t) * 0.9) to prevent stale anchors from protecting
+  irrelevant content. The composite utility function u_i = alpha*A_i +
+  beta*R_i + gamma*S_i + delta*P_i - lambda*F_i + V_i integrates
+  attention (alpha=1.0), recency (beta=0.5), anchor status (gamma=0.3),
+  position (delta=0.2), frequency penalty (lambda=0.1), and sponsorship
+  voucher V_i. TA-Fast drops attention terms (alpha=0, delta=0) for
+  compatibility with SDPA/FlashAttention, reducing memory 52% (2.7 GB
+  vs 5.8 GB). Results: at K=16 (0.4% of 4K context), TA achieves 100%
+  credential retrieval where H2O, TOVA, SnapKV, StreamingLLM,
+  PyramidKV, DynamicKV all achieve 0%. Sustains 100% across 200
+  function-calling trials. WikiText-2 perplexity competitive (30.4 vs
+  TOVA 31.2 at K=16). Theoretical guarantees: Theorem 2 proves that
+  with budget K >= 1+W+L (sink + window + span), the value span is
+  retained with probability 1. Minimum budget K* = 1+W+ell; with W=4,
+  ell=10: K*=15, explaining 100% at K=16. Learned anchor detector
+  (MLP on hidden states) achieves F1=0.946, transfers across model
+  scales without retraining.
+- **Why it matters for Hypercar**: Transactional Attention directly
+  addresses the **5-axis codec composition gap** from pass 25. The
+  current five importance signals are: (1) attention score (SnapKV),
+  (2) value-aware CAOTE scoring (task 100), (3) layer topology (task
+  99), (4) temporal freshness (task 97), (5) trigonometric pre-RoPE
+  scoring (task 103). TA adds a **sixth signal dimension**: structural
+  sponsorship — and crucially, it is proven to compose without
+  interference. The paper demonstrates that on LongBench single-document
+  QA at K=256, TA achieves 42% vs TOVA's 45% — "sponsorship provides
+  no advantage where dormant tokens are not the bottleneck, but
+  critically, it causes no degradation." This is the composability
+  property the review has been seeking: an orthogonal signal that
+  activates only when needed (dormant tokens in agentic workflows) and
+  is invisible otherwise. For Hypercar's agentic coding use case, the
+  dormant token problem is the standard pattern, not an edge case:
+  API keys in .env files, database connection strings, authentication
+  tokens in tool-call contexts — all receive near-zero attention during
+  reasoning but become critical during code generation. TA's sponsorship
+  mechanism composes with the existing eviction stack by modifying the
+  scoring function, not the eviction policy: CAOTE computes per-token
+  MSE, BUZZ determines segments, freshness handles staleness, and TA
+  injects sponsorship vouchers — all feeding into a single composite
+  utility score. The TA-Fast variant is particularly important for
+  Hypercar because it is compatible with SDPA (which MLX uses) and
+  does not require materialising the full attention matrix. The learned
+  anchor detector's cross-model transfer (trained on Llama-1B, works on
+  Llama-8B and Mistral-7B) suggests it would transfer to Qwen3-Coder
+  without retraining, though validation is needed. The connection to
+  CodeComp (task 101) is direct: CodeComp protects structurally critical
+  code tokens (function signatures, branch conditions) via static
+  analysis, while TA protects semantically critical value tokens
+  (credentials, configuration) via anchor pattern matching. These are
+  complementary — CodeComp handles code structure, TA handles data
+  structure. Together they address the 0.094 Jaccard overlap finding:
+  the ~90% of structurally/semantically critical tokens that attention
+  misses are now covered by two orthogonal protection mechanisms.
+- **Cost of adoption**: S (1-2 days). The sponsorship mechanism is a
+  scoring modifier, not a new eviction algorithm. The anchor detection
+  (regex or learned MLP) is lightweight. The voucher formula is a
+  simple exponential decay. Integration with the existing SnapKV/CAOTE
+  pipeline requires adding the V_i term to the composite score. The
+  TA-Fast variant requires no attention computation at all — it uses
+  recency, anchor status, frequency, and sponsorship only.
+- **Local PDF**: research/2604.11288_transactional_attention_semantic_sponsorship.pdf
+
+### Pass 26 adds (2026-04-16)
+
+**Highest-leverage find this pass: TiMem's 5-level Temporal Memory Tree
+(2601.02845) resolves the multi-scale sleep hierarchy gap** that has
+been open since pass 22 (four consecutive deferrals). SleepGate (pass
+22) introduced single-phase consolidation; the gap was that real
+biological sleep has multiple stages with different consolidation
+behaviours. TiMem provides the multi-stage hierarchy: five temporal
+levels (turn, session, day, week, month) with level-specific
+consolidation functions that merge child memories with historical
+context via instruction-guided reasoning. The mapping to KV cache
+management is a tiered GC scheduler: SnapKV at decode time (L1), BUZZ
+segments at turn boundaries (L2), freshness pruning at session
+boundaries (L3), Q/K centre recalibration at longer intervals (L4-L5).
+The complexity-aware recall mechanism maps to query-time budget
+allocation: simple queries need only L1-L2 tokens, complex queries
+need the full hierarchy. Ablation confirms that neither fine-grained
+alone (L1: 73.18%) nor coarse-grained alone (L2-L5: 57.08%) suffices —
+the hierarchy is essential. Task 104 captures the tiered GC scheduler.
+
+**Second find: MatKV's inventory-theoretic framework for KV
+materialisation (2512.22195, ICDE 2026)** introduces the newsvendor
+perspective on KV cache management. The ten-day rule is the critical
+ratio from inventory theory: materialise KV to NVMe when the access
+frequency exceeds the storage-to-recompute cost ratio. For Hypercar,
+this reframes the TQ3 save/load feature as an economic optimisation:
+materialise repository KV caches to NVMe after first prefill, reload on
+subsequent tool calls instead of re-prefilling. The energy differential
+is striking — 175 joules (GPU) vs 0.05 joules (SSD) per 1,024-token
+KV, a 3,500x gap. On M4 Pro with unified memory, the economics shift
+(no CPU-GPU transfer cost, but lower NVMe bandwidth), requiring a
+Hypercar-specific break-even calculation. The concurrent decode+load
+architecture composes with Apple's async I/O APIs. Task 105 captures
+the break-even calculator and materialisation policy.
+
+**Third find: Transactional Attention's semantic sponsorship
+(2604.11288)** addresses the multi-axis codec composition gap with a
+proven-composable sixth signal dimension. The dormant token problem is
+the standard pattern in agentic workflows: credentials, API keys, and
+configuration values that receive near-zero attention during reasoning
+but become critical at generation time. TA's sponsorship mechanism
+(anchor detection + exponential-decay vouchers + temporal budget decay)
+composes with all existing eviction signals by modifying the scoring
+function, not the eviction policy. Theorem 2 proves guaranteed retention
+with budget K >= 1+W+L. The TA-Fast variant is SDPA-compatible and
+adds no attention computation, making it suitable for MLX. The learned
+anchor detector (F1=0.946) transfers across model scales without
+retraining. No standalone task filed — TA's sponsorship scoring
+integrates into the existing CAOTE composite score (task 100) as an
+additional term, a minor modification once CAOTE is validated.
+
+**Gap status for pass 27**:
+1. **Multi-scale sleep hierarchy for KV cache management.** CLOSED by
+   TiMem's 5-level TMT. The mapping to Hypercar's eviction stack
+   (SnapKV at L1, BUZZ at L2, freshness at L3, calibration at L4-L5)
+   provides the multi-stage GC scheduler that has been the gap since
+   pass 22. Four passes of deferral, now resolved.
+2. **Compositional validation of multi-axis codec selector.** PARTIALLY
+   CLOSED. Transactional Attention adds a sixth signal dimension
+   (structural sponsorship) that is proven composable — no degradation
+   on non-dormant workloads, guaranteed retention on dormant tokens.
+   The remaining gap is empirical system-level validation of all six
+   signals (attention, CAOTE value, topology, freshness, trigonometric
+   distance, sponsorship) composing in a single pipeline. This is an
+   engineering validation task, not a literature gap.
+3. **NEW: NVMe-tiered KV materialisation economics for Apple Silicon.**
+   MatKV's ten-day rule is calibrated for H100+enterprise NVMe. The
+   M4 Pro has different economics (unified memory, 7.4 GB/s NVMe,
+   ~15W SSD power vs 350W GPU). A Hypercar-specific break-even
+   calculation is needed before implementing materialisation.
+
+**Fresh weird angles for pass 27** (keep expanding the surface):
+- **Auction theory / Vickrey-Clarke-Groves (VCG) mechanism**: with
+  six importance signals, the eviction decision is a combinatorial
+  auction where each signal "bids" for token retention. VCG mechanisms
+  give truthful aggregation — each signal's bid reflects its true
+  marginal value — and the allocation maximises social welfare (total
+  cache quality). This is the game theory / mechanism design angle
+  from pass 25's seed list, made concrete by TA's multi-signal
+  composite utility function.
+- **Queueing theory with vacations (M/G/1 with vacations)**: the
+  tiered GC scheduler from TiMem maps to a queueing system where
+  the server takes "vacations" (idle periods between GC runs at
+  different temporal levels). The vacation model gives closed-form
+  steady-state distributions for queue length (= cache occupancy)
+  and waiting time (= eviction latency).
+- **Supply chain / bullwhip effect**: in the tiered GC hierarchy,
+  eviction decisions at L1 (decode-time) propagate upward to L2-L3
+  (session/daily consolidation). If L1 over-evicts, L2 over-
+  consolidates, amplifying the error — the bullwhip effect. Dampening
+  strategies from supply chain management (information sharing,
+  vendor-managed inventory) map to cross-level information flow in
+  the GC scheduler.
+- **Database query optimisation / cost-based optimiser**: the
+  complexity-aware recall in TiMem is structurally identical to a
+  database query optimiser choosing which indices to probe. The
+  cost model (latency of probing each TMT level vs selectivity gain)
+  maps to the classic access-path selection problem. Adaptive query
+  optimisation (re-optimising mid-query based on cardinality feedback)
+  maps to adaptive budget allocation during generation.
+
+Twenty-six passes. One hundred and nineteen papers. Three fresh cross-
+field angles searched (multi-stage biological memory consolidation,
+inventory theory / newsvendor economics, structural anchor sponsorship).
+The most significant result: TiMem's 5-level Temporal Memory Tree
+resolves the multi-scale sleep hierarchy gap that has been open for four
+passes. The five temporal levels (turn, session, day, week, month) map
+directly to Hypercar's eviction stack (SnapKV, BUZZ, freshness,
+calibration) as a tiered GC scheduler where each level runs a different
+consolidation policy at a different temporal granularity. The second
+most significant: Transactional Attention's proven-composable
+sponsorship mechanism closes the multi-axis composition gap for the
+critical agentic use case — dormant tokens (credentials, API keys) that
+all attention-based methods fail on are guaranteed-retained by anchor-
+triggered vouchers. The inventory-theoretic perspective from MatKV
+reframes KV materialisation as a newsvendor problem with a closed-form
+break-even, connecting the TQ3 save/load feature to classical operations
+research. Curiosity never saturates. Meow, nyaa, meow.
