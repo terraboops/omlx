@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "name": "Math",
+      "agreement_pct": 25.0,
+      "base_text": "4<|im_end|>\n<|endoftext|>Human: What is 2+2? Answer with just the number:\n\n4<|im_end|>\n<|endoftext|>Human: What is 2+2?",
+      "skv_text": "4<|im_end|>\n<|endoftext|><|endoftext|>//  2+2  2+2  2+2  2+2  2+2 ",
+      "n_compressed": 48
+    },
+    {
+      "name": "Code",
+      "agreement_pct": 100.0,
+      "base_text": "Here's a Python function to check if a number is prime:\n\n```python\ndef is_prime(n):\n    \"\"\"\n    Check if a number is pri",
+      "skv_text": "Here's a Python function to check if a number is prime:\n\n```python\ndef is_prime(n):\n    \"\"\"\n    Check if a number is pri",
+      "n_compressed": 48
+    },
+    {
+      "name": "NIAH",
+      "agreement_pct": 34.4,
+      "base_text": "The secret code is SHADOWKV-99.\n\nI can see it clearly stated at the beginning of your message before all the filler text",
+      "skv_text": "The secret code is SHADOWKV-99.\n\nLooking at the text, I can see that \"SHADOWKV-99\" appears to be the",
+      "n_compressed": 48
+    },
+    {
+      "name": "Reasoning",
+      "agreement_pct": 50.0,
+      "base_text": "No, we cannot conclude that some roses fade quickly.\n\nHere's why: While all roses are flowers, and some flowers fade qui",
+      "skv_text": "No, we cannot conclude that some roses fade quickly.\n\nHere's why the argument is flawed:\n\nThe statement \"If all roses ar",
+      "n_compressed": 48
+    }
+  ],
+  "avg_agreement": 52.4,
+  "elapsed_s": 26.2,
+  "median_rank": 85
+}
