@@ -2540,3 +2540,61 @@ _(none)_
 - **Effort**: M (4-7 days: 1-2d for the hindsight rewriting prompt engineering and LM call, 1d for the replay buffer and mixing logic, 1-2d for integration into the TTT training loop, 1d for calibration and bench validation)
 - **Depends on**: task 59 (OPLoRA safety rail) as outer envelope. Independent of tasks 90 and 91 — targets sample efficiency rather than credit assignment, touches a different part of the TTT loop (post-rollout data augmentation rather than reward computation).
 - **Risk**: the hindsight rewriting may produce goal descriptions that are too easy (trivial subsets of the test suite) or too hard (the trajectory didn't actually demonstrate the claimed functionality). Mitigation: validate each rewritten pair by re-running the rewritten trajectory through the verifier against the rewritten goal; discard pairs where the verification fails. This adds one verifier call per rewrite but ensures data quality.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 21, 2026-04-15)
+
+### 93. PAM select-in-place scheduling policy for tiered KV cache
+- **Goal**: 1 (1M context validation), 5 (swap pressure), 6 (48GB fit)
+- **Derived from**: CXL-PNM 1M-Token KV (2511.00321). The paper's key design pattern: evaluate page importance *in the tier where the page already lives* and transfer only winners to the compute-hot tier, rather than migrating pages between tiers and evaluating after migration.
+- **Change**:
+  - In the PAM-style two-tier TurboQuantKVCache (task 64, when it lands), replace the naive tier-migration policy (promote cold→hot on access, demote hot→cold on eviction) with a select-in-place policy: each tier maintains its own Quest-style min/max page bounds, and the scheduler evaluates page importance using the current query's attention pattern *without* loading the page data. Only pages whose importance exceeds a threshold are promoted to Metal-resident status.
+  - Add a `select_in_place()` method to the tiered cache that takes a query vector and returns a list of page indices that should be Metal-resident for the next attention step. The method evaluates min/max bounds stored per page (already maintained by Quest, task 34) and compares against a dynamic threshold derived from the memory-aware feedback controller (task 94).
+  - The select-in-place evaluation must run on CPU (not Metal) to avoid polluting the Metal working set with cold page metadata. On Apple Silicon, CPU access to unified memory is free; the cost is the min/max comparison loop, which is O(pages) = O(N/page_size).
+- **Verify**:
+  - Unit test: create a synthetic 64K-token KV cache with 50% hot pages (high min/max overlap with query) and 50% cold pages (low overlap). The select-in-place policy should promote exactly the hot pages and leave cold pages in the swap-backed tier. Metal memory usage should be ~50% of the full-cache baseline.
+  - Memory gate: at 128K context under co-tenancy, the select-in-place policy keeps Metal residency under 70% of system memory (33.6 GB on 48 GB), compared to the current full-cache policy which breaches at ~37 GB.
+  - Quality gate: NIAH 4K/16K/64K pass rates must not degrade. The select-in-place threshold must be conservative enough to never evict a page that contains a needle token.
+  - Throughput gate: the select-in-place evaluation adds <= 5ms per decode step (the CPU min/max comparison loop is cheap on M4 Pro).
+- **Effort**: M (3-5 days: 1d for the select-in-place method, 1d for the CPU-side evaluation path, 1-2d for threshold calibration and memory benchmarking, 1d for integration with task 64)
+- **Depends on**: task 64 (PAM two-tier cache) must land first to provide the tiered storage substrate. Task 34 (Quest page bounds) provides the per-page min/max metadata. Composes with task 94 (adaptive chunker) — the memory-aware feedback controller provides the dynamic threshold.
+- **Risk**: the min/max page bounds may be too coarse for fine-grained importance ranking when many pages have similar overlap scores. Mitigation: use CTkvr's (task 81) centroid-then-token two-stage ranking as a refinement step for pages near the threshold boundary.
+
+### 94. Adaptive prefill chunk-size controller with memory-aware feedback
+- **Goal**: 4 (prefill speed, constant across context), 5 (swap pressure), 6 (48GB fit)
+- **Derived from**: Memory-aware Dynamic Batching (2503.05248). The paper reframes static batch sizing as a real-time feedback control problem with a memory-aware scheduler and latency feedback mechanism.
+- **Change**:
+  - In `omlx/hypercar_server.py`, replace the hardcoded `chunk_size=512` at 64K+ context with an adaptive controller that adjusts chunk size between prefill iterations based on measured Metal memory residency and prefill throughput.
+  - The controller has two inputs: (a) `mx.metal.get_active_memory()` sampled after each chunk completes (memory signal), and (b) `tokens_processed / elapsed_time` for the chunk just completed (throughput signal). It has one output: the chunk size for the next iteration.
+  - Control law: target Metal residency = 65% of system memory (31.2 GB on 48 GB), with a proportional gain that increases chunk size when residency is below target (headroom available) and decreases when above (pressure building). The throughput signal provides a secondary constraint: if tok/s drops below 200, reduce chunk size regardless of memory headroom (this catches the O(n^2) attention cliff).
+  - Add a `--adaptive-chunk` flag to enable the controller. When disabled, fall back to the existing fixed chunk_size=512 behaviour. Default: disabled until validated.
+  - Log the per-chunk (chunk_size, metal_mb, tok_per_s) triple to the benchmark profile for post-hoc analysis.
+- **Verify**:
+  - Prefill throughput gate: at 64K context with `--adaptive-chunk`, prefill tok/s >= 400 (vs current ~340 at fixed 512-token chunks). The controller should discover that larger chunks are safe at the start of prefill (when KV cache is small) and shrink as the cache grows.
+  - Memory gate: Metal peak stays under 80% of system memory throughout the prefill. No watchdog breach.
+  - Stability test: run prefill 5 times consecutively at 64K. The per-chunk chunk_size sequence should converge to a stable profile within 2 runs (no oscillation between max and min chunk sizes).
+  - Regression gate: at 2K context (where chunking is not used), the adaptive controller must not activate. No overhead on short contexts.
+- **Effort**: S-M (2-3 days: 0.5d for the controller implementation, 0.5d for the flag plumbing and logging, 1-2d for gain calibration and stability testing on the reference machine)
+- **Depends on**: no hard dependencies — the controller wraps the existing prefill loop. Composes with task 72 (eLLM elastic memory) — eLLM's ballooning mechanism can replace `mx.metal.get_active_memory()` as the memory signal source once it lands. Composes with task 93 (PAM select-in-place) — the controller's memory signal informs the select-in-place threshold.
+- **Risk**: Apple Silicon's unified memory may have different feedback-loop dynamics than discrete GPUs — the memory signal may lag by one chunk because Metal defers page allocation. Mitigation: add a one-chunk lookahead: before computing the next chunk, speculatively estimate the KV cache growth and subtract it from the measured headroom. The estimate is cheap (chunk_size * kv_bytes_per_token, both known).
+
+### 95. EGCA execution-grounded credit assignment in TTT engine
+- **Goal**: 2 (intelligence via TTT — precision of credit assignment directly impacts training sample efficiency and final pass rate)
+- **Derived from**: Execution-Grounded Credit Assignment for GRPO (2603.16158, ICLR 2026 SPOT). The paper localises GRPO advantage to the failing token span by comparing execution traces of candidate vs reference solutions.
+- **Change**:
+  - In `omlx/ttt.py`, after the code verifier runs and a candidate fails one or more tests, add an EGCA trace-comparison phase:
+    1. Execute the candidate solution under trace instrumentation (line-by-line variable state capture). The verifier already runs the code; the trace is an additional output.
+    2. Execute the canonical reference solution (curated once offline from HumanEval/MBPP) under the same instrumentation.
+    3. Diff the two traces to find the *earliest semantic divergence point* — the first line where a variable's value differs between candidate and reference.
+    4. Map the divergence line back to the token span in the candidate's generation that produced it.
+    5. In the GRPO advantage computation, assign full advantage to tokens in the divergence span and zero advantage (mask) to all tokens after the divergence point. Tokens before the divergence point retain the standard trajectory-level advantage.
+  - Add a `--egca` flag to enable execution-grounded credit assignment. When disabled, fall back to the existing trajectory-level GRPO. Default: disabled until validated.
+  - Scope the first prototype to single-function HumanEval-style tasks where the reference solution is a single canonical function. Multi-file tasks (SWE-bench style) are deferred because the trace instrumentation is harder to scope.
+- **Verify**:
+  - Unit test: a synthetic candidate that implements a sorting function correctly except for an off-by-one in the partition step. The trace divergence should identify the partition line, and the advantage mask should cover only the token span corresponding to the partition code.
+  - Quality gate: with `--egca` enabled, TTT engine HumanEval pass rate improves by >= 2pp over trajectory-level GRPO baseline at the same compute budget.
+  - Overhead gate: the trace instrumentation + diff adds <= 18% wall-clock overhead to the TTT rollout phase (matching the paper's reported overhead).
+  - Stability gate: OPLoRA safety rail (task 59) still triggers correctly with EGCA-modified advantages. The localised advantage should not cause gradient spikes because it's strictly *smaller* (more tokens masked) than the trajectory-level advantage.
+  - Composition test: when combined with MT-GRPO (task 90, turn-level credit), EGCA should provide *strictly finer* credit within each turn. Run with both `--egca` and `--turn-level-ca` enabled and verify pass rate is >= the max of either alone.
+- **Effort**: S (1-2 days: 0.5d for trace instrumentation wrapper around the existing verifier, 0.5d for the trace-diff and token-span mapping, 0.5d for the advantage masking in GRPO, 0.5d for calibration and testing)
+- **Depends on**: task 59 (OPLoRA safety rail) as outer envelope. Independent of tasks 90-92 — targets a different granularity (token-span vs turn vs trajectory) and can land and be evaluated before the heavier techniques. Provides the *baseline* against which tasks 90-92 must justify their marginal cost.
+- **Risk**: the "earliest semantic divergence" heuristic may mis-localise when the candidate's bug is a subtle logic error that doesn't manifest in variable state until many lines later (e.g., off-by-one in a loop bound that only diverges on the last iteration). Mitigation: when the trace divergence point is more than 10 lines after the last shared correct line, fall back to trajectory-level advantage (the localisation is too uncertain to be useful). The 10-line threshold is a tunable hyperparameter.

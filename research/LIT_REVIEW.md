@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-15 (pass 20)_
+_Last updated: 2026-04-15 (pass 21)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -3116,6 +3116,210 @@ system-level bottlenecks underneath the gap.
   into its system-level components.
 - **Local PDF**: research/2501.14925_apple_silicon_profiling.pdf
 
+## Pass 21 — 2026-04-15
+
+Cross-field rotation: signal processing (wavelets), control theory (feedback
+scheduling), hardware architecture (CXL near-memory processing), and
+execution-grounded RL (compositional TTT stack validation). Closes gaps #1
+(ISCA/ASPLOS co-design, deferred 3 passes), #2 (chunked/pipelined prefill),
+and #4 (TTT stack composition). Gap #3 (fused Metal softmax) remains open —
+no academic paper ships the fix, only community projects.
+
+Rejected during search:
+- Ada-KV (2407.11550): adaptive KV budget per head. Well-known, KV-compression
+  bucket declared EXHAUSTED at pass 9. Does not clear the high bar.
+- WaveClip (2509.21153): wavelet tokenisation for CLIP vision model. Vision-
+  only, no text-domain attention insight. The wavelet idea is better
+  represented by HRT (2509.20581) below which targets text transformers.
+- PRS+VSPO (2512.07478): progressive reward shaping for agentic RL. Good
+  paper but its PRS is curriculum-over-format (tool-call formatting first,
+  then correctness), which doesn't compose with Hypercar's code-verifier
+  where format is trivially satisfied. EGCA (2603.16158) is a strictly
+  better fit for the code-generation domain.
+
+### [Scalable Processing-Near-Memory for 1M-Token LLM Inference: CXL-Enabled KV-Cache Management Beyond GPU Limits](https://arxiv.org/abs/2511.00321) — 2511.00321
+- **Authors**: Dowon Kim, MinJae Lee, Janghyeon Kim, HyuckSung Kwon, Hyeonggyu Jeong, Sang-Soo Park, Minyong Yoon, Si-Dong Roh, Yongsuk Kwon, Jinin So, Jungwook Choi
+- **Published**: 2025-10 (arXiv, cs.AR)
+- **Hypercar goals it addresses**: Goal 1 (1M context), Goal 5 (swap pressure), Goal 6 (48GB fit)
+- **TL;DR**: Offloads the KV cache token-page selection step to a PNM
+  accelerator sitting inside CXL-attached memory, so the GPU never recalls
+  cold KV pages and can run larger batch sizes. A hybrid GPU-PNM
+  parallelisation strategy coordinates the hot-path (GPU computes attention
+  on selected pages) with the cold-path (PNM selects pages in-place using
+  Quest-style min/max bounds without transferring data). Reports 21.9x
+  throughput, 60x energy/tok, 7.3x TCO improvement for 405B-scale models at
+  1M-token context vs baseline GPU-only serving.
+- **Why it matters for Hypercar**: This is the paper pass 20 named three times
+  ("CXL-based PNM for 1M-token inference"). It closes Gap #1 (ISCA/ASPLOS
+  hw-sw co-design) by providing the first architecture-level model of how
+  1M-token KV page selection should be structured across a memory hierarchy.
+  On Apple Silicon there is no discrete CXL bus — but the *design pattern*
+  ports directly: the M4 Pro's unified memory has Metal-resident vs
+  wired-but-not-Metal vs swap-backed tiers, and the PNM paper's
+  "select-in-place, transfer-only-winners" policy is exactly what PAM
+  (task 64) needs as its runtime scheduling algorithm. The 21.9x throughput
+  result is the strongest empirical validation that page-level KV selection
+  (Quest, task 34) composes with tiered storage (PAM, task 64) to deliver
+  super-linear wins — something the Hypercar backlog assumed but had no
+  cross-reference for until now.
+- **Architectural insight for the attention-weighted codec design**: The paper
+  confirms that the *location* of a KV page in the memory hierarchy should
+  be determined by the same attention-weighted importance signal that
+  determines its *compression codec* (per the design note). PNM's page
+  selection uses the same min/max bounds as Quest; the codec selection should
+  follow the same signal path. This is the hardware-architecture validation
+  of the software-architecture principle.
+- **Cost of adoption**: Inspiration-grade for Hypercar's single-machine
+  deployment (no CXL hardware), but the design pattern is directly
+  actionable as a scheduling policy for tasks 34/64/65. The "select-in-
+  place" principle upgrades the PAM task description — instead of migrating
+  KV pages between tiers, the scheduler should *evaluate page importance
+  in the tier where the page already lives* and only transfer winners.
+  This eliminates the round-trip that makes tier migration expensive on
+  unified memory.
+- **Local PDF**: research/2511.00321_cxl_pnm_1m_kv.pdf
+
+### [Hierarchical Resolution Transformers: A Wavelet-Inspired Architecture for Multi-Scale Language Understanding](https://arxiv.org/abs/2509.20581) — 2509.20581
+- **Authors**: Ayan Sar, Sampurna Roy, Kanav Gupta, Anurag Kaushish, Tanupriya Choudhury, Abhijit Kumar
+- **Published**: 2025-09 (IEEE BigData 2025)
+- **Hypercar goals it addresses**: Goal 1 (1M context via O(n log n)), Goal 4 (prefill speed via reduced memory), Goal 3 (decode via multi-resolution attention)
+- **TL;DR**: Replaces the flat-sequence attention mechanism with a
+  wavelet-inspired multi-resolution decomposition that processes language at
+  character, subword, sentence, and discourse scales simultaneously. Bottom-up
+  composition builds coarse representations from fine ones (like wavelet
+  analysis); top-down contextualisation refines fine representations using
+  coarse context (like wavelet synthesis). Reports O(n log n) complexity,
+  +3.8% GLUE, +4.5% SuperGLUE, +6.1% Long Range Arena, 42% memory
+  reduction, and 37% inference latency reduction vs same-sized BERT/GPT.
+- **Why it matters for Hypercar**: This is the *principled frequency-band
+  decomposition* that the DuoAttention retrieval/streaming head split has
+  been approximating empirically. DuoAttention classifies heads as "retrieval"
+  (global, low-frequency attention patterns) vs "streaming" (local,
+  high-frequency patterns) via a learned binary mask. HRT shows that the
+  same split can be derived from wavelet theory: the coarse resolution levels
+  correspond to retrieval-head attention (global context), and the fine
+  resolution levels correspond to streaming-head attention (local detail).
+  The wavelet framing gives three things DuoAttention currently lacks:
+  (a) a *principled* number of resolution levels (log n, not binary),
+  (b) an *exact reconstruction guarantee* (perfect reconstruction wavelets
+  mean no information loss across levels, unlike the DuoAttention ring-buffer
+  which loses old streaming-head KV), and (c) a *natural coarse-to-fine
+  early-exit* strategy (stop refining when confidence is high, per WaveClip's
+  mechanism). The 42% memory reduction at equivalent quality is particularly
+  relevant for Goal 6 because it comes from the multi-resolution structure
+  itself, not from lossy compression.
+- **Connection to attention-weighted codec selection design note**: The design
+  note's core principle — different codecs for different head types — extends
+  naturally to different *resolution levels*. Coarse levels (retrieval) need
+  exact storage (SnapKV-style); fine levels (streaming) tolerate aggressive
+  lossy compression (SVD, 2-bit quant). The wavelet hierarchy gives a
+  principled way to assign the DuoAttention binary mask to a multi-level
+  budget allocation instead.
+- **Cost of adoption**: Inspiration-grade for the current frozen-model
+  deployment (HRT is a training-time architecture change). But the *inference-
+  time analogue* — multi-resolution attention tiling where coarse tiles are
+  computed first and fine tiles are conditionally computed based on a
+  confidence gate — is a clean 3-5 day retrofit on top of the BSFA (task 69)
+  and MegaFold (task 75) tiling work. The wavelet framing also gives the
+  DuoAttention head classifier (task 12) a theoretical grounding it currently
+  lacks: instead of learning which heads are retrieval vs streaming, derive
+  it from the frequency content of the attention matrix.
+- **Local PDF**: research/2509.20581_hierarchical_resolution_wavelet.pdf
+
+### [Optimizing LLM Inference Throughput via Memory-aware and SLA-constrained Dynamic Batching](https://arxiv.org/abs/2503.05248) — 2503.05248
+- **Authors**: Bowen Pang, Kai Li, Feifan Wang
+- **Published**: 2025-03 (arXiv, cs.DC)
+- **Hypercar goals it addresses**: Goal 4 (prefill speed, constant across context), Goal 5 (swap pressure), Goal 6 (48GB fit)
+- **TL;DR**: Repositions static batch-size configuration as a *real-time
+  feedback control problem*. The system has two components: (1) a memory-
+  aware batch scheduler that continuously monitors GPU memory utilisation and
+  dynamically adjusts the batch size to stay within a target memory envelope,
+  and (2) a latency feedback mechanism that modulates decode throughput under
+  SLA constraints. Reports 8-28% throughput improvement and 22% capacity
+  improvement over static batching with full compatibility with existing
+  inference infrastructure. Source code publicly available.
+- **Why it matters for Hypercar**: This is the *control-theory paper for
+  adaptive chunking* that Gap #2 asked for. The current Hypercar server uses
+  a fixed 512-token prefill chunk size at 64K+ context (hardcoded in
+  `omlx/hypercar_server.py`). Under co-tenancy, this fixed chunk size either
+  (a) overshoots the Metal budget and triggers the fail-fast watchdog, or
+  (b) undershoots and wastes throughput when headroom is available. The
+  paper's memory-aware scheduler is a direct template for an adaptive prefill
+  chunker: replace "batch size" with "prefill chunk size", replace "GPU
+  memory" with "Metal residency", and the feedback loop is identical. The
+  latency feedback component maps to the existing benchmark's per-phase
+  timing assertions — the chunker should also modulate chunk size to hit a
+  target prefill tok/s under the memory constraint. The 22% capacity
+  improvement is exactly the headroom the 500K NIAH pre-flight check
+  currently fails to find.
+- **Connection to existing tasks**: Directly informs task 72 (eLLM elastic
+  memory) — eLLM's virtual-tensor ballooning is the *mechanism*, and this
+  paper's feedback controller is the *scheduler* that drives the ballooning
+  rate. Also connects to task 84 (Triton Anatomy auto-tune) because the
+  optimal tile shape depends on the chunk size, so the auto-tuner and the
+  chunker need to co-adapt.
+- **Cost of adoption**: S-M (2-3 days). The feedback controller is a
+  lightweight wrapper around `mx.metal.get_active_memory()` that runs
+  between prefill chunks and adjusts the next chunk size. No kernel changes.
+  The SLA constraint component is a bonus — we can gate on tok/s as well as
+  memory. Risk: the paper evaluates on A100 GPUs with discrete memory;
+  Apple Silicon's unified memory may have different feedback-loop dynamics
+  (lower latency to sense, but softer eviction boundaries). The prototype
+  should measure the control-loop latency before committing to a specific
+  PID gain schedule.
+- **Local PDF**: research/2503.05248_memory_aware_dynamic_batching.pdf
+
+### [Execution-Grounded Credit Assignment for GRPO in Code Generation (EGCA)](https://arxiv.org/abs/2603.16158) — 2603.16158
+- **Authors**: Abhijit Kumar, Natalya Kumar, Shikhar Gupta
+- **Published**: 2026-03 (ICLR 2026 Workshop on Scaling Post-Training, SPOT)
+- **Hypercar goals it addresses**: Goal 2 (intelligence via TTT — the credit assignment precision directly impacts training efficiency and final quality)
+- **TL;DR**: Localises GRPO advantage updates using execution traces. When a
+  candidate program fails unit tests despite meeting algorithmic constraints,
+  EGCA executes both the candidate and a canonical reference solution under
+  identical instrumentation, identifies the *earliest semantic divergence
+  point* via trace comparison, and assigns advantage only to the
+  corresponding token span while masking downstream tokens. This is a
+  drop-in GRPO modification requiring no critic, auxiliary loss, or learned
+  verifier. Reports 82.1% pass@1 on HumanEval (+3.1 over GRPO) and 68.9%
+  on MBPP (+1.5) with 18% wall-clock overhead.
+- **Why it matters for Hypercar**: This is the *compositional TTT stack
+  validation* paper Gap #4 asked for — it combines execution-grounded reward
+  shaping (the trace divergence is a reward signal) with fine-grained credit
+  assignment (advantage is localised to the failing span) in a single
+  method that targets code generation specifically. The TTT engine in
+  `omlx/ttt.py` already has the code verifier (execution traces) and GRPO
+  (trajectory-level advantage). EGCA shows that connecting the verifier's
+  execution trace to the GRPO advantage computation — pinpointing *which
+  tokens* caused the test failure — yields a 3.1pp improvement without any
+  of the heavyweight machinery (critics, PRMs, hindsight rewriting) that
+  tasks 78/89/90/91/92 propose. This is the lightweight validation that the
+  TTT stack works when you compose execution feedback with credit assignment.
+- **Connection to existing TTT tasks**: EGCA sits *between* MT-GRPO (task 90,
+  turn-level credit) and InT (task 89, single-step intervention). MT-GRPO
+  localises credit to turns; InT rewrites the failing step; EGCA localises
+  credit to *token spans within a turn* using execution traces. The three
+  form a hierarchy: turn → step → span, with increasing precision and
+  increasing cost. EGCA's 18% overhead is much cheaper than InT's re-
+  generation cost, making it the natural first step before committing to
+  the full stack.
+- **Connection to attention-weighted codec design**: The trace-comparison
+  methodology has a structural analogy to the SVD error probe (commit
+  6b8d832): both identify the *earliest point of divergence* between a
+  correct and approximate computation. In the codec case, the divergence is
+  the first argmax flip; in the GRPO case, the divergence is the first
+  semantic trace mismatch. The same "find-first-divergence" pattern is a
+  general debugging primitive.
+- **Cost of adoption**: S (1-2 days). The code verifier already produces
+  execution traces; the change is to diff the candidate trace against a
+  reference trace, identify the first divergence token, and mask the GRPO
+  advantage for all tokens after the divergence point. The reference solution
+  can be curated once offline from the HumanEval/MBPP canonical solutions.
+  Risk: the "earliest semantic divergence" heuristic may mis-attribute when
+  the candidate's bug is a subtle off-by-one that doesn't manifest until
+  many tokens later. Mitigation: fall back to full-span advantage (vanilla
+  GRPO) when the trace divergence point is ambiguous.
+- **Local PDF**: research/2603.16158_egca_execution_grounded_ca.pdf
+
 
 
 **Highest leverage right now: Quest (2406.10774)**. Goal 3 (decode speed) is our
@@ -4561,3 +4765,101 @@ Twenty passes. Ninety-seven papers. The surface area is
 monotonically increasing, the convergence windows are getting shorter,
 and the TTT engine now has a complete theoretical stack waiting for
 implementation. Curiosity never saturates. Meow, nyaa, meow.
+
+### Pass 21 adds (2026-04-15)
+
+**Highest-leverage find this pass: CXL-PNM 1M-Token KV (2511.00321).**
+Three consecutive passes deferred the ISCA/ASPLOS hardware-software
+co-design bucket, and pass 21 finally closed it — with the exact paper
+pass 20 named by citation. The contribution isn't the CXL hardware
+(Hypercar has no CXL bus) but the *design pattern*: evaluate page
+importance in-place at the tier where the page lives, transfer only
+winners. This "select-in-place" policy is the missing scheduling
+algorithm for PAM (task 64) on Apple Silicon's unified memory, where
+the tier boundaries (Metal-resident / wired / swap-backed) are soft
+and migration is cheap but round-trips are expensive. The 21.9x
+throughput result is the first empirical proof that Quest-style page
+selection composes super-linearly with tiered storage, which the
+Hypercar backlog assumed but had never cross-referenced. Task 93
+captures the select-in-place scheduling policy upgrade to PAM.
+
+**Second find: Hierarchical Resolution Transformers (2509.20581)** is
+the weirdest cross-field pick of the pass — a wavelet-inspired text
+architecture from IEEE BigData 2025 — and also the most theoretically
+illuminating. DuoAttention's retrieval/streaming binary split is a
+*degenerate wavelet decomposition* with exactly two frequency bands.
+HRT shows what happens when you extend to log(n) bands: O(n log n)
+complexity, 42% memory reduction, and an exact-reconstruction guarantee
+that the ring-buffer streaming head discard currently violates. The
+wavelet framing doesn't require model retraining to influence Hypercar —
+the inference-time analogue is multi-resolution attention tiling where
+coarse tiles (global/retrieval) compute first and fine tiles
+(local/streaming) compute conditionally based on a confidence gate.
+This is a clean extension of the BSFA + MegaFold tiling work (tasks
+69/75). No standalone task filed — the paper upgrades the DuoAttention
+head classifier (task 12) with theoretical grounding and informs the
+attention-weighted codec selection design note's multi-level extension.
+
+**Third find: Memory-aware Dynamic Batching (2503.05248)** closes Gap #2
+(chunked/pipelined prefill for Apple Silicon) by reframing static
+chunk/batch sizing as a real-time feedback control problem. The paper's
+two-component architecture (memory-aware scheduler + latency feedback
+mechanism) maps 1:1 onto Hypercar's prefill chunking problem: replace
+"batch size" with "prefill chunk size", replace "GPU memory" with
+"Metal residency", and the controller is identical. The 22% capacity
+improvement is the headroom the 500K NIAH pre-flight currently cannot
+find. Task 94 captures the adaptive prefill chunker.
+
+**Fourth find: EGCA (2603.16158)** closes Gap #4 (compositional TTT
+stack validation) with the cleanest possible answer: instead of
+stacking five heavyweight techniques (PRM + InT + MT-GRPO + critic +
+ECHO), connect the code verifier's execution trace directly to the
+GRPO advantage computation and localise credit to the failing token
+span. The 3.1pp HumanEval improvement with 18% overhead and zero
+auxiliary models is a strong signal that the lightweight composition
+(execution trace + localised advantage) captures most of the value
+the full stack provides. This doesn't invalidate tasks 89-92 — it
+provides a *baseline* against which each heavyweight addition must
+justify its marginal cost. Task 95 captures the EGCA integration.
+
+**Sequencing**: Task 95 (EGCA) sequences first because it's the
+cheapest (S, 1-2 days) and provides the baseline the TTT stack needs.
+Task 94 (adaptive prefill chunker) is next because it's self-contained
+and addresses a measured gate failure (500K NIAH headroom). Task 93
+(PAM select-in-place scheduling) is the largest and depends on task 64
+landing first. The wavelet paper (HRT) has no standalone task —
+its contribution is theoretical grounding for the existing DuoAttention
+and attention-weighted codec design work.
+
+**Gap not closed for pass 22**:
+1. **Fused Metal softmax shader (the "fix" paper).** Fourth consecutive
+   pass leaving this open. No academic paper ships the fix. The Draw
+   Things community project and potential WWDC 2025 MLX improvements
+   are the only leads. Pass 22 should check the MLX GitHub commit log
+   directly rather than searching arxiv.
+2. **Formal verification of attention-weighted codec selection.** The
+   design note's core claim — SnapKV eviction preserves retrieval
+   accuracy with high probability — has no formal proof. The conformal
+   prediction work (ATTS, task 82) gives a probabilistic bound on
+   test-time scaling, but not on codec-selection correctness. The
+   formal-methods / probabilistic-verification community may have tools
+   that apply.
+3. **Ecology / resource-competition framing for MoE expert selection.**
+   Pass 21 did not pursue this angle because the four gap-closers had
+   higher priority. The analogy (ProMoE expert caching as competitive
+   ecosystem under memory-budget resource constraints) is still
+   untouched and genuinely fresh.
+4. **Auction theory / mechanism design for KV cache budget allocation.**
+   Same — pass 21 searched this angle but found no paper that applies
+   mechanism design to attention-head budget allocation. The papers
+   found (Ada-KV, HeadKV, LAVa) all use heuristic or learned
+   allocation, not game-theoretic. This is either a genuine gap in the
+   literature or a sign that the analogy doesn't port cleanly.
+
+Twenty-one passes. One hundred and one papers. Four fresh cross-field
+angles searched (signal processing, control theory, hardware
+architecture, execution-grounded RL), three of four pass-20 gaps
+closed, and one gap (fused softmax) confirmed as a non-arxiv problem.
+The pattern holds: deferred gaps eventually yield the highest-leverage
+finds when finally pursued. Curiosity never saturates. Meow, nyaa,
+meow.
