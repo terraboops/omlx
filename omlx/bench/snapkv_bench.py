@@ -102,14 +102,26 @@ def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32,
     return tokens
 
 
+def _make_bench_cache(n_layers: int, kv_mode: str = "fp16",
+                       bits: int = 3, group_size: int = 64):
+    """Create KV cache list for the given mode."""
+    from mlx_lm.models.cache import KVCache, QuantizedKVCache
+    if kv_mode == "native":
+        return [QuantizedKVCache(group_size=group_size, bits=bits)
+                for _ in range(n_layers)]
+    return [KVCache() for _ in range(n_layers)]
+
+
 def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
-             use_caote=False, segment_size=0, skip_baseline=False):
+             use_caote=False, segment_size=0, skip_baseline=False,
+             kv_mode="fp16"):
     """Run one SnapKV compaction test at given context length and keep ratio.
 
     Args:
         skip_baseline: Skip the expensive baseline generation (for 64K+ contexts
             where O(n²) baseline prefill takes 30+ minutes). When True, only runs
             the SnapKV path and checks needle retrieval without token agreement.
+        kv_mode: "fp16" or "native" (3-bit QuantizedKVCache).
 
     Returns dict with results.
     """
@@ -128,7 +140,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     scoring_label = "CAOTE" if use_caote else "attention-only"
     logger.info(f"\n{'='*60}")
     logger.info(f"Context: {actual_tokens} tokens, keep ratio: {keep_ratio:.0%} "
-                f"({keep_count} tokens), scoring: {scoring_label}")
+                f"({keep_count} tokens), scoring: {scoring_label}, kv_mode: {kv_mode}")
 
     # --- Baseline: generate without eviction ---
     base_tokens = None
@@ -137,7 +149,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
         logger.info(f"  Baseline: SKIPPED (--skip-baseline, context too long for O(n²))")
     else:
         gc.collect(); mx.clear_cache()
-        cache_base = [KVCache() for _ in range(n_layers)]
+        cache_base = _make_bench_cache(n_layers, kv_mode)
         base_tokens = generate_tokens(model, tokenizer, input_ids, cache_base, n_tokens=32)
         base_text = tokenizer.decode(base_tokens)
         metal_baseline = mx.get_active_memory() / 1e9
@@ -152,7 +164,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     # Install Q capture hooks
     captured, cleanup = install_q_capture_hook(model)
 
-    cache = [KVCache() for _ in range(n_layers)]
+    cache = _make_bench_cache(n_layers, kv_mode)
 
     # Prefill in chunks
     chunk_size = 4096
@@ -238,6 +250,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
         "keep_ratio": keep_ratio,
         "keep_count": keep_count,
         "scoring": scoring_label,
+        "kv_mode": kv_mode,
         "actual_kept": actual_kept,
         "metal_before_gb": round(metal_before_compact, 2),
         "metal_after_gb": round(metal_after_compact, 2),
@@ -271,6 +284,8 @@ def main():
                         help="BUZZ segmented eviction: per-segment top-K (0=global)")
     parser.add_argument("--skip-baseline", action="store_true", default=False,
                         help="Skip baseline generation (for 64K+ where O(n²) is too slow)")
+    parser.add_argument("--kv-mode", choices=["fp16", "native"], default="fp16",
+                        help="KV cache mode: fp16 (default) or native (3-bit QuantizedKVCache)")
     args = parser.parse_args()
 
     keep_ratios = [float(r) for r in args.keep_ratios.split(",")]
@@ -307,7 +322,8 @@ def main():
         result = run_test(model, tokenizer, args.context, ratio,
                           use_caote=args.caote,
                           segment_size=args.segment_size,
-                          skip_baseline=args.skip_baseline)
+                          skip_baseline=args.skip_baseline,
+                          kv_mode=args.kv_mode)
         results.append(result)
 
     elapsed = time.perf_counter() - t0

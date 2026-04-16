@@ -1095,6 +1095,12 @@ class TestSegmentedEvictionSource:
         bench_src = Path("omlx/bench/snapkv_bench.py").read_text()
         assert "--segment-size" in bench_src
 
+    def test_bench_has_kv_mode_flag(self):
+        """snapkv_bench must accept --kv-mode for native 3-bit testing."""
+        bench_src = Path("omlx/bench/snapkv_bench.py").read_text()
+        assert "--kv-mode" in bench_src
+        assert "QuantizedKVCache" in bench_src
+
 
 # ---- Task 97: Freshness-Aware Eviction ----
 

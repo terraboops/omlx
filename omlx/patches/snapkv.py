@@ -176,14 +176,23 @@ def install_q_capture_hook(model, target_layers: list[int] | None = None):
 
                 if cache is not None:
                     queries = sa.rope(queries, offset=cache.offset)
-                    keys = sa.rope(keys, offset=cache.offset)
-                    keys, values = cache.update_and_fetch(keys, values)
+                    keys_rope = sa.rope(keys, offset=cache.offset)
+                    # CAPTURE fp16 K BEFORE quantization (for scoring accuracy)
+                    if lid not in captured or not isinstance(captured[lid], tuple):
+                        captured[lid] = (queries, keys_rope)
+                    else:
+                        # Concatenate K across prefill chunks
+                        prev_q, prev_k = captured[lid]
+                        captured[lid] = (
+                            mx.concatenate([prev_q, queries], axis=2),
+                            mx.concatenate([prev_k, keys_rope], axis=2),
+                        )
+                    keys, values = cache.update_and_fetch(keys_rope, values)
                 else:
                     queries = sa.rope(queries)
-                    keys = sa.rope(keys)
-
-                # CAPTURE Q
-                captured[lid] = queries
+                    keys_rope = sa.rope(keys)
+                    captured[lid] = (queries, keys_rope)
+                    keys = keys_rope
 
                 from mlx_lm.models.base import scaled_dot_product_attention
                 attn_out = scaled_dot_product_attention(
@@ -366,8 +375,12 @@ def compute_caote_importance(
     """
     all_importance = []
 
-    for layer_idx, queries in captured_queries.items():
-        keys = _get_fp16_keys(cache[layer_idx])    # (B, H_kv, T, D)
+    for layer_idx, entry in captured_queries.items():
+        queries, captured_keys = _unpack_captured(entry)
+        if captured_keys is not None:
+            keys = captured_keys
+        else:
+            keys = _get_fp16_keys(cache[layer_idx])
         values = _get_fp16_values(cache[layer_idx])  # (B, H_kv, T, D)
         B, H_kv, T, D = keys.shape
         H_q = queries.shape[1]
@@ -415,6 +428,13 @@ def compute_caote_importance(
     return result
 
 
+def _unpack_captured(captured_entry):
+    """Unpack captured data: supports (Q, K) tuples or bare Q arrays."""
+    if isinstance(captured_entry, tuple) and len(captured_entry) == 2:
+        return captured_entry  # (queries, keys_fp16)
+    return captured_entry, None  # legacy: bare Q, no captured K
+
+
 def compute_importance_from_real_q(
     captured_queries: dict,
     cache: list,
@@ -422,12 +442,13 @@ def compute_importance_from_real_q(
 ) -> mx.array:
     """Compute importance using real Q projections captured by the hook.
 
-    This is the correct importance computation — uses actual query
-    vectors (after RoPE) rather than K-as-Q proxy.
+    Uses fp16 K from the capture hook when available (avoids quantization
+    noise in native 3-bit mode). Falls back to cache K when not captured.
 
     Args:
-        captured_queries: dict from install_q_capture_hook (layer_idx → Q)
-        cache: KVCache list (for K values)
+        captured_queries: dict from install_q_capture_hook
+            (layer_idx → (Q, K_fp16) tuple or bare Q array)
+        cache: KVCache list (fallback for K values)
         obs_window: Observation window size
 
     Returns:
@@ -435,8 +456,13 @@ def compute_importance_from_real_q(
     """
     all_importance = []
 
-    for layer_idx, queries in captured_queries.items():
-        keys = _get_fp16_keys(cache[layer_idx])  # (B, H_kv, T, D)
+    for layer_idx, entry in captured_queries.items():
+        queries, captured_keys = _unpack_captured(entry)
+        # Use captured fp16 K if available (avoids quantization noise)
+        if captured_keys is not None:
+            keys = captured_keys
+        else:
+            keys = _get_fp16_keys(cache[layer_idx])
         B, H_kv, T, D = keys.shape
         H_q = queries.shape[1]
         gqa_ratio = H_q // H_kv
