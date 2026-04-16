@@ -1459,6 +1459,141 @@ def phase4_humaneval_lite(model, tokenizer,
 
 
 # ---------------------------------------------------------------------------
+# Phase 3d: LiveCodeBench (contamination-free coding gate)
+# ---------------------------------------------------------------------------
+
+MIN_LCB_PASS_RATE = 0.30  # 30% pass@1 on post-cutoff problems
+
+def phase3d_livecodebench(model, tokenizer,
+                           watchdog: MemoryWatchdog,
+                           n_problems: int = 10) -> PhaseResult:
+    """Run LiveCodeBench problems with sandboxed execution.
+
+    Contamination-free coding eval using post-cutoff competitive programming
+    problems. Generates code, executes in subprocess, checks stdout.
+
+    Gate: pass@1 >= 30%.
+    """
+    import json as _json
+    from omlx.eval.livecodebench import _extract_code, _execute_code
+    from omlx.eval.datasets import load_jsonl, deterministic_sample
+
+    t0 = time.perf_counter()
+    n_layers = len(model.layers)
+    data_path = Path(__file__).parent.parent / "eval" / "data" / "livecodebench.jsonl"
+
+    if not data_path.exists():
+        return PhaseResult(
+            name="Phase 3d: LiveCodeBench", passed=True,
+            details={"skipped": True, "reason": "livecodebench.jsonl not found"},
+        )
+
+    # Load and filter problems with valid test cases
+    raw = load_jsonl(data_path)
+    problems = []
+    for item in raw:
+        tc = item.get("public_test_cases", "[]")
+        if isinstance(tc, str):
+            try:
+                tc = _json.loads(tc)
+            except (ValueError, TypeError):
+                continue
+        if not isinstance(tc, list) or not tc:
+            continue
+        inputs = [t.get("input", "") for t in tc]
+        outputs = [t.get("output", "") for t in tc]
+        if inputs and outputs:
+            problems.append({
+                "id": item.get("question_id", ""),
+                "title": item.get("question_title", ""),
+                "description": item.get("question_content", ""),
+                "inputs": inputs,
+                "outputs": outputs,
+                "starter_code": item.get("starter_code", ""),
+            })
+
+    problems = deterministic_sample(problems, n_problems)
+    logger.info(f"  LiveCodeBench: {len(problems)} problems sampled")
+
+    results = []
+    for prob in problems:
+        if watchdog.breached.is_set():
+            return PhaseResult(
+                name="Phase 3d: LiveCodeBench", passed=False,
+                elapsed_s=time.perf_counter() - t0,
+                reason=watchdog.breach_reason,
+            )
+
+        # Build prompt
+        prompt_text = (
+            "Solve the following programming problem in Python.\n"
+            "Read input from stdin and print the output to stdout.\n"
+            "Provide only the complete Python code in a ```python block.\n\n"
+            f"Problem: {prob['title']}\n{prob['description']}\n\nSolution:"
+        )
+        messages = [{"role": "user", "content": prompt_text}]
+        try:
+            chat_text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            chat_text = prompt_text + "\n"
+        tokens = tokenizer.encode(chat_text)
+
+        # Generate
+        cache = _make_cache(n_layers)
+        x = mx.array([tokens])
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+
+        generated = []
+        for _ in range(512):
+            token = mx.argmax(logits[:, -1, :], axis=-1)
+            mx.eval(token)
+            tok_id = token.item()
+            generated.append(tok_id)
+            if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
+                break
+            x = token.reshape(1, 1)
+            logits = model(x, cache=cache)
+            mx.eval(logits)
+
+        response = tokenizer.decode(generated)
+        code = _extract_code(response)
+
+        # Execute against test cases (first 3)
+        passed = True
+        for inp, expected in zip(prob["inputs"][:3], prob["outputs"][:3]):
+            stdin_input = inp if isinstance(inp, str) else str(inp)
+            expected_out = expected.strip() if isinstance(expected, str) else str(expected).strip()
+            stdout, success, error = _execute_code(code, stdin_input)
+            if not success or stdout.strip() != expected_out:
+                passed = False
+                break
+
+        results.append({"id": prob["id"], "title": prob["title"],
+                        "passed": passed, "code": code[:100]})
+        status = "PASS" if passed else "FAIL"
+        logger.info(f"    {status}: {prob['title'][:50]}")
+
+        del cache; gc.collect(); mx.clear_cache()
+
+    pass_count = sum(1 for r in results if r["passed"])
+    pass_rate = pass_count / max(len(results), 1)
+    gate_passed = pass_rate >= MIN_LCB_PASS_RATE
+
+    logger.info(f"  LiveCodeBench: {pass_count}/{len(results)} "
+                f"({pass_rate*100:.0f}%) — gate {'PASS' if gate_passed else 'FAIL'}")
+
+    return PhaseResult(
+        name="Phase 3d: LiveCodeBench",
+        passed=gate_passed,
+        elapsed_s=time.perf_counter() - t0,
+        details={"pass_rate": pass_rate, "pass_count": pass_count,
+                 "total": len(results), "results": results},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 5: Memory Profile (summary of watchdog)
 # ---------------------------------------------------------------------------
 
@@ -1945,6 +2080,23 @@ Examples:
         if not args.full:
             logger.info("\nDefault mode: skipping Phase 4 (HumanEval). Use --full to include.")
             return _finish(phases, watchdog, limits, total_t0, results_path)
+
+        # Phase 3d: LiveCodeBench (contamination-free coding, --full only)
+        logger.info("\n=== Phase 3d: LiveCodeBench ===")
+        if _check_phase_headroom("Phase 3d: LiveCodeBench", limits["metal_peak_gb"]):
+            p3d = phase3d_livecodebench(model, tokenizer, watchdog,
+                                         n_problems=20)
+            phases.append(p3d)
+            if not p3d.passed:
+                if watchdog.breached.is_set():
+                    logger.error("Phase 3d FAILED (memory breach) — aborting")
+                    return _finish(phases, watchdog, limits, total_t0, results_path)
+                logger.warning("Phase 3d FAILED (LCB gate) — continuing to HumanEval")
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3d: LiveCodeBench", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
 
         # Phase 4: HumanEval Lite
         logger.info("\n=== Phase 4: HumanEval Lite ===")

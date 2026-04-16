@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 18: LiveCodeBench contamination-free coding gate** — Phase 3d wired (2026-04-16)
+  - `phase3d_livecodebench()` in hypercar_bench: 20 problems in --full mode
+  - Uses existing `omlx/eval/livecodebench.py` module + bundled data (2 MB, 100+ problems)
+  - Sandboxed subprocess execution with timeout + memory limits
+  - Gate: `lcb_gen@post_cutoff >= 30%` pass@1
+  - Runs after MMLU-Pro, before HumanEval in --full mode
+
 - **Goal 1: 128K NIAH PASS** — SnapKV+CAOTE physical compaction at 128K (2026-04-16)
   - 128K@25% keep: **NIAH PASS**, needle "SNAPKV-COMPACT-7743" found correctly
   - **9.03 GB Metal saved** (44.6 → 35.6 GB, 20% reduction)

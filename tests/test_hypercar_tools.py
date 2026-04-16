@@ -421,6 +421,42 @@ class TestDuoPolicy:
         duo_src = Path("omlx/duo_kv_cache.py").read_text()
         assert "@state.setter" in duo_src
 
+
+# ---- Task 18: LiveCodeBench ----
+
+_bench_src = Path("omlx/bench/hypercar_bench.py").read_text()
+
+
+class TestLiveCodeBenchSource:
+    """Source-level tests for LiveCodeBench integration."""
+
+    def test_phase3d_exists(self):
+        assert "def phase3d_livecodebench(" in _bench_src
+
+    def test_lcb_gate_constant(self):
+        assert "MIN_LCB_PASS_RATE" in _bench_src
+
+    def test_lcb_uses_extract_code(self):
+        assert "_extract_code" in _bench_src
+
+    def test_lcb_uses_execute_code(self):
+        assert "_execute_code" in _bench_src
+
+    def test_lcb_wired_in_full_mode(self):
+        """Phase 3d must run in --full mode."""
+        assert "phase3d_livecodebench" in _bench_src
+        assert "Phase 3d: LiveCodeBench" in _bench_src
+
+    def test_lcb_data_file_exists(self):
+        assert Path("omlx/eval/data/livecodebench.jsonl").exists()
+
+    def test_lcb_eval_module_exists(self):
+        assert Path("omlx/eval/livecodebench.py").exists()
+
+
+class TestDuoPolicyDistribution(TestDuoPolicy):
+    """DuoPolicy distribution tests (split out to fix class ordering)."""
+
     def test_early_layers_more_streaming(self):
         """Early layers tend to have more streaming heads than late layers."""
         policy = self._load_policy()
@@ -430,7 +466,6 @@ class TestDuoPolicy:
         late_total = sum(1 for h in policy["heads"] if h["layer"] >= 36)
         early_frac = len(early) / early_total if early_total else 0
         late_frac = len(late) / late_total if late_total else 0
-        # Early layers should have more streaming heads (they attend locally)
         assert early_frac >= late_frac, (
             f"Early streaming {early_frac:.0%} < late {late_frac:.0%}"
         )
@@ -439,7 +474,6 @@ class TestDuoPolicy:
         policy = self._load_policy()
         n_layers = policy["n_layers"]
         n_heads = policy["n_heads"]
-        # Each layer should have exactly n_heads entries
         layer_counts = {}
         for h in policy["heads"]:
             layer_counts[h["layer"]] = layer_counts.get(h["layer"], 0) + 1
