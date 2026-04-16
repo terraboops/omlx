@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-16 (pass 22)_
+_Last updated: 2026-04-16 (pass 23)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -5192,3 +5192,284 @@ proves that Hypercar's existing 3-bit KV compression is near-optimal,
 redirecting future effort from codec design to selection policy — exactly
 where the backlog was already heading. Curiosity never saturates. Meow,
 nyaa, meow.
+
+## Pass 23 — 2026-04-16
+
+Cross-field rotation: streaming algorithms (heavy hitters), game theory
+(Nash equilibria), topological data analysis (persistent homology on
+attention patterns). Four papers, four fresh angles. The auction-theory
+and ecology angles (deferred 3 passes each) are retired — auction theory
+is subsumed by CONCUR's AIMD (pass 22), and the ecology angle never
+produced a paper that applied resource-competition dynamics to MoE
+expert selection despite three passes of searching.
+
+### [BUZZ: Beehive-structured Sparse KV Cache with Segmented Heavy Hitters for Efficient LLM Inference](https://arxiv.org/abs/2410.23079) — 2410.23079
+- **Authors**: Junqi Zhao, Zhijin Fang, Shu Li, Shaohui Yang, Shichao He
+- **Published**: 2024-10 (preprint)
+- **Hypercar goals it addresses**: Goal 1 (1M context — memory-efficient KV retention), Goal 3 (decode speed — O(n) eviction)
+- **TL;DR**: Segments the KV cache into local "beehive" chunks with a
+  dual-stride mechanism (stride s for recent tokens, reduced stride
+  floor((s+1)/2) for older tokens) and selects per-segment heavy
+  hitters via local max sampling on attention scores. A sliding window
+  captures recent context while the segmented structure captures
+  historically important tokens. Achieves 2.5x cache reduction with
+  >99% accuracy on summarisation and 7.69% improvement on multi-doc
+  QA vs H2O. Time complexity O(n) for eviction. Theorem 3.1 gives
+  the optimal relationship between eviction threshold T and window
+  size w as a function of stride.
+- **Why it matters for Hypercar**: The segmented heavy-hitter concept
+  is the streaming-algorithms angle that was on the gap list. BUZZ's
+  key insight is that *local* heavy hitters (per-segment) outperform
+  *global* heavy hitters (H2O's cumulative attention). This maps
+  directly to SnapKV's eviction policy: SnapKV currently uses a
+  single global top-k on the observation window's attention scores.
+  BUZZ suggests that segmenting the KV cache and running top-k
+  per-segment would preserve local structure that a global top-k
+  misses — exactly the "attention-sharp vs attention-smooth" regions
+  that the attention-weighted codec selection design note describes.
+  The dual-stride mechanism (denser sampling for older, persistent
+  tokens; sparser for recent) is the inverse of a ring buffer and
+  may compose with DuoAttention's retrieval/streaming split: retrieval
+  heads use BUZZ-style segmented eviction, streaming heads use ring
+  buffer. The O(n) eviction complexity is critical for 1M context
+  where SnapKV's current O(n log n) sort is the bottleneck.
+- **Cost of adoption**: S (1-2 days). The segmented heavy-hitter
+  selection is a drop-in replacement for SnapKV's global top-k.
+  Requires parameterising the stride s and window w per
+  DuoAttention head type. No model changes.
+- **Local PDF**: research/2410.23079_buzz_beehive_heavy_hitters.pdf
+
+### [Multiscale Aggregated Hierarchical Attention (MAHA): A Game-Theoretic and Optimization-Driven Approach to Efficient Contextual Modeling in Large Language Models](https://arxiv.org/abs/2512.14925) — 2512.14925
+- **Authors**: Caner Erden (Sakarya University of Applied Sciences)
+- **Published**: 2025-12 (preprint)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — O(n) attention via hierarchical decomposition), Goal 1 (1M context — 56% memory reduction)
+- **TL;DR**: Decomposes input sequences into hierarchical scales via
+  learnable downsampling, computes attention at each scale, then
+  aggregates scale-specific attention outputs using either convex
+  optimisation (constrained L1-regularised least-squares) or a Nash
+  equilibrium formulation where each scale is a "player" minimising
+  its reconstruction error. Reports O(n^2/(r^2-1)) complexity for
+  compression ratio r=2, 81% FLOP reduction at 4096 tokens, and
+  86.0% MNLI accuracy (vs 86.2% for standard MHA) at 56% memory
+  reduction. PG-19 perplexity 23.1 (best among baselines).
+- **Why it matters for Hypercar**: This paper closes the 3-pass
+  deferred auction-theory/mechanism-design gap — not with auctions
+  but with the game-theoretic framing that actually works: Nash
+  equilibrium over multi-scale attention. The Hypercar connection
+  is not MAHA's training-time architecture (we don't retrain) but
+  its *inference-time analogue*: the hierarchical scale decomposition
+  maps onto DuoAttention's retrieval/streaming split extended to
+  multiple resolution tiers (per the HRT wavelet paper, pass 21).
+  The Nash equilibrium aggregation provides the missing *allocation
+  rule* for how much KV budget each tier gets — the convex
+  optimisation formulation is directly applicable as the objective
+  for the AIMD controller's steady-state target (task 96). Instead
+  of heuristic thresholds, the controller can solve for the
+  Nash-equilibrium allocation weights across tiers. The single-author
+  preprint quality is lower than the other papers this pass, but the
+  theoretical framework (game-theoretic multi-scale aggregation) is
+  the cleanest formalisation of the "heads compete for shared KV
+  budget" intuition that the review has been searching for since
+  pass 20.
+- **Cost of adoption**: S (1 day). The Nash equilibrium allocation
+  rule is a small convex program that runs once per prefill to set
+  per-tier budget weights. No model changes. Integrates into the
+  AIMD controller (task 96) as the target allocation.
+- **Local PDF**: research/2512.14925_maha_game_theoretic_attention.pdf
+
+### [Persistent Topological Features in Large Language Models](https://arxiv.org/abs/2410.11042) — 2410.11042
+- **Authors**: Yuri Gardinazzi, Karthik Viswanathan, Giada Panerai, Alessio Ansuini, Alberto Cazzaniga, Matteo Biagetti
+- **Published**: 2024-10 (ICML 2025 poster)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — layer pruning preserves quality), Goal 3 (decode speed — fewer layers = faster decode)
+- **TL;DR**: Applies zigzag persistence from topological data analysis
+  to track how topological features (p-cycles for p=0..3) in hidden
+  state representations persist and evolve across LLM layers.
+  Constructs k-nearest-neighbour graphs at each layer, expands to
+  simplicial complexes up to dimension 4, computes intersection
+  layers between consecutive model layers, and tracks the full
+  evolutionary path of features via zigzag filtration. Introduces
+  *persistence similarity* — the fraction of p-cycles at layer L1
+  that exist at L2 and persisted through all intervening layers.
+  Finds that 1-cycles and 2-cycles dominate, early layers show high
+  topological churn, and middle-to-late layers preserve topological
+  structures persistently. Conservative pruning (10% of layers)
+  achieves comparable results to state-of-the-art methods on MMLU,
+  HellaSwag, and Winogrande across Llama-2/3, Mistral-7B, Pythia.
+- **Why it matters for Hypercar**: This is the topological data
+  analysis angle that was on the fresh-angles list. The practical
+  implication for Hypercar is *layer-aware KV budget allocation*:
+  layers with high persistence similarity (topologically redundant)
+  can have their KV cache compressed more aggressively because their
+  contribution is recoverable from adjacent layers. This extends
+  PyramidKV's per-layer budget vector (task 57) with a principled
+  metric: instead of heuristic funneling, use persistence similarity
+  to identify which layers are topologically redundant and allocate
+  minimal KV budget there. The connection to DuoAttention is also
+  direct: retrieval heads should cluster in layers with *low*
+  persistence similarity (high topological churn = the layer is
+  doing something unique and argmax-sensitive), while streaming
+  heads cluster in high-similarity layers (topologically redundant =
+  safe to compress). This gives a *third axis* for the codec
+  selection architecture: head type x layer topology x freshness
+  (from SleepGate). The ICML 2025 venue provides quality assurance.
+- **Cost of adoption**: S (1 day). Offline computation of
+  persistence similarity across Qwen3-Coder's 48 layers (one-time
+  calibration, ~1hr on M4 Pro). The resulting per-layer budget
+  vector feeds into PyramidKV (task 57) and the attention-weighted
+  codec selection architecture. No model changes.
+- **Local PDF**: research/2410.11042_persistent_topological_features.pdf
+
+### [Hallucination Detection in LLMs with Topological Divergence on Attention Graphs (TOHA)](https://arxiv.org/abs/2504.10063) — 2504.10063
+- **Authors**: Alexandra Bazarova, Aleksandr Yugay, Andrey Shulga, Alina Ermilova, Andrei Volodichev, Konstantin Polev, Julia Belikova, Rauf Parchiev, Dmitry Simakov, Maxim Savchenko, Andrey Savchenko, Serguei Barannikov, Alexey Zaytsev
+- **Published**: 2025-04 (preprint, revised 2025-10)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — hallucination detection as a quality signal), Goal 1 (1M context — attention head classification for KV management)
+- **TL;DR**: Converts attention matrices into weighted complete graphs
+  (edge weight = 1 - attention_weight), computes the minimal spanning
+  forest connecting response tokens to prompt tokens via 0th-order
+  Vietoris-Rips homology, and defines topological divergence as the
+  sum of edge lengths in this MSF. Discovers "hallucination-aware
+  attention heads" where higher divergence correlates with hallucinated
+  output across datasets. A single head achieves robust detection;
+  10 heads provide optimal balance. AUROC: 0.89-0.90 on CoQA,
+  0.87 on SQuAD (LLaMA-2-7B). 7x faster than SelfCheckGPT.
+  Hallucination-aware heads overlap with "copier heads" (token
+  induction behaviour). Tested on LLaMA-2/3, Mistral-7B, Qwen2.5-7B.
+- **Why it matters for Hypercar**: The key insight is that
+  *topological structure of attention graphs distinguishes functional
+  head types*. DuoAttention classifies heads as retrieval vs streaming
+  based on attention entropy; TOHA shows that a richer topological
+  signature (persistent homology on the attention graph) captures
+  finer-grained head function — specifically, which heads are
+  "copiers" that faithfully propagate input tokens to output. This
+  directly maps to the KV cache quality problem: copier/retrieval
+  heads are exactly the heads where SnapKV eviction must be most
+  conservative (evicting a high-attention token from a copier head
+  causes hallucination). TOHA's topological divergence metric can
+  serve as a *runtime quality signal* for the freshness-aware
+  eviction policy (task 97): if topological divergence spikes during
+  generation, the eviction policy is too aggressive and should
+  temporarily increase the keep ratio. The connection to Qwen2.5-7B
+  testing is encouraging — the Qwen family shares architectural DNA
+  with Qwen3-Coder. The overlap between hallucination-aware heads
+  and copier heads validates DuoAttention's retrieval classification
+  from a completely independent methodology (topology vs attention
+  entropy).
+- **Cost of adoption**: S (1 day). Offline identification of
+  hallucination-aware heads in Qwen3-Coder via the topological
+  divergence metric (one-time calibration). At runtime, monitoring
+  divergence on the identified heads adds one MSF computation per
+  decode step — O(n log n) where n is the number of response tokens
+  so far. This is negligible compared to attention at long context.
+- **Local PDF**: research/2504.10063_toha_topological_hallucination.pdf
+
+### Pass 23 adds (2026-04-16)
+
+**Highest-leverage find this pass: BUZZ segmented heavy hitters
+(2410.23079).** The streaming-algorithms angle delivers exactly the
+eviction-quality upgrade that SnapKV needs: local heavy-hitter
+identification within cache segments, not global top-k over the entire
+observation window. The practical impact is immediate — BUZZ's segmented
+selection is a drop-in replacement for SnapKV's global sort that (a)
+preserves local attention structure that global top-k misses, (b)
+reduces eviction complexity from O(n log n) to O(n), and (c) composes
+naturally with DuoAttention's retrieval/streaming split via the
+dual-stride mechanism (denser sampling for persistent retrieval tokens,
+sparser for recent streaming tokens). Task 98 captures the segmented
+eviction upgrade.
+
+**Second find: MAHA game-theoretic attention (2512.14925)** closes the
+3-pass deferred auction-theory/mechanism-design gap. The resolution is
+instructive: the field settled on Nash equilibrium over cooperative
+scales, not Vickrey auctions over competing heads. The game-theoretic
+framing gives the AIMD controller (task 96) a principled steady-state
+target: instead of tuning AIMD thresholds heuristically, solve for the
+Nash-equilibrium allocation weights across KV tiers at each prefill.
+No standalone task filed — the paper upgrades task 96's threshold
+calibration methodology.
+
+**Third find: Persistent topological features (2410.11042, ICML 2025)**
+opens the TDA angle with the most principled contribution. The zigzag
+persistence framework gives Hypercar a *layer-aware KV budget* metric:
+layers with high persistence similarity are topologically redundant
+and can have minimal KV budget. This extends PyramidKV (task 57) from
+heuristic funneling to principled topology-guided allocation and adds
+a third axis to the codec selection architecture: head type x layer
+topology x temporal freshness. Task 99 captures the topology-guided
+per-layer budget calibration.
+
+**Fourth find: TOHA topological hallucination detection (2504.10063)**
+is the second TDA paper and the most directly operational. The
+discovery that "hallucination-aware heads" overlap with "copier heads"
+independently validates DuoAttention's retrieval classification from
+a completely different mathematical framework (persistent homology vs
+attention entropy). More immediately, the topological divergence metric
+provides a runtime quality signal: if divergence spikes during
+generation, the eviction policy is too aggressive. This composes with
+the freshness-aware eviction (task 97) as a *safety brake* — an
+independent, topology-derived signal that the kept KV entries are
+sufficient for faithful generation. No standalone task filed — the
+paper upgrades task 97's quality gate with a topological divergence
+monitor.
+
+**Retirements**: Two long-deferred angles are formally retired this
+pass. (a) *Auction theory / mechanism design for KV budget* (deferred
+passes 20-22): subsumed by CONCUR's AIMD (pass 22) and MAHA's Nash
+equilibrium (this pass). The field converged on control theory and
+game theory, not mechanism design. (b) *Ecology / resource competition
+for MoE expert selection* (deferred passes 20-22): three consecutive
+passes of searching produced zero papers applying resource-competition
+dynamics to MoE expert caching. The analogy may be sound but the
+literature doesn't exist.
+
+**Sequencing**: Task 98 (BUZZ segmented eviction) sequences first
+because it's the cheapest (S, 1-2 days) and directly upgrades the
+SnapKV eviction quality that is the current bottleneck for Goal 1
+progress. Task 99 (topology-guided per-layer budget) sequences after
+the DuoAttention head classification (task 12) is stable, because it
+adds a layer dimension to the per-head codec selection. The MAHA and
+TOHA papers have no standalone tasks — their contributions are
+calibration methodology upgrades to existing tasks (96 and 97
+respectively).
+
+**Gap not closed for pass 24**:
+1. **Formal probabilistic guarantees for SnapKV eviction.** BUZZ's
+   Theorem 3.1 gives the optimal stride-threshold relationship but
+   not a probabilistic accuracy bound. The ceiling proof ("with
+   probability 1-delta, segmented heavy-hitter eviction preserves
+   the attention argmax for retrieval heads") remains open.
+2. **Multi-scale sleep hierarchy for KV cache management.** Second
+   consecutive deferral. SleepGate's multi-scale sleep proposal
+   (micro-cycles every 512-2K tokens, meso-cycles every 8K-32K,
+   macro-cycles at document boundaries) is still untested.
+3. **Compositional validation of the three-axis codec selector
+   (head type x layer topology x temporal freshness).** Passes 21-23
+   have filed the three individual axes (DuoAttention, persistent
+   topology, SleepGate freshness) but no paper validates the
+   *composition* of all three selection criteria operating
+   simultaneously.
+
+**Fresh weird angles for pass 24** (keep expanding the surface):
+- **Information geometry / Fisher information**: the KV cache as a
+  statistical manifold where eviction corresponds to projecting onto
+  a lower-dimensional submanifold. The Fisher information metric
+  gives the "cost" of each eviction in bits of statistical power.
+- **Compiler optimisation / register allocation**: the KV cache as a
+  register file with spill/reload to backing store. The graph-colouring
+  algorithms for register allocation (Chaitin's algorithm) are
+  structural analogues of KV page assignment.
+- **Music information retrieval / beat tracking**: attention patterns
+  as rhythmic structures. Beat trackers identify periodicity in noisy
+  signals — the same problem as finding repeating attention patterns
+  in long context for cache-reuse prediction.
+
+Twenty-three passes. One hundred and nine papers. Four fresh cross-field
+angles searched (streaming algorithms, game theory, topological data
+analysis x2), two 3-pass-deferred gaps retired (auction theory, ecology),
+and a new mathematical framework acquired (persistent homology for
+layer-aware KV budget allocation). The most satisfying result: TDA
+applied to attention graphs independently validates DuoAttention's
+retrieval/streaming head classification from first principles — two
+completely different mathematical frameworks (entropy-based vs
+topology-based) converge on the same functional partition of attention
+heads. When independent methods agree, the partition is real. Curiosity
+never saturates. Meow, nyaa, meow.
