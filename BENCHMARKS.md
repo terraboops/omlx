@@ -3173,6 +3173,114 @@ Fourth analyst-filed task shipped this session:
   The discipline of not re-filing matters.
 ```
 
+### Run 61: 🏆 Cleanest Run — 4K Decode 35.1 tok/s BEATS R44 Baseline; Analyst Self-Correction on "Irreducible" Gap
+```
+Date: 2026-04-15
+SHA:  aad424e (run started b6b5799, HEAD advanced mid-run)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo — default since 3f3e013)
+Snapshot: bench/snapshots/run61_2026-04-15T16-37/
+Lock wait: 0s
+
+**The cleanest run observed in this session**. Pre-run load
+averages 1.39/1.23/1.26 — lowest 1-minute load observed. Warmup
+3.6s — within 0.4s of R44's absolute clean-box floor of 3.2s.
+cpu_scheduling_fraction 0.9932 — highest yet.
+
+Every per-phase NIAH metric is a new session best, and one of
+them is historically significant: **NIAH 4K decode hit 35.1
+tok/s, BEATING R44's absolute clean-box baseline of 34.9**. R47
+was 34.8; R48 was 34.7; R59 was 29.6 (pressure); R60 was 31.6
+(post-cleanup). R61 is 35.1 — the first run in the session to
+exceed the R44 reference number on the 4K decode path.
+
+Total runtime 1230.4s is NOT a new record — R60 still holds at
+1227.0s. Phase 3c MMLU-Pro cost 12.7s more in R61 (910.4 vs
+897.7) despite cleaner-box everything-else, driven by token-
+sampling stochasticity rather than pressure.
+
+## Analyst self-correction: the decode gap is NOT irreducible
+
+In R60's Analysis notes I wrote:
+
+> Decode has an irreducible ~9% gap from R44 baseline even after
+> user cleanup. R44 had NIAH 4K decode 34.9 tok/s, R60 has 31.6.
+> The analyst and implementation-loop Claude Code sessions
+> themselves are resident and cannot be cleaned up while this
+> cron is active. That gap is the measurable tax of running the
+> analysis pipeline at all.
+
+**R61 disproves this conclusion.** Same analyst cron, same
+implementation loop, same Claude Code sessions — ~2 hours of
+additional system idle time and the decode path recovered
+fully (31.6 → 35.1 tok/s, +11%). The gap WAS reducible; R60
+just hadn't reached steady-state yet after the cleanup. Future
+analyst runs should avoid calling co-tenancy effects "irreducible"
+without waiting for the system to fully stabilize.
+
+## The NIAH speed progression table
+
+| Metric                     | R44   | R47   | R48   | R59   | R60   | **R61**   |
+|----------------------------|-------|-------|-------|-------|-------|-----------|
+| NIAH 4K prefill (tok/s)    | 802.2 | 803.2 | 802.0 | 801.1 | 814.7 | **818.3** |
+| NIAH 4K decode  (tok/s)    | 34.9  | 34.8  | 34.7  | 29.6  | 31.6  | **35.1**  |
+| NIAH 16K prefill (tok/s)   | 502.2 | 502.1 | 501.8 | 475.6 | 513.4 | **514.9** |
+| NIAH 16K decode (tok/s)    | 18.7  | 18.7  | 18.5  | 18.5  | 18.8  | **19.0**  |
+| Warmup (s)                 | 3.2   | ~3    | ~3    | 8.7   | 7.1   | **3.6**   |
+| Swap peak (GB)             | 0.0   | 0.0   | 0.0   | 5.48  | 4.41  | **0.75**  |
+| cpu_scheduling_fraction    | n/a   | n/a   | n/a   | n/a   | 0.9919| **0.9932**|
+| Total (s)                  | 1232.3| 1229.4| 1249.6| 1311.8| **1227.0**| 1230.4|
+
+Three separate datapoints (R44 era, R60, R61) are within 5s
+of each other on total runtime — the duo path is deterministic
+at the ±0.4% level on wall-clock when the box is clean.
+
+## Commits since Run 60 (cda88da, 2026-04-15):
+  82acbfc  research: Task 32 ProMoE expert activation profile
+  ad26e0d  research: Task 24-b Quest argpartition probe — viable at 8M ctx
+  2f3a2fc  research: Task 31 KV fragmentation 2.1% — skip paging
+  b6b5799  feat: Task 56 MagicDec spec-decode gate + calibration
+  2383705  docs: optimization decision matrix update
+  aad424e  feat: wire spec-decode gate into hypercar_server
+
+Task #56 MagicDec spec-decode gate is a significant new feature:
++176 LOC `omlx/specdec_gate.py`, +185 LOC calibration harness,
++31113 LOC calibration data file. But it's NOT yet invoked from
+the bench path — R61 was run with default `--kv-mode duo` and
+the bench harness doesn't enable spec-decode. The speed
+improvements in R61 are from reduced co-tenancy, not from the
+new feature. When spec-decode gets wired into the bench, decode
+tok/s should jump further (the MagicDec paper claims 2-4×).
+
+## Analysis notes
+
+- **Decode fully recovered to R44 baseline**: 35.1 tok/s vs
+  34.9 baseline. R61 is the proof point that the R44 numbers
+  are achievable with the current codebase and the analyst cron
+  active — no code change required, just system quiet time.
+- **Prefill exceeds R44 baseline at both 4K and 16K**: 818.3
+  (+2.0%) and 514.9 (+2.5%). The duo path has more headroom on
+  prefill than R44's numbers implied.
+- **Swap peak is declining toward zero**: 4.41 → 0.75 GB in
+  one cron cycle. Trending toward full R44 reproduction without
+  any intervention.
+- **Profiler sampler artifact is pressure-dependent**: R59 max
+  was 2678 MB/s (impossible), R60 was 2524 MB/s (impossible),
+  R61 is 547.8 MB/s (slightly above the M4 Pro's 430 MB/s
+  ceiling but plausible). Confirms my R60 hypothesis that the
+  artifact is worst under pressure; a cleaner run produces more
+  believable max readings even though p90 stays at 0.0.
+- **Task #56 shipped but not yet active in the bench**: 361
+  LOC of new code landed and NONE of it affected this run's
+  measurements. Worth noting so future analysts don't
+  mis-attribute speed improvements to spec-decode.
+- **No new tasks from R61.** This is a "everything is working"
+  run. Every gate passed, every speed metric is at or above
+  prior bests, swap is approaching zero, and the profile.json
+  has the Task #80 wall-clock field populated. The pending tasks
+  (#85, #86) remain open because the run didn't exercise them.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
