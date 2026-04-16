@@ -10,7 +10,7 @@ Last updated: 2026-04-15.
 |-----------|------|---------|---------|---------------|----------|
 | **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
 | **MLA joint KV** (post-hoc SVD) | 53 | **RANK VIABLE, QUALITY FAIL** | 76% rank compression | 7% token agreement — post-hoc SVD degrades during decode | BLOCKED (needs training) |
-| **ShadowKV** (K-only low-rank compression) | 44 | **VALIDATED** | ~54% KV (separate K+V) | NIAH PASS, reasoning drops | **Preferred path for Goal 1** |
+| **ShadowKV** (K-only post-hoc SVD) | 44 | **QUALITY-COMPRESSION TRADEOFF POOR** | 3% K at 82% agree, 34% K at 57% | NIAH retrieval sensitive to K approx | Viable only for code tasks |
 | **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
 | **Metal warmup** | 25 | **SHIPPED** | 2.25x decode, no cold-start | None | **DONE** |
 | **EAGLE-2** (tree spec-decode) | 28 | **FEASIBLE** | 2.31x predicted speedup | Tree masks work in SDPA (<1e-6 error) | HIGH |
@@ -32,11 +32,11 @@ Last updated: 2026-04-15.
 4. **Spec-decode gate** — Cost model calibrated. Predicts when EAGLE-2/TriForce helps.
 
 ### Tier 2: Next Up (validated, ready to build)
-5. **ShadowKV** (K-only low-rank) — K rank 45% at 99% energy. Post-hoc SVD works
-   for K-only (per-head) compression. V cache stays full. Saves ~54% KV total.
-   **This is the path to Goal 1 (1M context).** MLA joint compression failed
-   quality validation (7% token agreement) — post-hoc SVD on joint K+V degrades
-   during autoregressive decode. Would need end-to-end training (DeepSeek-V2 style).
+5. **SnapKV** (attention-guided eviction) — evict low-attention tokens at prefill,
+   keep remaining KV at full precision. No approximation error on kept tokens.
+   **This is now the preferred path for Goal 1** since both MLA (7% agreement)
+   and ShadowKV (poor quality-compression tradeoff: 3% compression for 82% quality,
+   34% compression drops NIAH to 16%) failed post-hoc quality gates.
 6. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
    needed (Task 29, cloud GPU). Predicted 2.31x decode speedup at 70% accept rate.
 7. **Quest** — argpartition <200µs at 64K pages. Wire into decode path for sublinear

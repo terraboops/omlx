@@ -1,0 +1,72 @@
+[
+  {
+    "rank": 64,
+    "compression_pct": 50.0,
+    "agreements": {
+      "Math": 41.0,
+      "Code": 100.0,
+      "NIAH": 19.0
+    },
+    "avg_agreement": 53.0
+  },
+  {
+    "rank": 85,
+    "compression_pct": 34.0,
+    "agreements": {
+      "Math": 56.0,
+      "Code": 100.0,
+      "NIAH": 16.0
+    },
+    "avg_agreement": 57.0
+  },
+  {
+    "rank": 96,
+    "compression_pct": 25.0,
+    "agreements": {
+      "Math": 56.0,
+      "Code": 100.0,
+      "NIAH": 16.0
+    },
+    "avg_agreement": 57.0
+  },
+  {
+    "rank": 108,
+    "compression_pct": 16.0,
+    "agreements": {
+      "Math": 62.0,
+      "Code": 100.0,
+      "NIAH": 16.0
+    },
+    "avg_agreement": 59.0
+  },
+  {
+    "rank": 116,
+    "compression_pct": 9.0,
+    "agreements": {
+      "Math": 100.0,
+      "Code": 100.0,
+      "NIAH": 16.0
+    },
+    "avg_agreement": 72.0
+  },
+  {
+    "rank": 124,
+    "compression_pct": 3.0,
+    "agreements": {
+      "Math": 100.0,
+      "Code": 100.0,
+      "NIAH": 47.0
+    },
+    "avg_agreement": 82.0
+  },
+  {
+    "rank": 128,
+    "compression_pct": 0.0,
+    "agreements": {
+      "Math": 100.0,
+      "Code": 100.0,
+      "NIAH": 50.0
+    },
+    "avg_agreement": 83.0
+  }
+]
