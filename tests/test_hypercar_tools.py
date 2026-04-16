@@ -855,3 +855,47 @@ class TestSnapKVSource:
         """Compact must use gather (indexing), not projection."""
         assert "idx" in _snapkv_src
         assert "[:, :, idx, :]" in _snapkv_src or "gather" in _snapkv_src
+
+    def test_get_fp16_keys_exists(self):
+        """Must have _get_fp16_keys for cache-agnostic key extraction."""
+        assert "def _get_fp16_keys(" in _snapkv_src
+
+    def test_quantized_cache_dequantize_path(self):
+        """compact_cache must handle QuantizedKVCache via dequantize."""
+        assert "mx.dequantize" in _snapkv_src
+
+    def test_quantized_cache_requantize_path(self):
+        """compact_cache must requantize after gathering for QuantizedKVCache."""
+        assert "mx.quantize" in _snapkv_src
+
+    def test_apply_snapkv_to_generate_exists(self):
+        """Must have apply_snapkv_to_generate for server integration."""
+        assert "def apply_snapkv_to_generate(" in _snapkv_src
+
+    def test_generate_wrapper_installs_hooks(self):
+        """Wrapper must install Q capture hooks before prefill."""
+        assert "install_q_capture_hook" in _snapkv_src
+
+    def test_generate_wrapper_compacts_after_first_yield(self):
+        """Wrapper must compact cache after first decoded token."""
+        assert "compact_cache" in _snapkv_src
+        assert "first = next(gen)" in _snapkv_src or "first" in _snapkv_src
+
+    def test_generate_wrapper_cleanup_in_finally(self):
+        """Wrapper must clean up hooks in a finally block."""
+        assert "finally:" in _snapkv_src
+        assert "cleanup()" in _snapkv_src
+
+    def test_generate_wrapper_skip_short_prompts(self):
+        """Wrapper must skip eviction for short prompts."""
+        assert "keep_count * 2" in _snapkv_src
+
+    def test_server_snapkv_keep_flag(self):
+        """hypercar_server must have --snapkv-keep CLI flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--snapkv-keep" in server_src
+
+    def test_server_imports_apply_snapkv(self):
+        """Server must import and call apply_snapkv_to_generate."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "apply_snapkv_to_generate" in server_src

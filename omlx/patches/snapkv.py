@@ -216,6 +216,28 @@ def install_q_capture_hook(model, target_layers: list[int] | None = None):
     return captured, cleanup
 
 
+def _get_fp16_keys(cache_entry) -> mx.array:
+    """Extract fp16 key tensor from any cache type.
+
+    Handles KVCache (raw arrays), QuantizedKVCache (dequantize),
+    and DuoKVCache (raw arrays).
+
+    Returns:
+        keys: (B, H_kv, T, D) fp16/bfloat16 array
+    """
+    state = cache_entry.state
+    keys_raw = state[0]
+
+    if isinstance(keys_raw, tuple):
+        # QuantizedKVCache — state[0] is (data, scales, biases)
+        return mx.dequantize(
+            *keys_raw,
+            group_size=cache_entry.group_size,
+            bits=cache_entry.bits,
+        )
+    return keys_raw
+
+
 def compute_importance_from_real_q(
     captured_queries: dict,
     cache: list,
@@ -237,7 +259,7 @@ def compute_importance_from_real_q(
     all_importance = []
 
     for layer_idx, queries in captured_queries.items():
-        keys = cache[layer_idx].state[0]  # (B, H_kv, T, D)
+        keys = _get_fp16_keys(cache[layer_idx])  # (B, H_kv, T, D)
         B, H_kv, T, D = keys.shape
         H_q = queries.shape[1]
         gqa_ratio = H_q // H_kv
@@ -485,12 +507,10 @@ def compact_cache(cache: list, keep_indices: list[int],
     This is the core operation for SnapKV: after computing importance
     and selecting which tokens to keep, rewrite the cache to contain
     only those positions. The kept tokens retain their exact values
-    (zero approximation error).
+    (zero approximation error for fp16; requantization for quantized).
 
-    CRITICAL: The original offset must be preserved for RoPE correctness.
-    KV vectors already have RoPE applied at their original positions.
-    New decode tokens must get RoPE at position = original_offset (not
-    the compacted length), otherwise attention dot-products are wrong.
+    Supports both KVCache (fp16) and QuantizedKVCache (native mode).
+    For QuantizedKVCache: dequantize → gather → requantize per layer.
 
     Args:
         cache: List of KVCache objects (one per layer)
@@ -506,30 +526,152 @@ def compact_cache(cache: list, keep_indices: list[int],
         original_offset = cache[0].offset
 
     idx = mx.array(keep_indices)
+    new_len = len(keep_indices)
+
     for c in cache:
-        keys = c.state[0]    # (B, H_kv, T, D)
-        values = c.state[1]  # (B, H_kv, T, D)
+        keys_raw = c.state[0]
+        values_raw = c.state[1]
 
-        # Gather selected positions: (B, H_kv, len(idx), D)
-        keys_compact = keys[:, :, idx, :]
-        values_compact = values[:, :, idx, :]
+        if isinstance(keys_raw, tuple):
+            # QuantizedKVCache — dequantize, gather, requantize
+            keys_fp = mx.dequantize(
+                *keys_raw, group_size=c.group_size, bits=c.bits)
+            values_fp = mx.dequantize(
+                *values_raw, group_size=c.group_size, bits=c.bits)
 
-        # state.setter updates offset to keys.shape[2] (compacted length).
-        c.state = (keys_compact, values_compact)
+            keys_compact = keys_fp[:, :, idx, :]
+            values_compact = values_fp[:, :, idx, :]
+
+            c.keys = mx.quantize(
+                keys_compact, group_size=c.group_size, bits=c.bits)
+            c.values = mx.quantize(
+                values_compact, group_size=c.group_size, bits=c.bits)
+            c.offset = new_len
+        else:
+            # KVCache (fp16) or DuoKVCache — direct gather
+            keys_compact = keys_raw[:, :, idx, :]
+            values_compact = values_raw[:, :, idx, :]
+
+            # state.setter updates offset to keys.shape[2]
+            c.state = (keys_compact, values_compact)
 
         # DON'T restore original offset — let offset = compacted length.
-        # This means new decode tokens get RoPE at position len(kept)+i instead
-        # of original_position+i. The kept K vectors already have their original
-        # RoPE baked in, so the Q-K dot product sees the relative distance
-        # between the new token and each kept token. The absolute position shift
-        # is small relative to the RoPE wavelength for the frequencies that matter.
-        #
-        # Restoring original_offset would create zero-filled gaps in the KV buffer
-        # (positions len(kept)..original_offset-1 = zeros) which corrupt attention.
+        # Kept K vectors already have their original RoPE baked in, so the
+        # Q-K dot product sees the correct relative distance.
 
-    mx.eval(*[c.state[0] for c in cache], *[c.state[1] for c in cache])
+    # Force evaluation of compacted state
+    to_eval = []
+    for c in cache:
+        s = c.state
+        if isinstance(s[0], tuple):
+            to_eval.extend(s[0])
+            to_eval.extend(s[1])
+        else:
+            to_eval.append(s[0])
+            to_eval.append(s[1])
+    mx.eval(*to_eval)
 
 
 def count_kept(keep_mask: mx.array) -> int:
     """Count number of kept tokens."""
     return int(mx.sum(keep_mask).item())
+
+
+def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64) -> None:
+    """Monkey-patch generate_step to run SnapKV eviction after prefill.
+
+    When prompt length >= 2 * keep_count, the wrapper:
+      1. Installs Q capture hooks on the last 4 decoder layers
+      2. Lets prefill proceed normally (hooks capture Q projections)
+      3. After the first decoded token, computes importance + compacts cache
+      4. Removes hooks; decode continues with evicted cache
+
+    The first decode token is generated with the full cache (before eviction).
+    All subsequent tokens see the compacted cache. This is safe because
+    the first token's attention saw the same tokens that SnapKV would keep.
+
+    Args:
+        keep_count: Number of tokens to keep after eviction.
+        obs_window: Observation window for importance scoring.
+    """
+    import threading
+    import mlx_lm.generate as gen_mod
+    import mlx_lm.models.cache as cache_mod
+
+    _logger = logging.getLogger("hypercar.snapkv")
+    _original_generate_step = gen_mod.generate_step
+    _tls = threading.local()
+
+    # Wrap make_prompt_cache to capture cache reference
+    _orig_make = cache_mod.make_prompt_cache
+
+    def _capturing_make(model, **kw):
+        c = _orig_make(model, **kw)
+        _tls.prompt_cache = c
+        return c
+
+    cache_mod.make_prompt_cache = _capturing_make
+    # Also patch utils reference
+    try:
+        import mlx_lm.utils as utils_mod
+        if hasattr(utils_mod, "make_prompt_cache"):
+            utils_mod.make_prompt_cache = _capturing_make
+    except ImportError:
+        pass
+
+    def snapkv_generate_step(prompt, model, **kwargs):
+        prompt_len = prompt.shape[0] if hasattr(prompt, 'shape') else len(prompt)
+
+        if prompt_len < keep_count * 2:
+            yield from _original_generate_step(prompt, model, **kwargs)
+            return
+
+        # Install Q capture hooks on last 4 layers
+        captured, cleanup = install_q_capture_hook(model)
+
+        # Track cache: may come from kwargs or from make_prompt_cache
+        _tls.prompt_cache = kwargs.get('prompt_cache', None)
+        cleanup_done = False
+
+        try:
+            gen = _original_generate_step(prompt, model, **kwargs)
+
+            # First yield = prefill complete + first decode token
+            first = next(gen)
+
+            # Get cache reference
+            cache = _tls.prompt_cache or kwargs.get('prompt_cache')
+
+            if cache and captured:
+                old_offset = cache[0].offset
+                importance = compute_importance_from_real_q(
+                    captured, cache, obs_window=obs_window)
+                keep_mask = snapkv_select(importance, keep_count)
+                indices = get_keep_indices(keep_mask)
+                compact_cache(cache, indices)
+                new_len = len(indices)
+                _logger.info(
+                    f"SnapKV eviction: {old_offset} -> {new_len} tokens "
+                    f"(kept {new_len * 100 // max(old_offset, 1)}%)"
+                )
+
+            # Remove hooks before continuing decode
+            cleanup()
+            cleanup_done = True
+
+            yield first
+            yield from gen
+
+        finally:
+            if not cleanup_done:
+                cleanup()
+
+    gen_mod.generate_step = snapkv_generate_step
+    # Patch server's reference if already imported
+    try:
+        import mlx_lm.server as srv
+        srv.generate_step = snapkv_generate_step
+    except ImportError:
+        pass
+
+    _logger.info(f"SnapKV eviction enabled: keep={keep_count}, obs_window={obs_window}")

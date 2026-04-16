@@ -290,6 +290,9 @@ def main():
                         help="TQ3: stay fp16 below this threshold per layer")
     parser.add_argument("--quest-topk", type=int, default=0,
                         help="Quest page selection: attend to top-K pages during decode (0=off)")
+    parser.add_argument("--snapkv-keep", type=int, default=0,
+                        help="SnapKV eviction: keep top-K tokens after prefill (0=off). "
+                             "Activates for prompts >= 2*K tokens. Uses real Q capture.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
@@ -332,6 +335,8 @@ def main():
         if args.quest_topk > 0:
             logger.info(f"Quest decode:     top-{args.quest_topk} pages (128 tok/page)")
         logger.info(f"Features:         save/load, rewind, fork (WHT rotation)")
+    if args.snapkv_keep > 0:
+        logger.info(f"SnapKV keep:      top-{args.snapkv_keep} tokens (eviction at prefill end)")
     logger.info(f"Prefill step:     {args.prefill_step_size}")
     logger.info(f"Host:Port:        {args.host}:{args.port}")
     logger.info(f"Prompt cache:     {args.prompt_cache_size} entries, "
@@ -356,6 +361,12 @@ def main():
             logger.info("MInference sparse prefill ENABLED")
         else:
             logger.warning("MInference sparse prefill FAILED — falling back to dense")
+
+    # Apply SnapKV eviction if requested (must be AFTER patches, BEFORE server starts)
+    if args.snapkv_keep > 0:
+        from omlx.patches.snapkv import apply_snapkv_to_generate
+        apply_snapkv_to_generate(keep_count=args.snapkv_keep)
+        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens after prefill")
 
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
