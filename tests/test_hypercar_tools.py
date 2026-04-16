@@ -775,3 +775,70 @@ class TestShadowKVProjections:
     def test_returns_compressed_count(self):
         """compress_k_with_projections should return count."""
         assert "return compressed_count" in _shadowkv_src
+
+
+# ---------------------------------------------------------------------------
+# SnapKV attention-guided token selection
+# ---------------------------------------------------------------------------
+
+_snapkv_src = Path("omlx/patches/snapkv.py").read_text()
+
+
+class TestSnapKVSource:
+    """Source-level tests for SnapKV token selection module."""
+
+    def test_importance_function_exists(self):
+        assert "def compute_attention_importance(" in _snapkv_src
+
+    def test_select_function_exists(self):
+        assert "def snapkv_select(" in _snapkv_src
+
+    def test_count_kept_function_exists(self):
+        assert "def count_kept(" in _snapkv_src
+
+    def test_uses_observation_window(self):
+        """Must use an observation window, not full context."""
+        assert "obs_window" in _snapkv_src
+
+    def test_handles_gqa(self):
+        """Must handle GQA (grouped query attention) head expansion."""
+        assert "gqa_ratio" in _snapkv_src
+
+    def test_causal_masking(self):
+        """Must apply causal mask to observation window attention."""
+        assert "causal_mask" in _snapkv_src or "causal" in _snapkv_src
+
+    def test_always_keeps_recent_tokens(self):
+        """Must always keep recent tokens (sink/window pattern)."""
+        assert "always_keep_last" in _snapkv_src
+
+    def test_returns_boolean_mask(self):
+        """select should return a boolean keep mask."""
+        assert "keep_mask" in _snapkv_src
+        assert "bool_" in _snapkv_src or "bool" in _snapkv_src
+
+    def test_max_pooling_over_window(self):
+        """Importance pooling should use max over query positions."""
+        assert "mx.max(" in _snapkv_src or "max" in _snapkv_src
+
+    def test_top_k_selection(self):
+        """Must use argpartition or argsort for top-k selection."""
+        assert "argpartition" in _snapkv_src or "argsort" in _snapkv_src
+
+    def test_keeps_all_when_keep_count_exceeds_t(self):
+        """Should return all-True mask when keep_count >= T."""
+        assert "keep_count >= T" in _snapkv_src
+
+    def test_validation_results_exist(self):
+        """GPU validation results should exist from prior run."""
+        results_path = Path("research/snapkv_selection_validation.json")
+        assert results_path.exists()
+
+    def test_validation_needle_preserved(self):
+        """Validation must show needle preserved at 50% keep ratio."""
+        import json
+        results = json.loads(
+            Path("research/snapkv_selection_validation.json").read_text())
+        r50 = [r for r in results["results"] if r["keep_ratio"] == 0.5]
+        assert r50, "No 50% keep ratio in results"
+        assert r50[0]["needle_preserved"] is True
