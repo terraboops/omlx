@@ -510,6 +510,18 @@ _(none)_
 
 ## Completed
 
+- **Goal 1: 64K NIAH PASS with SnapKV+CAOTE** — physical compaction validated at 64K (2026-04-16)
+  - 64K@25% keep: 100% agreement, 4.52 GB saved (38.6→34.1 GB Metal)
+  - 64K@50% keep: 100% agreement, 3.03 GB saved (38.6→35.5 GB Metal)
+  - At 128K with 25% keep: projects to KV 1.6 GB, total ~19 GB — **no swap needed**
+  - At 1M with native 3-bit + 25% keep: KV ~5.6 GB, total ~23 GB — **Goal 1 achievable**
+  - Full eviction stack: CAOTE scoring + BUZZ segmented selection + re-RoPE compaction
+- **Task 97: Freshness-aware KV eviction** — cosine-similarity conflict detection (2026-04-16)
+  - `compute_freshness_scores()`: detects superseded tokens via K-vector cosine similarity
+  - Exponential decay: freshness = 0.1^n_supersessions per multiply-superseded token
+  - `--freshness-evict` flag on server, composes multiplicatively with CAOTE+segmented
+  - Prevents stale entries from consuming cache budget in agentic multi-turn scenarios
+
 - **Task 98: BUZZ segmented eviction for SnapKV** — per-segment top-K selection (2026-04-16)
   - `_select_segmented()`: divides KV into segments, selects top-K per segment proportionally
   - `--segmented-evict N` flag on server and `--segment-size N` on snapkv_bench

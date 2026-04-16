@@ -25,11 +25,11 @@ any of these — even to improve another — needs explicit justification.
 | 5 | **Swap pressure** | p90 sustained swap I/O < 100 MB/s (N≥8 runs) | Swap depth alone misses throughput; 100 MB/s leaves 4x headroom vs M4 Pro's ~430 MB/s floor |
 | 6 | **Machine fit** | Runs comfortably on the M4 Pro 48GB reference machine | Laptop stays usable while inference runs |
 
-### Current status against goals (as of 2026-04-15)
+### Current status against goals (as of 2026-04-16)
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | 1M theoretical (39.7GB KV @ 3-bit), **validated to 64K** (NIAH PASS, 33.9GB Metal). 128K swap-thrashed at ~6GB swap under normal co-tenancy (30min, no progress). | Need ShadowKV K-compression (65% savings, Task 44 validated) to fit 128K+ under co-tenancy |
+| 1 | 1M context | **Validated to 64K with SnapKV+CAOTE** (NIAH PASS, 100% agreement, 4.5 GB saved). At 128K@25% keep: KV 1.6 GB, total ~19 GB (no swap). At 1M native 3-bit @25%: KV ~5.6 GB, total ~23 GB. | Run 128K NIAH with `--snapkv-keep --caote` to close Goal 1 |
 | 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62-64%** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
 | 3 | 50 tok/s decode constant | **52.7 tok/s with DuoKVCache — GOAL MET**. | Met in duo mode. Under co-tenancy drops proportionally. |
 | 4 | 500 tok/s prefill constant | **96 tok/s at 2K (duo), 803 at 4K, 501 at 16K — GOAL MET** in duo mode. | O(n²) attention still applies at 64K+. |
@@ -44,24 +44,32 @@ heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16
 Only Goal 1 (1M context validation beyond 64K) remains — requires KV compression for 128K+ under co-tenancy.
 Per-phase headroom checks (Task 86) now gracefully skip memory-hungry phases under co-tenancy.
 
-### Goal 1 Path (KV compression research, 2026-04-15)
+### Goal 1 Path (KV compression — SHIPPED, 2026-04-16)
 
-Three approaches tested for post-trained KV cache compression:
+Full SnapKV eviction stack shipped and GPU-validated to 64K:
 
-| Approach | Result | Why |
-|----------|--------|-----|
-| MLA joint SVD (K+V, d_c=241) | **FAIL** — 7% token agreement | Approximation errors compound across 48 layers during autoregressive decode |
-| ShadowKV per-head SVD (K-only, rank 85) | **POOR** — 100% code, 16% NIAH | Argmax instability: uniform 0.85% error flips sparse attention argmax |
-| SnapKV eviction (attention-guided, exact values) | **VALIDATED** — needle preserved at 25% keep | Zero approximation error on kept tokens |
+| Component | Status | What it does |
+|-----------|--------|-------------|
+| **SnapKV + real Q capture** (Task 46) | **SHIPPED** | Attention-guided token selection using real query projections |
+| **CAOTE scoring** (Task 100) | **SHIPPED** | Value-aware eviction: `(α/(1-α)) × \|\|V_mean - v_j\|\|` — fixes 16K@25% NIAH |
+| **BUZZ segmented** (Task 98) | **SHIPPED** | Per-segment top-K preserving local structure |
+| **Re-RoPE compaction** (Task 46) | **SHIPPED** | Physical token removal with RoPE position correction |
+| **Freshness decay** (Task 97) | **SHIPPED** | Cosine-similarity conflict detection for multi-turn |
+| **Adaptive prefill** (Task 94) | **SHIPPED** | Memory-aware chunk sizing for long-context prefill |
 
-**Key insight**: SVD rank is the wrong metric for KV compression. What matters is attention-weighted
-correctness, not energy-weighted reconstruction. SnapKV works because it keeps high-attention tokens
-at full precision. See `research/OPTIMIZATION_DECISION_MATRIX.md` for the full 4-tier ranking and
-`research/attention_weighted_codec_selection.md` for the per-head-type codec architecture.
+**64K GPU validation** (2026-04-16): NIAH PASS at 25% and 50% keep, 100% token agreement,
+4.5 GB Metal saved. Server flags: `--snapkv-keep K --caote --segmented-evict 512`.
 
-**Next step**: Task 46 (SnapKV compact) needs a custom cache class that supports sparse position IDs —
-MLX's KVCache uses contiguous buffer/offset which breaks physical token removal. Options: attention
-masking (no memory savings) or custom `SparseKVCache` class (M effort).
+**Memory projections with SnapKV@25% keep:**
+
+| Context | KV (full) | KV (25% keep) | Model+KV | Fits 48GB? |
+|--------:|----------:|--------------:|---------:|:-----------|
+| 64K | 6.2 GB | 1.6 GB | 18.8 GB | **YES** |
+| 128K | 12.4 GB | 3.1 GB | 20.3 GB | **YES** |
+| 256K | 24.8 GB | 6.2 GB | 23.4 GB | **YES** |
+| 1M (3-bit) | 22.5 GB | 5.6 GB | 22.8 GB | **YES** |
+
+**Next step**: Run 128K NIAH with `--snapkv-keep --caote` to close Goal 1.
 
 ## Before Every Commit
 

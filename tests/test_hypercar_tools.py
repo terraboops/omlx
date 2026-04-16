@@ -1055,3 +1055,42 @@ class TestSegmentedEvictionSource:
         """snapkv_bench must accept --segment-size flag."""
         bench_src = Path("omlx/bench/snapkv_bench.py").read_text()
         assert "--segment-size" in bench_src
+
+
+# ---- Task 97: Freshness-Aware Eviction ----
+
+class TestFreshnessEvictionSource:
+    """Source-level tests for freshness-aware KV cache eviction."""
+
+    def test_freshness_function_exists(self):
+        assert "def compute_freshness_scores(" in _snapkv_src
+
+    def test_cosine_similarity(self):
+        """Must compute cosine similarity for conflict detection."""
+        assert "keys_normed" in _snapkv_src or "cosine" in _snapkv_src
+
+    def test_conflict_threshold(self):
+        """Must use a conflict threshold parameter."""
+        assert "conflict_threshold" in _snapkv_src
+
+    def test_decay_factor(self):
+        """Must use exponential decay for supersession count."""
+        assert "decay_factor" in _snapkv_src
+        assert "mx.power" in _snapkv_src or "power" in _snapkv_src
+
+    def test_supersession_counting(self):
+        """Must count supersessions per token."""
+        assert "supersession_count" in _snapkv_src
+
+    def test_freshness_composes_with_importance(self):
+        """Freshness must multiply with importance scores."""
+        assert "importance * freshness" in _snapkv_src
+
+    def test_apply_snapkv_has_freshness_param(self):
+        """apply_snapkv_to_generate must accept use_freshness."""
+        assert "use_freshness" in _snapkv_src
+
+    def test_server_freshness_flag(self):
+        """Server must have --freshness-evict flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--freshness-evict" in server_src

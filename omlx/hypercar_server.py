@@ -299,6 +299,9 @@ def main():
     parser.add_argument("--segmented-evict", type=int, default=0,
                         help="BUZZ segmented eviction: per-segment top-K with this segment "
                              "size (0=off, global top-K). Requires --snapkv-keep > 0.")
+    parser.add_argument("--freshness-evict", action="store_true", default=False,
+                        help="Freshness-aware eviction: penalize superseded tokens via "
+                             "cosine similarity conflict detection. Requires --snapkv-keep > 0.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
@@ -386,10 +389,16 @@ def main():
         from omlx.patches.snapkv import apply_snapkv_to_generate
         apply_snapkv_to_generate(
             keep_count=args.snapkv_keep, use_caote=args.caote,
-            segment_size=args.segmented_evict)
+            segment_size=args.segmented_evict,
+            use_freshness=args.freshness_evict)
         scoring = "CAOTE" if args.caote else "attention-only"
-        seg = f", seg={args.segmented_evict}" if args.segmented_evict > 0 else ""
-        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}{seg}")
+        extras = []
+        if args.segmented_evict > 0:
+            extras.append(f"seg={args.segmented_evict}")
+        if args.freshness_evict:
+            extras.append("freshness")
+        extra_str = f" ({', '.join(extras)})" if extras else ""
+        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}{extra_str}")
 
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")

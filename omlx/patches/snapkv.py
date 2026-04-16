@@ -252,6 +252,96 @@ def _get_fp16_values(cache_entry) -> mx.array:
     return values_raw
 
 
+def compute_freshness_scores(
+    cache: list,
+    target_layers: list[int] | None = None,
+    conflict_threshold: float = 0.85,
+    decay_factor: float = 0.1,
+    window: int = 10,
+) -> mx.array:
+    """Compute per-token freshness scores via conflict detection.
+
+    Tokens whose K vectors are highly similar to LATER tokens are
+    "superseded" — their information has been updated. Multiply-superseded
+    tokens get exponentially decayed freshness scores.
+
+    From SleepGate (arXiv:2603.14517): proactive interference from stale
+    KV entries degrades retrieval to <18%. Conflict-aware freshness fixes this.
+
+    Args:
+        cache: KVCache list (one per layer)
+        target_layers: Which layers to check (default: last 4)
+        conflict_threshold: Cosine similarity above this = superseded (0.85)
+        decay_factor: Freshness = decay^n_supersessions per superseded token
+        window: Check each token against the next `window` tokens
+
+    Returns:
+        freshness: (B, H_kv, T) — freshness score per token (1.0 = fresh,
+            decay^n = stale). Multiply with importance scores.
+    """
+    n_layers = len(cache)
+    if target_layers is None:
+        target_layers = list(range(max(0, n_layers - 4), n_layers))
+
+    # Aggregate supersession counts across target layers
+    all_counts = []
+
+    for layer_idx in target_layers:
+        keys = _get_fp16_keys(cache[layer_idx])  # (B, H_kv, T, D)
+        B, H_kv, T, D = keys.shape
+
+        # Normalize keys for cosine similarity: cos(a,b) = a·b when ||a||=||b||=1
+        norms = mx.sqrt(mx.sum(keys * keys, axis=-1, keepdims=True) + 1e-8)
+        keys_normed = keys / norms  # (B, H_kv, T, D)
+
+        # For each token i, check if any of the next `window` tokens j>i
+        # has cosine similarity > threshold. Count supersessions.
+        # Efficient approach: sliding window of dot products
+        supersession_count = mx.zeros((B, H_kv, T))
+
+        # Process in chunks to avoid O(T²) memory
+        for i_start in range(0, T - 1, 256):
+            i_end = min(i_start + 256, T - 1)
+            # Query tokens: [i_start, i_end)
+            q = keys_normed[:, :, i_start:i_end, :]  # (B, H_kv, chunk, D)
+
+            # Compare against next `window` tokens for each query
+            j_start = i_start + 1
+            j_end = min(i_end + window, T)
+            k = keys_normed[:, :, j_start:j_end, :]  # (B, H_kv, j_len, D)
+
+            # Cosine similarities: (B, H_kv, chunk, j_len)
+            sims = q @ k.swapaxes(-1, -2)
+
+            # For each query token i, check tokens j in [i+1, i+window]
+            chunk_len = i_end - i_start
+            j_len = j_end - j_start
+
+            for local_i in range(chunk_len):
+                global_i = i_start + local_i
+                # Valid comparisons: j > global_i and j < global_i + window
+                j_rel_start = max(0, global_i + 1 - j_start)
+                j_rel_end = min(j_len, global_i + 1 + window - j_start)
+                if j_rel_start >= j_rel_end:
+                    continue
+                local_sims = sims[:, :, local_i, j_rel_start:j_rel_end]
+                n_conflicts = mx.sum(local_sims > conflict_threshold, axis=-1)
+                supersession_count = supersession_count.at[:, :, global_i].add(n_conflicts)
+
+        mx.eval(supersession_count)
+        all_counts.append(supersession_count)
+
+    # Average supersession count across layers
+    stacked = mx.stack(all_counts, axis=0)
+    avg_counts = mx.mean(stacked, axis=0)  # (B, H_kv, T)
+
+    # Freshness = decay_factor ^ n_supersessions
+    # Fresh tokens (0 supersessions) get 1.0; stale tokens get exponentially less
+    freshness = mx.power(mx.array(decay_factor), avg_counts)
+    mx.eval(freshness)
+    return freshness
+
+
 def compute_caote_importance(
     captured_queries: dict,
     cache: list,
@@ -808,7 +898,8 @@ def count_kept(keep_mask: mx.array) -> int:
 
 def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                               use_caote: bool = False,
-                              segment_size: int = 0) -> None:
+                              segment_size: int = 0,
+                              use_freshness: bool = False) -> None:
     """Monkey-patch generate_step to run SnapKV eviction after prefill.
 
     When prompt length >= 2 * keep_count, the wrapper:
@@ -830,6 +921,10 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
         segment_size: If > 0, use BUZZ-style per-segment selection instead
             of global top-K. Each segment of this many tokens keeps its own
             heavy-hitters, preventing the "lost in the middle" problem.
+        use_freshness: If True, apply freshness decay to importance scores
+            before selection. Superseded tokens (high cosine similarity to
+            later tokens) get exponentially penalized. Prevents stale entries
+            from consuming cache budget in agentic multi-turn scenarios.
     """
     import threading
     import mlx_lm.generate as gen_mod
@@ -889,6 +984,10 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                     importance = compute_importance_from_real_q(
                         captured, cache, obs_window=obs_window)
                     scoring = "attention-only"
+                if use_freshness:
+                    freshness = compute_freshness_scores(cache)
+                    importance = importance * freshness
+                    scoring += "+fresh"
                 keep_mask = snapkv_select(importance, keep_count,
                                           segment_size=segment_size)
                 indices = get_keep_indices(keep_mask)
