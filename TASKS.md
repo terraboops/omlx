@@ -506,7 +506,7 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-- **Goal 1 validation**: SnapKV+CAOTE 128K NIAH run (GPU, background — ~30min at O(n²))
+- **Goal 1 validation**: SnapKV+CAOTE 128K NIAH run (GPU, background — chunked prefill fix applied)
 
 ## Completed
 
