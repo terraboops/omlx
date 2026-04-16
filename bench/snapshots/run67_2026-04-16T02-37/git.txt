@@ -1,0 +1,6 @@
+c50f15fe45d929fbe8f063ea18bb25f17474699d
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run67_2026-04-16T02-37/console.txt
+?? bench/snapshots/run67_2026-04-16T02-37/git.txt
+?? bench/snapshots/run67_2026-04-16T02-37/profile.json
+?? bench/snapshots/run67_2026-04-16T02-37/results.json
