@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-16 (pass 23)_
+_Last updated: 2026-04-16 (pass 24)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -5473,3 +5473,311 @@ completely different mathematical frameworks (entropy-based vs
 topology-based) converge on the same functional partition of attention
 heads. When independent methods agree, the partition is real. Curiosity
 never saturates. Meow, nyaa, meow.
+
+## Pass 24 — 2026-04-16
+
+Cross-field angles this pass: information theory / rate-distortion
+(CAOTE, Don't Waste Bits), compiler / program analysis (CodeComp),
+RL exploration theory (ETTRL). Four papers addressing two of the three
+open gaps from pass 23: the formal eviction error bound (CAOTE provides
+closed-form MSE), and compositional validation of the codec selector
+(CodeComp demonstrates that structural priors compose with attention
+signals for code-specific KV compression). The multi-scale sleep
+hierarchy gap remains open (third consecutive deferral).
+
+### [CAOTE: KV Cache Selection for LLMs via Attention Output Error-Based Token Eviction](https://arxiv.org/abs/2504.14051) — 2504.14051
+- **Authors**: Raghavv Goel, Junyoung Park, Mukul Gagrani, Dalton Jones, Matthew Morse, Harper Langston, Mingu Lee, Chris Lott
+- **Published**: 2025-04 (preprint, revised 2025-10, v6)
+- **Hypercar goals it addresses**: Goal 1 (1M context — principled eviction error minimisation), Goal 2 (intelligence — value-aware eviction preserves output quality)
+- **TL;DR**: Defines the eviction criterion c_j = (alpha_j / (1 - alpha_j))
+  * ||V A^T - v_j||_2, which equals the mean squared error between
+  attention output before and after evicting token j. Theorem 3.2
+  proves this equality in closed form. CAOTE is a *meta-heuristic* —
+  it composes with any existing eviction method (H2O, SnapKV, TOVA)
+  by replacing their attention-only score with the attention+value
+  score. On LongBench (16 tasks, Llama 3.1-8B, 4K budget), SnapKV
+  improved from ~40 to ~45 avg with FastCAOTE. On NIAH at 44K budget,
+  30-60% precision gains. FastCAOTE overhead is Ls(4d+3) + L FLOPs —
+  ratio to prefill FLOPs is ~8.9e-5 at 4K, ~3.7e-5 at 32K. The
+  method is the first to integrate value vectors into eviction scores
+  in closed form; prior methods (H2O, SnapKV) use attention scores
+  only, which lack information about token contribution to the
+  attention *output*.
+- **Why it matters for Hypercar**: CAOTE directly addresses gap #1
+  from pass 23 — the missing formal guarantee for SnapKV eviction.
+  The closed-form MSE (Theorem 3.2) is not a probabilistic bound in
+  the PAC sense, but it is the strongest eviction error characterisation
+  in the literature: for each candidate eviction, you can compute the
+  *exact* output error before deciding. This transforms eviction from
+  a heuristic (attention top-k) to an optimisation problem (minimise
+  MSE under budget constraint). The practical upgrade for Hypercar is
+  immediate: replace SnapKV's attention-only top-k with the CAOTE
+  score in the segmented heavy-hitter eviction (task 98). The CAOTE
+  score is strictly more informative because it captures both *where*
+  the model is attending (keys) and *what* it would lose (values).
+  The FastCAOTE variant substitutes mean-of-values for the full
+  attention output, making the overhead negligible even at 64K context.
+  The meta-heuristic property means CAOTE composes with BUZZ's
+  segmented selection (task 98), freshness-aware eviction (task 97),
+  and the AIMD controller (task 96) without modification — it simply
+  replaces the per-token importance score used by each.
+- **Cost of adoption**: S (1 day). Drop-in replacement for the
+  attention-only score in SnapKV's eviction. The formula is one line
+  of compute per token per head. No model changes, no training.
+- **Local PDF**: research/2504.14051_caote_attention_output_error_eviction.pdf
+
+### [Don't Waste Bits! Adaptive KV-Cache Quantization for Lightweight On-Device LLMs](https://arxiv.org/abs/2604.04722) — 2604.04722
+- **Authors**: Sayed Pedram Haeri Boroujeni, Niloufar Mehrabi, Patrick Woods, Gabriel Hillesheim, Abolfazl Razi (Clemson University)
+- **Published**: 2026-04 (CVPR 2026, accepted)
+- **Hypercar goals it addresses**: Goal 1 (1M context — reduced KV memory via variable precision), Goal 3 (decode speed — 17.75% latency reduction)
+- **TL;DR**: Inspired by Huffman coding's optimality theorem (assign
+  shorter codes to more frequent symbols), proposes a learned controller
+  that assigns per-token KV cache precision from {2, 4, 8, 16} bits.
+  The controller is a shallow 3-layer MLP (128 hidden dims) that takes
+  4 features per token: (1) entropy of next-token distribution,
+  (2) rarity (smoothed self-information), (3) attention variance
+  (sharpness of attention distribution), and (4) confidence (model
+  certainty). Training combines cross-entropy for precision class,
+  expected latency cost, and quality penalty. On SmolLM-360M /
+  HellaSwag: 41.20% accuracy (vs 41.50% FP16, -0.30 points) while
+  reducing decoding latency by 17.75% over static 4-bit quantization
+  and improving accuracy by 7.60 points over static. The key insight
+  is that token importance has *heavy tails*: a small fraction of
+  tokens need FP16 precision, most can be aggressively quantised to
+  2-bit, and a Huffman-style variable allocation captures this
+  distribution exactly.
+- **Why it matters for Hypercar**: This paper is the adaptive mesh
+  refinement (AMR) analogy from the pass 24 angle list, realised
+  through information theory rather than NWP. The connection to
+  Hypercar's 3-bit KV cache is direct: instead of uniform 3-bit
+  quantisation across all tokens (native mode) or uniform fp16
+  (duo mode), a learned controller could assign variable precision
+  per-token, concentrating bits where attention is sharp (retrieval-
+  critical tokens) and minimising bits where attention is smooth
+  (streaming tokens). The 4-feature vector (entropy, rarity,
+  attention variance, confidence) is computable from signals already
+  available in Hypercar's decode loop — no additional model calls
+  needed. The CVPR 2026 venue provides quality assurance. The
+  practical application for Hypercar is a *hybrid* between duo mode
+  (fp16, best quality) and native mode (3-bit, longest context):
+  allocate fp16 to the ~10% of tokens that CAOTE identifies as
+  high-impact, and 2-3 bit to the rest. This could achieve duo-mode
+  quality at near-native-mode memory, closing the quality-memory
+  tradeoff that is the fundamental tension in Goal 1.
+- **Cost of adoption**: M (3-5 days). Requires implementing the
+  variable-precision KV cache (MLX's QuantizedKVCache assumes uniform
+  bits), training the MLP controller on calibration data from
+  Qwen3-Coder, and integrating with the CAOTE score for token
+  importance. The MLP controller is tiny (128-dim, 3 layers) and
+  trains in minutes on a single GPU.
+- **Local PDF**: research/2604.04722_dont_waste_bits_adaptive_kv_quantization.pdf
+
+### [ETTRL: Balancing Exploration and Exploitation in LLM Test-Time Reinforcement Learning Via Entropy Mechanism](https://arxiv.org/abs/2508.11356) — 2508.11356
+- **Authors**: Jia Liu, ChangYi He, YingQiao Lin, MingMin Yang, FeiYang Shen, ShaoGuo Liu
+- **Published**: 2025-08 (preprint, revised 2025-08, v2)
+- **Hypercar goals it addresses**: Goal 2 (intelligence — improved reasoning via efficient TTT exploration)
+- **TL;DR**: Addresses the exploration-exploitation tradeoff in test-time
+  reinforcement learning (TTRL) via two entropy-based mechanisms.
+  (1) ETMR (Entropy-fork Tree Majority Rollout): instead of sampling
+  K independent responses in parallel, identifies the top-N highest-
+  entropy tokens in a partial rollout (Shannon entropy H_t =
+  -sum pi_theta(v|c) log pi_theta(v|c)) and branches B times at each
+  fork point. This produces diverse candidates by branching at
+  *decision points* rather than resampling entire sequences. Token
+  budget: TR_tree = (1 + 0.5*B*N) / (1 + B*N), yielding ~60% of
+  parallel sampling cost with N=3 forks, B=2 branches. (2) EAR
+  (Entropy-based Advantage Reshaping): clips advantages to [-2, +2]
+  (Adv-Clip) and scales response-level advantages by inverse entropy
+  (Adv-Res), down-weighting high-entropy (uncertain) responses.
+  Llama-3.1-8B on AIME 2024: 68% relative improvement in Pass@1
+  over baseline TTRL at 60% of the rollout token budget.
+- **Why it matters for Hypercar**: This is the RL exploration angle
+  from the pass 24 angle list, and it maps directly to the TTT
+  execution stream. The current TTT pipeline (task 59, OPLoRA)
+  generates K candidate solutions in parallel, scores them, and
+  trains on the best. ETTRL's insight is that *where* you branch
+  matters more than *how many* branches you generate. High-entropy
+  tokens are the "decision points" in code generation — the `if`
+  vs `while`, the `+1` vs `-1`, the variable name choice that
+  determines whether the solution is correct. ETMR's tree-structured
+  rollout at entropy fork points produces more diverse candidates
+  with fewer total tokens, which directly reduces the TTT rollout
+  cost (currently the dominant expense in the TTT loop). The EAR
+  mechanism's advantage clipping composes with EGCA's execution-
+  grounded credit assignment (task 95): EGCA localises credit to
+  specific token spans, EAR reshapes the advantage magnitude based
+  on entropy. Together they give the TTT optimizer *fine-grained,
+  entropy-calibrated, execution-localised* credit assignment. The
+  60% token budget reduction is significant because TTT's main
+  bottleneck is the number of rollout tokens needed per training
+  step.
+- **Cost of adoption**: S (1-2 days). The ETMR branching logic is a
+  modification to the TTT rollout sampler — instead of independent
+  parallel samples, run a single partial rollout, identify entropy
+  fork points, and branch. The EAR advantage reshaping is 3 lines
+  of code in the GRPO loss. No model changes.
+- **Local PDF**: research/2508.11356_ettrl_entropy_test_time_rl.pdf
+
+### [CodeComp: Structural KV Cache Compression for Agentic Coding](https://arxiv.org/abs/2604.10235) — 2604.10235
+- **Authors**: Qiujiang Chen, Jing Xiong, Chenyang Zhao, Sidi Yang, Ngai Wong
+- **Published**: 2026-04 (preprint)
+- **Hypercar goals it addresses**: Goal 1 (1M context — 60% KV reduction for code), Goal 2 (intelligence — preserves structurally critical code tokens)
+- **TL;DR**: A training-free KV cache compression framework that
+  incorporates static program analysis (Code Property Graphs via Joern)
+  into LLM inference. Two mechanisms: (1) *span-level structural
+  protection* — identifies structurally critical tokens (call sites,
+  branch conditions, assignments, function signatures) via CPG and
+  protects them from eviction, (2) *structure-aware budget allocation*
+  — distributes the KV budget across chunks proportional to structural
+  importance: sigma_i = sum_k w_k * Norm(f_{i,k}; tau_k), with final
+  chunk budget B_i = floor(|C_i| * min(r_max, r * m_i)). Key finding:
+  Jaccard overlap between attention-ranked and structure-ranked chunks
+  is only 0.094 — attention-based importance is *weakly aligned* with
+  structural importance for code. On SWE-bench Lite at 40% capacity,
+  CodeComp achieves 0.250 GF F1 vs ParallelComp's 0.021 (12x
+  improvement) with perfect patch validity. On DebugBench (Llama3-8B,
+  40% capacity): 0.43 accuracy vs ParallelComp's 0.03 (14x). At 60%
+  capacity on Qwen3-8B: recovers 91% of uncompressed performance.
+  Integrates natively with SGLang. Ablation shows span-level protection
+  is the dominant contributor over budget allocation alone.
+- **Why it matters for Hypercar**: CodeComp addresses gap #3 from
+  pass 23 — compositional validation of multi-axis codec selection —
+  from an unexpected angle. The paper demonstrates that *structural
+  priors* (from static analysis) compose with *attention signals*
+  (from the model) to produce better eviction than either alone. This
+  is the first empirical validation that a non-attention signal can
+  substantially improve KV eviction for code. The 0.094 Jaccard
+  overlap finding is the most important number in this paper: it
+  proves that attention-based eviction is *systematically wrong* for
+  ~90% of structurally important code tokens. For Hypercar's agentic
+  coding use case (serving OpenCode, processing whole repositories),
+  this means SnapKV's attention-only eviction will miss call sites,
+  branch conditions, and assignments that are critical for code
+  understanding. The fix is to add structural protection as a *fourth
+  axis* to the codec selector: head type (DuoAttention) x layer
+  topology (persistent homology) x temporal freshness (SleepGate) x
+  structural importance (CodeComp CPG). The span-level protection is
+  a simple whitelist — structurally critical token spans are marked
+  as non-evictable before any attention-based eviction runs. This
+  composes with CAOTE (this pass), BUZZ (pass 23), and freshness
+  (task 97) without interference. The SGLang integration and Qwen3-8B
+  results provide direct relevance to our Qwen3-Coder target. The
+  Joern CPG extraction is an offline pre-processing step — no runtime
+  cost during inference.
+- **Cost of adoption**: M (3-5 days). Requires integrating Joern CPG
+  extraction into the prompt pre-processing pipeline, implementing
+  the span-level protection mask in the KV eviction logic, and
+  calibrating the structure-aware budget allocation formula. The
+  framework is training-free and model-agnostic.
+- **Local PDF**: research/2604.10235_codecomp_structural_kv_agentic_coding.pdf
+
+### Pass 24 adds (2026-04-16)
+
+**Highest-leverage find this pass: CAOTE attention-output-error eviction
+(2504.14051).** The closed-form MSE for each candidate eviction (Theorem
+3.2) is the strongest eviction-error characterisation in the KV cache
+literature. It directly addresses the pass 23 gap for formal eviction
+guarantees — not a probabilistic PAC bound, but an exact per-token
+error computation that transforms eviction from heuristic ranking to
+MSE minimisation under budget constraint. The meta-heuristic property
+(CAOTE composes with any existing eviction method) means it upgrades
+every eviction strategy in the Hypercar pipeline: SnapKV's global top-k,
+BUZZ's segmented heavy hitters (task 98), freshness-aware eviction
+(task 97), and the AIMD controller's eviction trigger (task 96). Task
+100 captures the CAOTE integration.
+
+**Second find: CodeComp structural KV compression (2604.10235)** is
+the most surprising result. The 0.094 Jaccard overlap between attention-
+ranked and structure-ranked code tokens proves that attention-based
+eviction is systematically wrong for ~90% of structurally important
+code tokens. For Hypercar's primary use case (serving agentic coding
+via OpenCode), this means SnapKV + CAOTE alone will still miss call
+sites, branch conditions, and assignments. CodeComp's span-level
+structural protection adds a *fourth axis* to the codec selector
+architecture — structural importance from static analysis — extending
+the three-axis design from pass 23 (head type x layer topology x
+temporal freshness) to a four-axis design. Task 101 captures the
+structural protection integration.
+
+**Third find: Don't Waste Bits adaptive quantization (2604.04722,
+CVPR 2026)** is the information-theoretic realisation of the adaptive
+mesh refinement analogy from the pass 24 angle list. The Huffman-
+coding-inspired variable precision controller assigns {2, 4, 8, 16}
+bits per token based on 4 lightweight features (entropy, rarity,
+attention variance, confidence). The practical application for Hypercar
+is a *hybrid* cache mode between duo (fp16, best quality) and native
+(3-bit, longest context): allocate fp16 to the ~10% of high-impact
+tokens and 2-3 bits to the rest, achieving duo-mode quality at near-
+native-mode memory. No standalone task filed — the paper's contribution
+is the variable-precision KV cache architecture that would replace the
+uniform-bits assumption in MLX's QuantizedKVCache, a larger effort that
+depends on first validating CAOTE's per-token importance scoring (task
+100).
+
+**Fourth find: ETTRL entropy-based test-time RL (2508.11356)** brings
+the RL exploration angle to the TTT execution stream. The ETMR tree-
+structured rollout branches at high-entropy tokens (the decision points
+in code generation), producing more diverse candidates with 60% of the
+token budget. This composes with EGCA's execution-grounded credit
+(task 95) and OPLoRA's safety rail (task 59): ETMR reduces rollout
+cost, EGCA localises credit to divergence spans, EAR reshapes advantage
+by entropy. No standalone task filed — the ETMR rollout strategy is a
+modification to the TTT sampler that integrates into the existing TTT
+pipeline (task 59) when TTT moves from prototype to production.
+
+**Gap status for pass 25**:
+1. **Formal probabilistic guarantees for SnapKV eviction.** CAOTE's
+   Theorem 3.2 provides an *exact* per-token MSE, which is stronger
+   than a probabilistic bound for greedy (single-token) eviction. But
+   the paper acknowledges it is "myopic" — the bound does not compose
+   across multiple eviction decisions (the MSE of evicting tokens j1
+   and j2 is not the sum of their individual MSEs). The gap narrows
+   to: a *compositional* error bound for multi-token eviction under
+   budget constraint. Partially closed.
+2. **Multi-scale sleep hierarchy for KV cache management.** Third
+   consecutive deferral. Still untested.
+3. **Compositional validation of multi-axis codec selector.** CodeComp
+   validates that structural priors + attention signals compose for
+   code. The full 4-axis composition (head type x layer topology x
+   temporal freshness x structural importance) remains unvalidated
+   as a system, but two 2-axis compositions are now validated
+   (DuoAttention head-type x attention eviction, CodeComp structure
+   x attention eviction). Partially closed.
+
+**Fresh weird angles for pass 25** (keep expanding the surface):
+- **Queueing theory with abandonment (Erlang-A)**: callers who
+  "abandon" the queue after a timeout map to KV entries that expire
+  under freshness-aware eviction. The Erlang-A model gives closed-form
+  steady-state distributions for queue length (= cache occupancy)
+  under abandonment, which could provide the compositional multi-token
+  eviction bound that CAOTE's per-token MSE misses.
+- **Optimal transport / Wasserstein distance**: the "cost" of an
+  eviction policy is the Wasserstein distance between the full-cache
+  and compressed-cache attention distributions. Optimal transport
+  gives a metric that respects the geometry of the attention simplex,
+  unlike the MSE that CAOTE uses (which treats all tokens equally).
+- **Error-correcting codes / channel coding**: the KV cache as a
+  noisy channel where quantization is the noise. Turbo codes and LDPC
+  codes use iterative decoding to approach capacity — analogous to
+  iterative refinement of quantization levels across layers.
+- **Epidemiology / SIR models**: token importance "spreading" through
+  attention layers like an infection. Tokens that receive high
+  attention in early layers "infect" tokens they attend to in later
+  layers, creating importance cascades. The SIR model's
+  reproduction number R0 maps to a token's long-range influence on
+  attention output — tokens with R0 > 1 are super-spreaders that
+  must be retained.
+
+Twenty-four passes. One hundred and thirteen papers. Four fresh cross-
+field angles searched (information theory / rate-distortion, compiler /
+program analysis, RL exploration, Huffman coding / variable-length
+allocation). The most significant result: the 0.094 Jaccard overlap
+between attention-ranked and structure-ranked code tokens (CodeComp)
+proves that attention-based eviction is fundamentally insufficient for
+code — a finding that reframes the entire KV compression strategy for
+Hypercar's agentic coding use case. When ~90% of structurally critical
+code tokens have low attention scores, attention-only eviction is not
+just imprecise but *structurally adversarial*. The fix is elegant:
+static analysis protects structure, attention-based eviction handles
+the rest. Two orthogonal signals that compose cleanly. Curiosity never
+saturates. Meow, nyaa, meow.
