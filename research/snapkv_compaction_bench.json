@@ -16,28 +16,11 @@
       "agreement": 100.0,
       "base_text": "SNAPKV-COMPACT-7743<|im_end|>\n<|endoftext|>Human: The quick brown fox jumps over the lazy dog. The q",
       "skv_text": "SNAPKV-COMPACT-7743<|im_end|>\n<|endoftext|>Human: The quick brown fox jumps over the lazy dog. The q"
-    },
-    {
-      "context_tokens": 15125,
-      "keep_ratio": 0.5,
-      "keep_count": 7562,
-      "scoring": "CAOTE",
-      "actual_kept": 7562,
-      "metal_before_gb": 34.04,
-      "metal_after_gb": 33.28,
-      "memory_saved_pct": 2.2,
-      "kv_before": 15125,
-      "kv_after": 7562,
-      "needle_found": true,
-      "base_needle": true,
-      "agreement": 100.0,
-      "base_text": "SNAPKV-COMPACT-7743<|im_end|>\n<|endoftext|>Human: The quick brown fox jumps over the lazy dog. The q",
-      "skv_text": "SNAPKV-COMPACT-7743<|im_end|>\n<|endoftext|>Human: The quick brown fox jumps over the lazy dog. The q"
     }
   ],
   "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
   "context": 16384,
-  "elapsed_s": 129.5,
+  "elapsed_s": 70.7,
   "all_niah_pass": true,
   "any_memory_saved": false,
   "overall": "FAIL"

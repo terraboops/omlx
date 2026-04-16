@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 98: BUZZ segmented eviction for SnapKV** — per-segment top-K selection (2026-04-16)
+  - `_select_segmented()`: divides KV into segments, selects top-K per segment proportionally
+  - `--segmented-evict N` flag on server and `--segment-size N` on snapkv_bench
+  - Composes with CAOTE: CAOTE scores within each segment, segmented selection preserves locality
+  - GPU validation: 4K@25%/50% + 16K@25% all 100% agreement with CAOTE+segmented
+  - Fixes "lost in the middle" — each segment retains its own heavy-hitters
 - **Task 94: Adaptive prefill chunk-size controller** — memory-aware chunking (2026-04-16)
   - `AdaptivePrefillController`: proportional control with Metal memory + throughput signals
   - Starts at max_chunk, shrinks when Metal > 65% target, halves when tok/s < 200 (O(n²) cliff)

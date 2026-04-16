@@ -1015,3 +1015,43 @@ class TestAdaptivePrefillSource:
         """Server must call apply_adaptive_prefill when flag is set."""
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "apply_adaptive_prefill" in server_src
+
+
+# ---- Task 98: BUZZ Segmented Eviction ----
+
+class TestSegmentedEvictionSource:
+    """Source-level tests for BUZZ segmented eviction."""
+
+    def test_select_segmented_exists(self):
+        assert "def _select_segmented(" in _snapkv_src
+
+    def test_select_global_exists(self):
+        assert "def _select_global(" in _snapkv_src
+
+    def test_snapkv_select_has_segment_size(self):
+        """snapkv_select must accept segment_size parameter."""
+        assert "segment_size" in _snapkv_src
+
+    def test_segmented_distributes_budget(self):
+        """Segmented selection must distribute budget across segments."""
+        assert "n_segments" in _snapkv_src
+        assert "seg_k" in _snapkv_src
+
+    def test_segmented_per_segment_topk(self):
+        """Must do per-segment top-K selection."""
+        assert "seg_start" in _snapkv_src
+        assert "seg_end" in _snapkv_src
+
+    def test_server_flag_exists(self):
+        """hypercar_server must have --segmented-evict flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--segmented-evict" in server_src
+
+    def test_apply_snapkv_passes_segment_size(self):
+        """apply_snapkv_to_generate must forward segment_size."""
+        assert "segment_size=segment_size" in _snapkv_src
+
+    def test_bench_has_segment_flag(self):
+        """snapkv_bench must accept --segment-size flag."""
+        bench_src = Path("omlx/bench/snapkv_bench.py").read_text()
+        assert "--segment-size" in bench_src

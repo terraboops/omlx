@@ -92,7 +92,7 @@ def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32):
 
 
 def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
-             use_caote=False):
+             use_caote=False, segment_size=0):
     """Run one SnapKV compaction test at given context length and keep ratio.
 
     Returns dict with results.
@@ -155,7 +155,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     cleanup()  # remove hooks
 
     # Select tokens to keep
-    keep_mask = snapkv_select(importance, keep_count)
+    keep_mask = snapkv_select(importance, keep_count, segment_size=segment_size)
     indices = get_keep_indices(keep_mask)
     actual_kept = len(indices)
 
@@ -241,6 +241,8 @@ def main():
                         help="Comma-separated keep ratios to test")
     parser.add_argument("--caote", action="store_true", default=False,
                         help="Use CAOTE scoring (attention × value distinctiveness)")
+    parser.add_argument("--segment-size", type=int, default=0,
+                        help="BUZZ segmented eviction: per-segment top-K (0=global)")
     args = parser.parse_args()
 
     keep_ratios = [float(r) for r in args.keep_ratios.split(",")]
@@ -275,7 +277,8 @@ def main():
     results = []
     for ratio in keep_ratios:
         result = run_test(model, tokenizer, args.context, ratio,
-                          use_caote=args.caote)
+                          use_caote=args.caote,
+                          segment_size=args.segment_size)
         results.append(result)
 
     elapsed = time.perf_counter() - t0

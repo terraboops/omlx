@@ -525,17 +525,83 @@ def compute_multi_layer_importance(
     return importance
 
 
+def _select_global(pooled: mx.array, k: int) -> set:
+    """Global top-K selection (original SnapKV behavior)."""
+    top_k_indices = mx.argpartition(-pooled, kth=k, axis=-1)[:, :k]
+    all_indices = set()
+    top_k_np = top_k_indices.tolist() if hasattr(top_k_indices, 'tolist') else [[]]
+    for b_indices in top_k_np:
+        if isinstance(b_indices, list):
+            all_indices.update(b_indices)
+        else:
+            all_indices.add(int(b_indices))
+    return all_indices
+
+
+def _select_segmented(pooled: mx.array, k: int, segment_size: int) -> set:
+    """BUZZ-style segmented selection: per-segment top-K.
+
+    Divides the selectable range into segments of `segment_size` tokens.
+    Within each segment, selects the top-k_local tokens proportional to
+    the segment's share of the total budget.
+
+    This preserves local attention structure: each segment retains its
+    own heavy-hitters instead of being globally outcompeted by recent
+    tokens or attention sinks.
+
+    From BUZZ (arXiv:2410.23079): segmented selection outperforms global
+    H2O by 7.69% on multi-document QA at 2.5x cache reduction.
+    """
+    B, S = pooled.shape  # S = selectable tokens
+    n_segments = max(1, (S + segment_size - 1) // segment_size)
+
+    # Distribute budget proportionally across segments
+    base_k = max(1, k // n_segments)
+    remainder = k - base_k * n_segments
+
+    all_indices = set()
+    pooled_np = pooled[0].tolist()  # B=1 for inference
+
+    for seg_idx in range(n_segments):
+        seg_start = seg_idx * segment_size
+        seg_end = min(seg_start + segment_size, S)
+        seg_len = seg_end - seg_start
+
+        # Budget for this segment (distribute remainder to early segments)
+        seg_k = base_k + (1 if seg_idx < remainder else 0)
+        seg_k = min(seg_k, seg_len)  # can't keep more than segment has
+
+        if seg_k <= 0:
+            continue
+
+        # Select top-K within segment using numpy-style sorting
+        seg_scores = pooled_np[seg_start:seg_end]
+        # Get indices sorted by score (descending)
+        indexed = sorted(range(seg_len), key=lambda i: -seg_scores[i])
+        for i in indexed[:seg_k]:
+            all_indices.add(seg_start + i)
+
+    return all_indices
+
+
 def snapkv_select(
     importance: mx.array,
     keep_count: int,
     always_keep_last: int = 64,
+    segment_size: int = 0,
 ) -> mx.array:
     """Select top-K tokens to keep based on importance scores.
+
+    When segment_size > 0, uses BUZZ-style segmented selection (per-segment
+    top-K) instead of global top-K. This preserves local attention structure
+    and prevents the "lost in the middle" problem at long contexts.
 
     Args:
         importance: (B, H_kv, T) — per-token importance per head
         keep_count: total tokens to keep (including always_keep_last)
         always_keep_last: always keep this many recent tokens (sink/window)
+        segment_size: if > 0, use per-segment selection with this segment size.
+            0 = global top-K (original SnapKV behavior).
 
     Returns:
         keep_mask: (B, T) — boolean mask of tokens to keep (union across heads)
@@ -555,18 +621,12 @@ def snapkv_select(
     # Pool importance across heads (union strategy: max across heads)
     pooled = mx.max(importance[:, :, :selectable], axis=1)  # (B, selectable)
 
-    # Top-k selection
-    top_k_indices = mx.argpartition(-pooled, kth=k_selectable, axis=-1)[:, :k_selectable]
-
-    # Build keep indices (sorted for cache compaction)
-    # Union top-k across batch (B=1 for inference)
-    all_indices = set()
-    top_k_np = top_k_indices.tolist() if hasattr(top_k_indices, 'tolist') else [[]]
-    for b_indices in top_k_np:
-        if isinstance(b_indices, list):
-            all_indices.update(b_indices)
-        else:
-            all_indices.add(int(b_indices))
+    if segment_size > 0 and selectable > segment_size:
+        # BUZZ segmented selection: per-segment top-K
+        all_indices = _select_segmented(pooled, k_selectable, segment_size)
+    else:
+        # Global top-K (original SnapKV)
+        all_indices = _select_global(pooled, k_selectable)
 
     # Add always-keep-last positions
     for pos in range(selectable, T):
@@ -747,7 +807,8 @@ def count_kept(keep_mask: mx.array) -> int:
 
 
 def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
-                              use_caote: bool = False) -> None:
+                              use_caote: bool = False,
+                              segment_size: int = 0) -> None:
     """Monkey-patch generate_step to run SnapKV eviction after prefill.
 
     When prompt length >= 2 * keep_count, the wrapper:
@@ -766,6 +827,9 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
         use_caote: If True, use CAOTE scoring (attention × value distinctiveness)
             instead of attention-only scoring. CAOTE preserves tokens whose
             eviction would cause the most attention-output error.
+        segment_size: If > 0, use BUZZ-style per-segment selection instead
+            of global top-K. Each segment of this many tokens keeps its own
+            heavy-hitters, preventing the "lost in the middle" problem.
     """
     import threading
     import mlx_lm.generate as gen_mod
@@ -825,12 +889,15 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                     importance = compute_importance_from_real_q(
                         captured, cache, obs_window=obs_window)
                     scoring = "attention-only"
-                keep_mask = snapkv_select(importance, keep_count)
+                keep_mask = snapkv_select(importance, keep_count,
+                                          segment_size=segment_size)
                 indices = get_keep_indices(keep_mask)
                 compact_cache(cache, indices, model=model)
                 new_len = len(indices)
+                seg_info = f", seg={segment_size}" if segment_size > 0 else ""
                 _logger.info(
-                    f"SnapKV eviction ({scoring}): {old_offset} -> {new_len} tokens "
+                    f"SnapKV eviction ({scoring}{seg_info}): "
+                    f"{old_offset} -> {new_len} tokens "
                     f"(kept {new_len * 100 // max(old_offset, 1)}%)"
                 )
 

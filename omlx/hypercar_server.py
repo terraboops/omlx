@@ -296,6 +296,9 @@ def main():
     parser.add_argument("--caote", action="store_true", default=False,
                         help="Use CAOTE scoring (attention × value distinctiveness) for "
                              "SnapKV eviction. Requires --snapkv-keep > 0.")
+    parser.add_argument("--segmented-evict", type=int, default=0,
+                        help="BUZZ segmented eviction: per-segment top-K with this segment "
+                             "size (0=off, global top-K). Requires --snapkv-keep > 0.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
@@ -382,9 +385,11 @@ def main():
     if args.snapkv_keep > 0:
         from omlx.patches.snapkv import apply_snapkv_to_generate
         apply_snapkv_to_generate(
-            keep_count=args.snapkv_keep, use_caote=args.caote)
+            keep_count=args.snapkv_keep, use_caote=args.caote,
+            segment_size=args.segmented_evict)
         scoring = "CAOTE" if args.caote else "attention-only"
-        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}")
+        seg = f", seg={args.segmented_evict}" if args.segmented_evict > 0 else ""
+        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}{seg}")
 
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
