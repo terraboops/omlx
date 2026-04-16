@@ -74,12 +74,23 @@ def build_niah_prompt(context_tokens: int, tokenizer) -> tuple[list[int], str]:
     return input_ids, needle
 
 
-def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32):
-    """Generate n tokens from a prefilled cache."""
-    x = mx.array([input_ids])
-    logits = model(x, cache=cache)
-    mx.eval(logits)
+def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32,
+                     prefill_chunk=4096):
+    """Generate n tokens from a prefilled cache.
 
+    Prefills in chunks to avoid OOM on long contexts (O(n²) attention
+    per chunk × accumulated KV length).
+    """
+    prompt = mx.array(input_ids)
+
+    # Chunked prefill
+    for start in range(0, len(input_ids), prefill_chunk):
+        end = min(start + prefill_chunk, len(input_ids))
+        logits = model(prompt[start:end][None], cache=cache)
+        mx.eval([c.state for c in cache])
+        mx.clear_cache()
+
+    # Decode
     tokens = []
     for _ in range(n_tokens):
         token = mx.argmax(logits[:, -1, :], axis=-1)
