@@ -964,12 +964,18 @@ def compact_cache(cache: list, keep_indices: list[int],
     idx = mx.array(keep_indices)
     new_len = len(keep_indices)
 
-    for c in cache:
+    for layer_i in range(len(cache)):
+        c = cache[layer_i]
         keys_raw = c.state[0]
         values_raw = c.state[1]
 
         if isinstance(keys_raw, tuple):
-            # QuantizedKVCache — dequantize, gather, rerope, requantize
+            # QuantizedKVCache — dequantize, gather, rerope.
+            # Store compacted result as fp16 KVCache (not requantized).
+            # Double quantization + RoPE rotation compounds errors at 64K.
+            # At 25% keep, fp16 is actually smaller than 3-bit full cache.
+            from mlx_lm.models.cache import KVCache as _KVCache
+
             keys_fp = mx.dequantize(
                 *keys_raw, group_size=c.group_size, bits=c.bits)
             values_fp = mx.dequantize(
@@ -978,15 +984,15 @@ def compact_cache(cache: list, keep_indices: list[int],
             keys_compact = keys_fp[:, :, idx, :]
             values_compact = values_fp[:, :, idx, :]
 
-            # Re-encode RoPE from original positions to [0, 1, ..., N-1]
             keys_compact = _rerope_keys(keys_compact, keep_indices,
                                         rope_dims, rope_base)
 
-            c.keys = mx.quantize(
-                keys_compact, group_size=c.group_size, bits=c.bits)
-            c.values = mx.quantize(
-                values_compact, group_size=c.group_size, bits=c.bits)
-            c.offset = new_len
+            # Replace QuantizedKVCache with fp16 KVCache
+            new_cache = _KVCache()
+            new_cache.keys = keys_compact
+            new_cache.values = values_compact
+            new_cache.offset = new_len
+            cache[layer_i] = new_cache
         else:
             # KVCache (fp16) or DuoKVCache — direct gather
             keys_compact = keys_raw[:, :, idx, :]

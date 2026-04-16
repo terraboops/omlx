@@ -903,9 +903,10 @@ class TestSnapKVSource:
         """compact_cache must handle QuantizedKVCache via dequantize."""
         assert "mx.dequantize" in _snapkv_src
 
-    def test_quantized_cache_requantize_path(self):
-        """compact_cache must requantize after gathering for QuantizedKVCache."""
-        assert "mx.quantize" in _snapkv_src
+    def test_quantized_cache_to_fp16_path(self):
+        """compact_cache converts QuantizedKVCache to fp16 KVCache (no requant)."""
+        assert "KVCache" in _snapkv_src
+        assert "mx.dequantize" in _snapkv_src
 
     def test_apply_snapkv_to_generate_exists(self):
         """Must have apply_snapkv_to_generate for server integration."""
