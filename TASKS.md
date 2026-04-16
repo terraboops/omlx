@@ -1,6 +1,6 @@
 # Hypercar Task Backlog
 _Atomic, testable optimization tasks. Organized by the Hypercar goal they advance._
-_Last updated: 2026-04-15 — 40 tasks completed, 5/6 Hypercar goals met_
+_Last updated: 2026-04-15 — 41 tasks completed, 5/6 Hypercar goals met_
 
 ## 🔴 HIGH PRIORITY — work on this next
 
@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 53**: Multi-head Latent Attention (MLA) rank probe on Qwen3-Coder KV (2026-04-15)
+  - K rank@99%: median 229/512 (45%). V rank@99%: median 246/512 (48%).
+  - **Joint KV rank@99%: median 241/1024 (24%)** — K and V share latent structure
+  - Memory at 1M: separate SVD ~10.4 GB (54% savings), joint MLA **~5.3 GB (76% savings)**
+  - Model+KV = 22.5 GB total — fits in 48 GB with 25 GB headroom
+  - **VERDICT: MLA joint compression VIABLE and preferred over separate ShadowKV**
+  - This is the critical path to Goal 1 (1M context on 48 GB)
 - **Task 56**: Add MagicDec cost-model gate for speculative decoding decisions (2026-04-15)
   - New `omlx/specdec_gate.py` — closed-form predictor based on MagicDec Eq. 2-4
   - Calibrated on M4 Pro: compute=19.1ms/tok, KV-load=0.34µs/ctx-token, crossover ~57K

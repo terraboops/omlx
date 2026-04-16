@@ -9,7 +9,8 @@ Last updated: 2026-04-15.
 | Technique | Task | Viable? | Savings | Quality Impact | Priority |
 |-----------|------|---------|---------|---------------|----------|
 | **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
-| **ShadowKV** (K low-rank compression) | 44 | **VALIDATED** | ~65% K cache | NIAH PASS, reasoning drops | For 64K+ only |
+| **MLA joint KV** (low-rank K+V compression) | 53 | **VALIDATED** | **76% KV** (22.5→5.3 GB at 1M) | TBD (needs quality gate) | **CRITICAL for Goal 1** |
+| **ShadowKV** (K-only low-rank compression) | 44 | **VALIDATED** | ~54% KV (separate K+V) | NIAH PASS, reasoning drops | Superseded by MLA joint |
 | **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
 | **Metal warmup** | 25 | **SHIPPED** | 2.25x decode, no cold-start | None | **DONE** |
 | **EAGLE-2** (tree spec-decode) | 28 | **FEASIBLE** | 2.31x predicted speedup | Tree masks work in SDPA (<1e-6 error) | HIGH |
@@ -31,10 +32,11 @@ Last updated: 2026-04-15.
 4. **Spec-decode gate** — Cost model calibrated. Predicts when EAGLE-2/TriForce helps.
 
 ### Tier 2: Next Up (validated, ready to build)
-5. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
+5. **MLA joint KV compression** — K rank 45%, V rank 48%, joint KV rank 24%.
+   76% KV savings (22.5→5.3 GB at 1M). Model+KV = 22.5 GB total — fits in
+   48 GB with 25 GB headroom. **This is the path to Goal 1 (1M context).**
+6. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
    needed (Task 29, cloud GPU). Predicted 2.31x decode speedup at 70% accept rate.
-6. **ShadowKV** — K cache is low-rank (median 177/512). Implement SVD-compressed K
-   for retrieval heads. Saves ~65% K cache memory at 64K+.
 7. **Quest** — argpartition <200µs at 64K pages. Wire into decode path for sublinear
    attention at long contexts.
 
@@ -50,22 +52,28 @@ Last updated: 2026-04-15.
 12. **MLX softmax fusion** — Gap closed in MLX 0.31.1 (4.9ms vs paper's 27.9ms on M1).
 13. **LayerSkip** — MoE routing blocks early exit. 0% agreement at depth ≤40.
 
-## Combined Goal 5 Story
+## Combined Goal 1 + 5 Story
 
-Current: 32.4 GB model + 22.5 GB KV at 1M = 54.9 GB (exceeds 48 GB).
+Current: 17.2 GB model + 22.5 GB KV at 1M = 39.7 GB (barely fits, swap-thrashes at 128K under co-tenancy).
 
-After ShadowKV + DuoAttention:
-- Streaming heads (59%): ring buffer ~0.1 GB (256 tokens × 4 heads × 64 dim × fp16)
-- Retrieval heads K (41%): SVD-compressed to 35% → 41% × 11.25 GB × 0.35 = 1.6 GB
+### Path A: MLA joint compression (preferred, Task 53 validated)
+- Joint KV low-rank: rank 241/1024 (24%) → **5.3 GB** at 1M
+- Total: 17.2 + 5.3 = **22.5 GB** — fits with 25 GB headroom
+- 128K context: ~0.7 GB KV → trivially fits even under heavy co-tenancy
+
+### Path B: ShadowKV + DuoAttention (fallback)
+- Streaming heads (59%): ring buffer ~0.1 GB
+- Retrieval heads K (41%): SVD-compressed to 45% → 41% × 11.25 GB × 0.45 = 2.1 GB
 - Retrieval heads V: full 3-bit → 41% × 11.25 GB = 4.6 GB
-- Total KV: 0.1 + 1.6 + 4.6 = **6.3 GB** (was 22.5 GB, **72% savings**)
-- Total: 32.4 + 6.3 = **38.7 GB** (fits in 48 GB with 9.3 GB headroom)
+- Total KV: 0.1 + 2.1 + 4.6 = **6.8 GB** (70% savings)
+- Total: 17.2 + 6.8 = **24.0 GB** (fits with 24 GB headroom)
 
 ## Data Sources
 
 | File | What it measures | Task |
 |------|-----------------|------|
-| `research/shadowkv_rank_20260413.json` | Per-layer SVD rank at 99/99.5/99.9% energy | 44 |
+| `research/mla_rank_20260415.json` | Per-layer K+V+KV joint SVD rank at 99/99.9% energy | 53 |
+| `research/shadowkv_rank_20260413.json` | Per-layer K-only SVD rank at 99/99.5/99.9% energy | 44 |
 | `research/MLX_ATTN_DISPATCH.md` | MLX SDPA kernel dispatch (AMX vs vector) | 30 |
 | `research/mlx_softmax_audit.json` | mx.softmax vs SDPA vs unfused at production shapes | 87 |
 | `research/KV_FRAGMENTATION.md` | Metal active vs peak memory at 4K/16K/64K | 31 |
