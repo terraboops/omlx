@@ -103,8 +103,13 @@ def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32,
 
 
 def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
-             use_caote=False, segment_size=0):
+             use_caote=False, segment_size=0, skip_baseline=False):
     """Run one SnapKV compaction test at given context length and keep ratio.
+
+    Args:
+        skip_baseline: Skip the expensive baseline generation (for 64K+ contexts
+            where O(n²) baseline prefill takes 30+ minutes). When True, only runs
+            the SnapKV path and checks needle retrieval without token agreement.
 
     Returns dict with results.
     """
@@ -126,15 +131,20 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
                 f"({keep_count} tokens), scoring: {scoring_label}")
 
     # --- Baseline: generate without eviction ---
-    gc.collect(); mx.clear_cache()
-    cache_base = [KVCache() for _ in range(n_layers)]
-    base_tokens = generate_tokens(model, tokenizer, input_ids, cache_base, n_tokens=32)
-    base_text = tokenizer.decode(base_tokens)
-    metal_baseline = mx.get_active_memory() / 1e9
-    del cache_base; gc.collect(); mx.clear_cache()
+    base_tokens = None
+    base_text = ""
+    if skip_baseline:
+        logger.info(f"  Baseline: SKIPPED (--skip-baseline, context too long for O(n²))")
+    else:
+        gc.collect(); mx.clear_cache()
+        cache_base = [KVCache() for _ in range(n_layers)]
+        base_tokens = generate_tokens(model, tokenizer, input_ids, cache_base, n_tokens=32)
+        base_text = tokenizer.decode(base_tokens)
+        metal_baseline = mx.get_active_memory() / 1e9
+        del cache_base; gc.collect(); mx.clear_cache()
 
-    logger.info(f"  Baseline Metal after gen: {metal_baseline:.2f} GB")
-    logger.info(f"  Baseline output: {base_text[:80]!r}")
+        logger.info(f"  Baseline Metal after gen: {metal_baseline:.2f} GB")
+        logger.info(f"  Baseline output: {base_text[:80]!r}")
 
     # --- SnapKV: prefill with Q capture, compact, generate ---
     gc.collect(); mx.clear_cache()
@@ -205,15 +215,20 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
 
     # Check NIAH
     needle_found = needle.lower() in skv_text.lower()
-    base_needle = needle.lower() in base_text.lower()
+    base_needle = needle.lower() in base_text.lower() if base_text else None
 
-    # Token agreement
-    agree = sum(1 for a, b in zip(base_tokens, skv_tokens) if a == b)
-    agreement = agree / max(len(base_tokens), 1) * 100
+    # Token agreement (only if baseline was run)
+    if base_tokens:
+        agree = sum(1 for a, b in zip(base_tokens, skv_tokens) if a == b)
+        agreement = agree / max(len(base_tokens), 1) * 100
+    else:
+        agreement = -1  # baseline skipped
 
-    logger.info(f"  Needle in baseline:   {base_needle}")
+    if base_needle is not None:
+        logger.info(f"  Needle in baseline:   {base_needle}")
     logger.info(f"  Needle in SnapKV:     {needle_found}")
-    logger.info(f"  Token agreement:      {agreement:.0f}%")
+    if agreement >= 0:
+        logger.info(f"  Token agreement:      {agreement:.0f}%")
 
     # Memory savings check
     memory_saved_pct = (metal_before_compact - metal_after_compact) / max(metal_before_compact, 0.01) * 100
@@ -254,6 +269,8 @@ def main():
                         help="Use CAOTE scoring (attention × value distinctiveness)")
     parser.add_argument("--segment-size", type=int, default=0,
                         help="BUZZ segmented eviction: per-segment top-K (0=global)")
+    parser.add_argument("--skip-baseline", action="store_true", default=False,
+                        help="Skip baseline generation (for 64K+ where O(n²) is too slow)")
     args = parser.parse_args()
 
     keep_ratios = [float(r) for r in args.keep_ratios.split(",")]
@@ -289,7 +306,8 @@ def main():
     for ratio in keep_ratios:
         result = run_test(model, tokenizer, args.context, ratio,
                           use_caote=args.caote,
-                          segment_size=args.segment_size)
+                          segment_size=args.segment_size,
+                          skip_baseline=args.skip_baseline)
         results.append(result)
 
     elapsed = time.perf_counter() - t0
