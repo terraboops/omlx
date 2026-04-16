@@ -136,19 +136,59 @@ def snapkv_select(
     # Top-k selection
     top_k_indices = mx.argpartition(-pooled, kth=k_selectable, axis=-1)[:, :k_selectable]
 
-    # Build keep mask
+    # Build keep indices (sorted for cache compaction)
+    # Union top-k across batch (B=1 for inference)
+    all_indices = set()
+    top_k_np = top_k_indices.tolist() if hasattr(top_k_indices, 'tolist') else [[]]
+    for b_indices in top_k_np:
+        if isinstance(b_indices, list):
+            all_indices.update(b_indices)
+        else:
+            all_indices.add(int(b_indices))
+
+    # Add always-keep-last positions
+    for pos in range(selectable, T):
+        all_indices.add(pos)
+
+    # Build boolean mask
     keep_mask = mx.zeros((B, T), dtype=mx.bool_)
-
-    # Mark selected tokens
-    for b in range(B):
-        for idx in range(k_selectable):
-            pos = top_k_indices[b, idx]
-            keep_mask = keep_mask.at[b, pos].add(mx.array(True))
-
-    # Always keep last tokens
-    keep_mask = keep_mask.at[:, selectable:].add(mx.ones((B, always_keep_last), dtype=mx.bool_))
+    sorted_indices = sorted(all_indices)
+    for pos in sorted_indices:
+        keep_mask = keep_mask.at[:, pos].add(mx.ones((B,), dtype=mx.bool_))
 
     return keep_mask
+
+
+def get_keep_indices(keep_mask: mx.array) -> list[int]:
+    """Extract sorted keep indices from a mask (for cache compaction)."""
+    mask_np = keep_mask[0].tolist() if keep_mask.shape[0] > 0 else []
+    return [i for i, v in enumerate(mask_np) if v]
+
+
+def compact_cache(cache: list, keep_indices: list[int]) -> None:
+    """Compact KV cache in-place, keeping only selected token positions.
+
+    This is the core operation for SnapKV: after computing importance
+    and selecting which tokens to keep, rewrite the cache to contain
+    only those positions. The kept tokens retain their exact values
+    (zero approximation error).
+
+    Args:
+        cache: List of KVCache objects (one per layer)
+        keep_indices: Sorted list of token positions to keep
+    """
+    idx = mx.array(keep_indices)
+    for c in cache:
+        keys = c.state[0]    # (B, H_kv, T, D)
+        values = c.state[1]  # (B, H_kv, T, D)
+
+        # Gather selected positions: (B, H_kv, len(idx), D)
+        keys_compact = keys[:, :, idx, :]
+        values_compact = values[:, :, idx, :]
+
+        c.state = (keys_compact, values_compact)
+
+    mx.eval(*[c.state[0] for c in cache], *[c.state[1] for c in cache])
 
 
 def count_kept(keep_mask: mx.array) -> int:

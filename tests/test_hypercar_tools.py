@@ -842,3 +842,16 @@ class TestSnapKVSource:
         r50 = [r for r in results["results"] if r["keep_ratio"] == 0.5]
         assert r50, "No 50% keep ratio in results"
         assert r50[0]["needle_preserved"] is True
+
+    def test_get_keep_indices_exists(self):
+        """Must have get_keep_indices for cache compaction."""
+        assert "def get_keep_indices(" in _snapkv_src
+
+    def test_compact_cache_exists(self):
+        """Must have compact_cache for in-place KV eviction."""
+        assert "def compact_cache(" in _snapkv_src
+
+    def test_compact_preserves_exact_values(self):
+        """Compact must use gather (indexing), not projection."""
+        assert "idx" in _snapkv_src
+        assert "[:, :, idx, :]" in _snapkv_src or "gather" in _snapkv_src
