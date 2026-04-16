@@ -29,7 +29,7 @@ any of these — even to improve another — needs explicit justification.
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | **Validated to 64K with SnapKV+CAOTE** (NIAH PASS, 100% agreement, 4.5 GB saved). At 128K@25% keep: KV 1.6 GB, total ~19 GB (no swap). At 1M native 3-bit @25%: KV ~5.6 GB, total ~23 GB. | Run 128K NIAH with `--snapkv-keep --caote` to close Goal 1 |
+| 1 | 1M context | **VALIDATED TO 128K** — NIAH PASS with SnapKV+CAOTE (9 GB saved, 44.6→35.6 GB Metal). At 1M native 3-bit @25%: KV ~5.6 GB, total ~23 GB — fits 48 GB. | Validate 256K+ with native 3-bit KV mode |
 | 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62-64%** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
 | 3 | 50 tok/s decode constant | **52.7 tok/s with DuoKVCache — GOAL MET**. | Met in duo mode. Under co-tenancy drops proportionally. |
 | 4 | 500 tok/s prefill constant | **96 tok/s at 2K (duo), 803 at 4K, 501 at 16K — GOAL MET** in duo mode. | O(n²) attention still applies at 64K+. |

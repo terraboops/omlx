@@ -506,9 +506,15 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-- **Goal 1 validation**: SnapKV+CAOTE 128K NIAH run (GPU, background — chunked prefill fix applied)
+_(none)_
 
 ## Completed
+
+- **Goal 1: 128K NIAH PASS** — SnapKV+CAOTE physical compaction at 128K (2026-04-16)
+  - 128K@25% keep: **NIAH PASS**, needle "SNAPKV-COMPACT-7743" found correctly
+  - **9.03 GB Metal saved** (44.6 → 35.6 GB, 20% reduction)
+  - 122,235 → 30,558 tokens kept (25%)
+  - At 1M native 3-bit @25%: projects to KV ~5.6 GB, total ~23 GB — **fits in 48 GB**
 
 - **Task 57: PyramidKV per-layer budget vector** — exponential-decay schedule shipped (2026-04-16)
   - `omlx/pyramid_budget.py`: compute_budget_vector() + budget_for_layer() + format_budget_summary()
