@@ -1,15 +1,15 @@
 # Optimization Decision Matrix
 
-Consolidated probe results from 40 completed tasks.
+Consolidated probe results from 44 completed tasks.
 All measurements on Qwen3-Coder-30B-A3B-Instruct-8bit, M4 Pro 48GB, MLX 0.31.1.
-Last updated: 2026-04-15.
+Last updated: 2026-04-16.
 
 ## Summary Table
 
 | Technique | Task | Viable? | Savings | Quality Impact | Priority |
 |-----------|------|---------|---------|---------------|----------|
 | **DuoKVCache** (fp16 + streaming ring buffer) | 13 | **SHIPPED** | Zero swap, +17% quality | MMLU-Pro 48→62%, HumanEval 90→95% | **DEFAULT** |
-| **SnapKV** (attention-guided eviction + real Q) | 46 | **BREAKTHROUGH — 100% at 25% keep** | 75% KV eviction, zero error on kept | 100% NIAH, Math, Code at all ratios | **CRITICAL for Goal 1** |
+| **SnapKV + CAOTE** (value-aware eviction + re-RoPE compaction) | 46, 100 | **SHIPPED** | 75% KV eviction, physical compaction | 100% at 25% keep (CAOTE fixes 16K NIAH fail) | **CRITICAL for Goal 1** |
 | **MLA joint KV** (post-hoc SVD) | 53 | **QUALITY FAIL** | 76% rank compression | 7% token agreement — errors compound | SKIP |
 | **ShadowKV** (K-only post-hoc SVD) | 44 | **POOR TRADEOFF** | 3% K at 82% agree | NIAH 16% at 34% compression | SKIP |
 | **DuoAttention** (streaming head calibration) | 12 | **SHIPPED** | 59% streaming heads | Feeds DuoKVCache | **DONE** |
@@ -31,13 +31,11 @@ Last updated: 2026-04-15.
 2. **DuoAttention** — 59% streaming heads. Feeds DuoKVCache. Calibration table shipped.
 3. **Metal warmup** — Decode 20→45 tok/s. Default since commit 7a62b53.
 4. **Spec-decode gate** — Cost model calibrated. Predicts when EAGLE-2/TriForce helps.
+5. **SnapKV + CAOTE** — Physical compaction with re-RoPE + value-aware scoring.
+   100% agreement at 25% keep (4K/16K), CAOTE fixes attention-only's 16K NIAH failure.
+   `--snapkv-keep K --caote` on server. **This is the shipped path to Goal 1 (1M context).**
 
 ### Tier 2: Next Up (validated, ready to build)
-5. **SnapKV with real Q capture** — **100% agreement at 25% keep** across NIAH,
-   Math, and Code. The Q capture hook + attention masking pipeline is fully validated.
-   Remaining work: custom SparseKVCache for physical compaction (memory savings).
-   At 128K with 25% keep: KV = 1.4 GB, model+KV = 18.6 GB — fits trivially.
-   **This is the clear path to Goal 1 (1M context).**
 6. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
    needed (Task 29, cloud GPU). Predicted 2.31x decode speedup at 70% accept rate.
 7. **Quest** — argpartition <200µs at 64K pages. Wire into decode path for sublinear
