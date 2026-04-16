@@ -31,50 +31,104 @@ logger = logging.getLogger(__name__)
 MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
 
 
+def patch_model_for_eviction_mask(model, eviction_mask_1d):
+    """Monkey-patch model to inject eviction mask into attention.
+
+    Patches create_attention_mask in the model's module to merge
+    the eviction mask with the standard causal mask.
+
+    Args:
+        eviction_mask_1d: (T,) boolean array — True=keep, False=evict.
+            Set to None to remove the patch.
+    """
+    import importlib
+    qwen_mod = importlib.import_module("mlx_lm.models.qwen3_moe")
+    original_create_mask = qwen_mod.create_attention_mask
+
+    if eviction_mask_1d is None:
+        # Remove patch
+        if hasattr(qwen_mod, '_original_create_attention_mask'):
+            qwen_mod.create_attention_mask = qwen_mod._original_create_attention_mask
+        return
+
+    # Save original
+    qwen_mod._original_create_attention_mask = original_create_mask
+
+    # Eviction additive mask: 0 for kept, -inf for evicted (bfloat16 for SDPA)
+    evict_additive = mx.where(
+        mx.array(eviction_mask_1d),
+        mx.array(0.0, dtype=mx.bfloat16),
+        mx.array(float('-inf'), dtype=mx.bfloat16))
+
+    def patched_create_attention_mask(h, cache=None, **kwargs):
+        N = h.shape[1]  # current chunk length
+
+        if N == 1:
+            # Decode: single token query attends to cached KV + itself.
+            # cache.offset is BEFORE update_and_fetch adds the new token,
+            # but SDPA gets keys AFTER update_and_fetch (offset+1 entries).
+            # Return mask for offset+1 positions.
+            if cache is not None:
+                T_after = cache.offset + 1  # will be this many KV entries after update
+                T_evict = len(eviction_mask_1d)
+                if T_after > T_evict:
+                    extra = mx.zeros(T_after - T_evict, dtype=mx.bfloat16)
+                    full_mask = mx.concatenate([evict_additive[:T_evict], extra])
+                else:
+                    full_mask = evict_additive[:T_after]
+                return full_mask.reshape(1, 1, 1, T_after)
+            return None
+
+        # Prefill: N tokens attending to N tokens (causal + eviction)
+        T = N
+        if T <= len(eviction_mask_1d):
+            # Causal mask (bfloat16 for SDPA compatibility)
+            causal = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.bfloat16), k=1)
+            # Eviction: broadcast (1, T) to (T, T) — each query position
+            # sees the same eviction pattern for key positions
+            evict_2d = evict_additive[:T].reshape(1, T)
+            combined = causal + evict_2d
+            return combined
+        else:
+            return original_create_mask(h, cache=cache, **kwargs)
+
+    qwen_mod.create_attention_mask = patched_create_attention_mask
+
+
 def generate_with_mask(model, tokenizer, input_ids, eviction_mask, n_tokens=32):
     """Generate tokens using a pre-computed eviction mask.
 
-    The eviction mask sets evicted KV positions to -inf in the attention,
-    preventing the model from using them while keeping the cache intact.
+    Monkey-patches create_attention_mask to inject eviction mask into
+    the model's standard attention pipeline. Cache stays intact.
     """
     from mlx_lm.models.cache import KVCache
     n_layers = len(model.layers)
 
-    cache = [KVCache() for _ in range(n_layers)]
-    x = mx.array([input_ids])
+    # Apply eviction mask patch
+    patch_model_for_eviction_mask(model, eviction_mask)
 
-    # Prefill — pass eviction mask as attention mask
-    # MLX attention uses additive mask: 0 = attend, -inf = ignore
-    T = len(input_ids)
-    if eviction_mask is not None:
-        # eviction_mask: (T,) boolean, True = keep, False = evict
-        # Convert to additive mask: (1, 1, T, T) for broadcast
-        mask_1d = mx.where(mx.array(eviction_mask), mx.array(0.0), mx.array(float('-inf')))
-        # Each query can attend to all kept positions up to its own index (causal)
-        attn_mask = mx.broadcast_to(mask_1d.reshape(1, 1, 1, T), (1, 1, T, T))
-        # Apply causal: query at pos i can only attend to pos <= i
-        causal = mx.triu(mx.full((T, T), float('-inf')), k=1)
-        attn_mask = attn_mask + causal.reshape(1, 1, T, T)
-    else:
-        attn_mask = None
-
-    logits = model(x, mask=attn_mask, cache=cache)
-    mx.eval(logits)
-
-    # Decode — new tokens can attend to all kept positions + themselves
-    tokens = []
-    for _ in range(n_tokens):
-        token = mx.argmax(logits[:, -1, :], axis=-1)
-        mx.eval(token)
-        tokens.append(token.item())
-        # Decode tokens get no mask — they attend to whatever is in cache
-        # (including evicted positions, but those had -inf during prefill
-        # so their V contributions were zeroed out in the residual stream)
-        logits = model(token.reshape(1, 1), cache=cache)
+    try:
+        cache = [KVCache() for _ in range(n_layers)]
+        x = mx.array([input_ids])
+        logits = model(x, cache=cache)
         mx.eval(logits)
 
-    del cache; gc.collect(); mx.clear_cache()
-    return tokens
+        # Keep eviction mask active during decode — new tokens must also
+        # not attend to evicted positions (their V values are corrupted
+        # from the masked prefill pass)
+        tokens = []
+        for _ in range(n_tokens):
+            token = mx.argmax(logits[:, -1, :], axis=-1)
+            mx.eval(token)
+            tokens.append(token.item())
+            logits = model(token.reshape(1, 1), cache=cache)
+            mx.eval(logits)
+
+        del cache; gc.collect(); mx.clear_cache()
+        return tokens
+    finally:
+        # Always clean up patch
+        patch_model_for_eviction_mask(model, None)
 
 
 def main():
