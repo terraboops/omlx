@@ -31,9 +31,11 @@ Last updated: 2026-04-16.
 2. **DuoAttention** — 59% streaming heads. Feeds DuoKVCache. Calibration table shipped.
 3. **Metal warmup** — Decode 20→45 tok/s. Default since commit 7a62b53.
 4. **Spec-decode gate** — Cost model calibrated. Predicts when EAGLE-2/TriForce helps.
-5. **SnapKV + CAOTE** — Physical compaction with re-RoPE + value-aware scoring.
-   100% agreement at 25% keep (4K/16K), CAOTE fixes attention-only's 16K NIAH failure.
-   `--snapkv-keep K --caote` on server. **This is the shipped path to Goal 1 (1M context).**
+5. **SnapKV + CAOTE + BUZZ + submodular** — Full eviction stack with 6 composable layers.
+   fp16 mode: 100% at 25% keep through 128K (4.5-9 GB saved). NIAH PASS at all lengths.
+   Native 3-bit mode: PASS at 4K/16K, **FAIL at 64K** — dequant noise after re-RoPE
+   causes output corruption. Fix needed: capture fp16 K for compaction (not just scoring).
+   `--snapkv-keep K --caote --segmented-evict 512` on server.
 
 ### Tier 2: Next Up (validated, ready to build)
 6. **EAGLE-2** — Tree masks work in SDPA (1.03-1.12x overhead). Draft-head training
