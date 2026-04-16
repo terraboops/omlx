@@ -1,0 +1,8 @@
+068159570951b26f88b65867453c7d85a34d8c04
+ M TASKS.md
+ M omlx/hypercar_server.py
+ M omlx/patches/snapkv.py
+ M tests/test_hypercar_tools.py
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run70_2026-04-16T08-37/console.txt
+?? bench/snapshots/run70_2026-04-16T08-37/git.txt
