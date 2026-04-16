@@ -2476,3 +2476,56 @@ _(none)_
 - **Effort**: M (4-7 days: 2d for the trace-diff utility and intervention-proposal scaffold, 1-2d for the verifier re-run wiring, 1d for the fine-tune integration, 1-2d for the calibration vs SWE-Shepherd)
 - **Depends on**: task 59 (OPLoRA safety rail) is the outer envelope and must already be in place. Composes with task 78 (SWE-Shepherd) but does not require it — they target different points in the TTT loop.
 - **Risk**: code-verification trajectories are sparser and more multi-modal than math-verification trajectories — the "first wrong step" is often ambiguous when half the test suite was failing for orthogonal reasons. Mitigation: the single-test-failure scope above. Second risk: re-running modified trajectories doubles the verifier compute cost during TTT training. Mitigation: only run the intervention loop on trajectories where the model's confidence-of-wrongness is highest, i.e., the trajectories where the most learning signal is available.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 20, 2026-04-15)
+
+### 90. MT-GRPO turn-level credit assignment in TTT engine
+- **Goal**: 2 (intelligence via TTT — the credit-assignment bottleneck is the single largest gap in `omlx/ttt.py`)
+- **Derived from**: Reinforcing Multi-Turn Reasoning in LLM Agents via Turn-Level Reward Design (2505.11821). The paper extends GRPO to MT-GRPO with per-turn advantage estimation using intermediate rewards, achieving higher accuracy and faster convergence than trajectory-level GRPO on multi-turn tool-use tasks.
+- **Change**:
+  - In `omlx/ttt.py`, refactor the reward computation from terminal-only (pass/fail at end of trajectory) to per-turn (partial test suite pass rate after each tool call). The existing code verifier already runs after each action — the change is to *record* the intermediate verifier output as a reward signal rather than discarding it.
+  - Replace the trajectory-level GRPO advantage estimator with a GAE-lambda estimator over the per-turn reward stream. The lambda parameter controls the bias-variance tradeoff: lambda=1.0 recovers trajectory-level; lambda=0.0 is pure per-turn. Start with lambda=0.95 (the paper's recommended default) and calibrate.
+  - Add a `--turn-level-ca` flag to the TTT engine (default off until bench gates pass). When on, the engine computes per-turn advantages and uses them for the weight update; when off, it falls back to the existing terminal-only path.
+  - The per-turn reward function is: `r_t = (tests_passing_after_turn_t / total_tests) - (tests_passing_after_turn_{t-1} / total_tests)`. This is the marginal test-pass-rate improvement at each turn, which sums to the terminal reward by construction.
+- **Verify**:
+  - Unit test: a synthetic 5-turn trajectory where turns 1-3 each pass one additional test and turns 4-5 break a previously-passing test. The per-turn reward should be positive for turns 1-3 and negative for turns 4-5; the trajectory-level reward should be positive (net 1 test gained). MT-GRPO should assign higher advantage to turns 1-3 than trajectory-level GRPO does.
+  - End-to-end metric: TTT engine HumanEval pass rate improves by >= 3pp with `--turn-level-ca` enabled vs disabled, on the same set of problems with the same compute budget.
+  - Convergence metric: MT-GRPO reaches 90% of final performance in <= 70% of the training steps that trajectory-level GRPO requires, measured on a held-out validation set.
+  - Stability gate: OPLoRA safety rail (task 59) still triggers correctly; the per-turn reward doesn't cause gradient spikes that escape the orthogonal projection.
+- **Effort**: M (4-7 days: 1d for the per-turn reward instrumentation, 1d for the GAE-lambda estimator, 1-2d for the flag plumbing and integration, 1-2d for calibration and bench validation)
+- **Depends on**: task 59 (OPLoRA safety rail) as the outer envelope. Composes with task 78 (SWE-Shepherd PRM) — PRM scores can replace or supplement the partial-test-pass-rate reward. Composes with task 91 (asymmetric critic) — the critic's runtime signal is another intermediate reward source.
+- **Risk**: the marginal-test-pass-rate reward is noisy for tasks where tests have complex interdependencies (passing test 3 requires passing test 1, so turn 3's reward is zero even though the agent's action was correct). Mitigation: use the cumulative pass rate rather than the marginal delta as an alternative reward formulation, and compare both in the calibration phase.
+
+### 91. Asymmetric actor-critic runtime supervisor for TTT engine
+- **Goal**: 2 (intelligence via TTT — privileged critic provides denser reward signal than the actor can self-produce)
+- **Derived from**: Asymmetric Actor-Critic for Multi-turn LLM Agents (2604.00304). The paper demonstrates that a small open-source critic (7B-scale) fine-tuned on actor traces can provide runtime supervision within multi-turn trajectories, significantly improving one-shot task success on tau-bench and UserBench.
+- **Change**:
+  - Fine-tune a small critic model (e.g., Qwen3-Coder-3B or similar) on TTT rollout traces. The training data is: (trajectory prefix up to turn t, test runner output at turn t, next K turns of rollout) -> quality score. The critic sees the test runner output (privileged signal the actor doesn't get at generation time) and the future trajectory (hindsight signal).
+  - In `omlx/ttt.py`, add a critic-query step at each turn boundary during TTT rollouts. After the actor generates an action and the verifier runs, pass the (prefix, verifier output, action) tuple to the critic and get a quality score. This score serves as an intermediate reward signal for MT-GRPO (task 90).
+  - Add a `--critic-model <path>` flag to the TTT engine. When set, the critic is loaded alongside the actor and queried at each turn. When unset, the engine falls back to the verifier-only reward path.
+  - The critic runs on the same Metal device as the actor. At 3B parameters, it requires ~3 GB of memory — well within the 6 GB headroom available in duo mode.
+- **Verify**:
+  - Critic quality: on a held-out set of TTT rollout traces, the critic's quality score correlates with the terminal pass/fail outcome at Pearson r >= 0.6. The critic should be better-than-random at predicting failure *before* the trajectory completes.
+  - End-to-end metric: TTT engine HumanEval pass rate improves by >= 2pp with `--critic-model` enabled vs disabled (on top of MT-GRPO gains from task 90).
+  - Latency gate: the critic query adds <= 100ms per turn (3B model inference at B=1 should be ~50ms on M4 Pro). The total TTT rollout time increases by <= 15%.
+  - Memory gate: peak Metal memory with actor + critic loaded stays under the 80% system-memory limit (38.4 GB on 48 GB). Duo mode: 35.1 GB actor + 3 GB critic = 38.1 GB — tight but within limits.
+- **Effort**: M-L (1-2 weeks: 2-3d for trace collection and critic training data preparation, 2-3d for critic fine-tuning, 2-3d for runtime integration into TTT, 1-2d for calibration and memory validation)
+- **Depends on**: task 90 (MT-GRPO) should land first so the critic's output has a consumer. Task 59 (OPLoRA) as outer safety envelope. Composes with task 78 (SWE-Shepherd) — the critic can be initialized from SWE-Shepherd PRM weights if available.
+- **Risk**: 38.1 GB total is very close to the 38.4 GB limit in duo mode. Under co-tenancy, this will breach. Mitigation: (a) use native 3-bit KV mode for the critic to reduce its footprint, (b) only load the critic during TTT training phases, not during normal inference serving.
+
+### 92. ECHO hindsight trajectory rewriting for TTT sample efficiency
+- **Goal**: 2 (intelligence via TTT — the sample-efficiency bottleneck is the second-largest gap after credit assignment)
+- **Derived from**: Sample-Efficient Online Learning in LM Agents via Hindsight Trajectory Rewriting / ECHO (2510.10304). The paper adapts HER to LM agents, converting failed trajectories into synthetic successes for alternative goals that the trajectory *did* achieve, outperforming Reflexion and AWM by up to 80%.
+- **Change**:
+  - In `omlx/ttt.py`, after a failed trajectory (terminal verifier returns fail), add an ECHO hindsight phase. The phase uses the actor model itself to: (a) identify which tests the trajectory *did* pass (the "achieved goal"), (b) propose a goal description that matches the achieved subset (e.g., "implement the sorting function but skip the edge-case handler"), (c) rewrite the trajectory prompt to target the achieved goal instead of the original goal.
+  - Store the rewritten (prompt, trajectory) pair in a hindsight replay buffer alongside the original successful trajectories. The TTT training step samples from both the success buffer and the hindsight buffer, with a mixing ratio parameter `--hindsight-ratio` (default 0.3).
+  - The hindsight rewriting is a single LM call per failed trajectory: "Given this code trajectory that passed tests [1,3] but failed tests [2,4,5], rewrite the task description to only require the functionality tested by tests [1,3]." This is cheap — one generation call reusing the existing inference infrastructure.
+  - Scope the first prototype to HumanEval-style single-function tasks where the "achieved goal" is a strict subset of the test suite. Multi-file tasks (SWE-bench style) are deferred because the goal-rewriting prompt is harder to specify.
+- **Verify**:
+  - Unit test: a synthetic trajectory that passes 3 of 5 tests. The hindsight rewrite should produce a goal description that, when used as a new prompt, generates a trajectory passing exactly tests [1,3] (or a superset). The rewrite should succeed >= 70% of the time.
+  - Sample efficiency metric: with `--hindsight-ratio 0.3`, the TTT engine reaches the same HumanEval pass rate as the baseline using <= 60% of the rollout budget (fewer total trajectories needed because failures now contribute positive signal).
+  - Quality gate: the hindsight-augmented training must not *degrade* performance vs the baseline at the same total compute budget. If it does, the mixing ratio needs recalibration.
+  - Stability gate: OPLoRA safety rail (task 59) still triggers correctly with hindsight-augmented training data.
+- **Effort**: M (4-7 days: 1-2d for the hindsight rewriting prompt engineering and LM call, 1d for the replay buffer and mixing logic, 1-2d for integration into the TTT training loop, 1d for calibration and bench validation)
+- **Depends on**: task 59 (OPLoRA safety rail) as outer envelope. Independent of tasks 90 and 91 — targets sample efficiency rather than credit assignment, touches a different part of the TTT loop (post-rollout data augmentation rather than reward computation).
+- **Risk**: the hindsight rewriting may produce goal descriptions that are too easy (trivial subsets of the test suite) or too hard (the trajectory didn't actually demonstrate the claimed functionality). Mitigation: validate each rewritten pair by re-running the rewritten trajectory through the verifier against the rewritten goal; discard pairs where the verification fails. This adds one verifier call per rewrite but ensures data quality.
