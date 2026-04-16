@@ -2477,6 +2477,17 @@ _(none)_
 - **Depends on**: task 59 (OPLoRA safety rail) is the outer envelope and must already be in place. Composes with task 78 (SWE-Shepherd) but does not require it — they target different points in the TTT loop.
 - **Risk**: code-verification trajectories are sparser and more multi-modal than math-verification trajectories — the "first wrong step" is often ambiguous when half the test suite was failing for orthogonal reasons. Mitigation: the single-test-failure scope above. Second risk: re-running modified trajectories doubles the verifier compute cost during TTT training. Mitigation: only run the intervention loop on trajectories where the model's confidence-of-wrongness is highest, i.e., the trajectories where the most learning signal is available.
 
+### 90b. Attention-weighted codec selection in DuoKVCache
+- **Goal**: 1 (1M context), 5 (swap pressure), 6 (48GB fit)
+- **Derived from**: Session Apr 15 research arc — MLA fail (7%), ShadowKV poor tradeoff, SnapKV validated. Design note at `research/attention_weighted_codec_selection.md`.
+- **Change**:
+  - Extend DuoKVCache so retrieval heads (41%) use SnapKV eviction (Task 46's `snapkv_select` at prefill end, full precision on kept tokens) while streaming heads (59%) use ShadowKV SVD at rank 85 (34% K compression, 100% code agreement — streaming heads don't do retrieval).
+  - New `--kv-mode duo-compressed` flag on hypercar_server and bench.
+  - The per-head-type codec boundary is the DuoAttention classification (already computed, Task 12).
+- **Verify**: `hypercar_bench --full --kv-mode duo-compressed` passes all gates. KV memory at 128K drops by ≥ 40% vs `--kv-mode duo`. NIAH 4K/16K still PASS. Code Intel ≥ 3/5.
+- **Effort**: M (depends on Task 46 SnapKV compact landing first)
+- **Depends on**: Task 46 (SnapKV compact), Tasks 12/13 (DuoAttention, already shipped)
+
 ## Research-derived tasks (from LIT_REVIEW.md pass 20, 2026-04-15)
 
 ### 90. MT-GRPO turn-level credit assignment in TTT engine
