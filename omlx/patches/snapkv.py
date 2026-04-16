@@ -500,8 +500,69 @@ def get_keep_indices(keep_mask: mx.array) -> list[int]:
     return [i for i, v in enumerate(mask_np) if v]
 
 
+def _rerope_keys(keys: mx.array, old_positions: list[int],
+                  rope_dims: int, rope_base: float = 1000000.0) -> mx.array:
+    """Re-encode RoPE on compacted keys from original to sequential positions.
+
+    After physical compaction, keys have RoPE for their original positions
+    but sit at new sequential positions [0, 1, ..., N-1]. This function
+    applies a per-token rotation shift to correct the encoding.
+
+    RoPE rotations compose additively: rope(rope(x, a), b) = rope(x, a+b).
+    So to shift from old_pos to new_pos: apply rope(x, new_pos - old_pos).
+
+    Args:
+        keys: (B, H, N, D) — keys with RoPE at original positions
+        old_positions: list of original position indices
+        rope_dims: number of dimensions that have RoPE applied
+        rope_base: RoPE base frequency (Qwen3-Coder uses 1000000)
+
+    Returns:
+        keys with RoPE corrected to sequential positions [0, 1, ..., N-1]
+    """
+    B, H, N, D = keys.shape
+    if N == 0:
+        return keys
+
+    # Compute per-position shifts: new_pos[i] - old_pos[i]
+    new_positions = mx.arange(N)
+    old_pos_arr = mx.array(old_positions[:N])
+    shifts = new_positions - old_pos_arr  # (N,) — mostly negative
+
+    # Compute rotation frequencies
+    half_d = rope_dims // 2
+    freqs = 1.0 / (rope_base ** (mx.arange(0, half_d).astype(mx.float32) * 2 / rope_dims))
+
+    # Angles: shifts (N,) x freqs (half_d,) → (N, half_d)
+    angles = shifts[:, None].astype(mx.float32) * freqs[None, :]  # (N, half_d)
+    cos_a = mx.cos(angles).astype(keys.dtype)  # (N, half_d)
+    sin_a = mx.sin(angles).astype(keys.dtype)
+
+    # Apply rotation to key pairs: non-traditional RoPE (stride=half_d)
+    # keys[..., :half_d] and keys[..., half_d:rope_dims] are the pairs
+    k1 = keys[:, :, :, :half_d]      # (B, H, N, half_d)
+    k2 = keys[:, :, :, half_d:rope_dims]
+
+    # Reshape cos/sin for broadcasting: (1, 1, N, half_d)
+    cos_a = cos_a[None, None, :, :]
+    sin_a = sin_a[None, None, :, :]
+
+    # RoPE rotation: [k1', k2'] = [k1*cos - k2*sin, k2*cos + k1*sin]
+    k1_new = k1 * cos_a - k2 * sin_a
+    k2_new = k2 * cos_a + k1 * sin_a
+
+    # Reassemble: rope dims + pass-through dims
+    if rope_dims < D:
+        result = mx.concatenate([k1_new, k2_new, keys[:, :, :, rope_dims:]], axis=-1)
+    else:
+        result = mx.concatenate([k1_new, k2_new], axis=-1)
+
+    return result
+
+
 def compact_cache(cache: list, keep_indices: list[int],
-                   original_offset: int | None = None) -> None:
+                   original_offset: int | None = None,
+                   model=None) -> None:
     """Compact KV cache in-place, keeping only selected token positions.
 
     This is the core operation for SnapKV: after computing importance
@@ -509,14 +570,20 @@ def compact_cache(cache: list, keep_indices: list[int],
     only those positions. The kept tokens retain their exact values
     (zero approximation error for fp16; requantization for quantized).
 
+    CRITICAL: Keys have RoPE baked in at their original positions. After
+    compaction, keys are repositioned to [0, 1, ..., N-1] via re-RoPE
+    to maintain correct relative position encoding for decode.
+
     Supports both KVCache (fp16) and QuantizedKVCache (native mode).
-    For QuantizedKVCache: dequantize → gather → requantize per layer.
+    For QuantizedKVCache: dequantize → gather → rerope → requantize.
 
     Args:
         cache: List of KVCache objects (one per layer)
         keep_indices: Sorted list of token positions to keep
         original_offset: Original cache offset before compaction.
             If None, preserved automatically from the first cache entry.
+        model: Model object (used to extract RoPE config). If None,
+            uses Qwen3-Coder defaults (dims=64, base=1e6).
     """
     if not cache:
         return
@@ -524,6 +591,17 @@ def compact_cache(cache: list, keep_indices: list[int],
     # Save original offset BEFORE compaction changes it
     if original_offset is None:
         original_offset = cache[0].offset
+
+    # Extract RoPE config from model
+    rope_dims = 64  # Qwen3-Coder head_dim
+    rope_base = 1000000.0
+    if model is not None:
+        try:
+            attn = model.layers[0].self_attn
+            rope_dims = attn.rope.dims
+            rope_base = attn.rope.base
+        except (AttributeError, IndexError):
+            pass
 
     idx = mx.array(keep_indices)
     new_len = len(keep_indices)
@@ -533,7 +611,7 @@ def compact_cache(cache: list, keep_indices: list[int],
         values_raw = c.state[1]
 
         if isinstance(keys_raw, tuple):
-            # QuantizedKVCache — dequantize, gather, requantize
+            # QuantizedKVCache — dequantize, gather, rerope, requantize
             keys_fp = mx.dequantize(
                 *keys_raw, group_size=c.group_size, bits=c.bits)
             values_fp = mx.dequantize(
@@ -541,6 +619,10 @@ def compact_cache(cache: list, keep_indices: list[int],
 
             keys_compact = keys_fp[:, :, idx, :]
             values_compact = values_fp[:, :, idx, :]
+
+            # Re-encode RoPE from original positions to [0, 1, ..., N-1]
+            keys_compact = _rerope_keys(keys_compact, keep_indices,
+                                        rope_dims, rope_base)
 
             c.keys = mx.quantize(
                 keys_compact, group_size=c.group_size, bits=c.bits)
@@ -552,12 +634,12 @@ def compact_cache(cache: list, keep_indices: list[int],
             keys_compact = keys_raw[:, :, idx, :]
             values_compact = values_raw[:, :, idx, :]
 
+            # Re-encode RoPE from original positions to [0, 1, ..., N-1]
+            keys_compact = _rerope_keys(keys_compact, keep_indices,
+                                        rope_dims, rope_base)
+
             # state.setter updates offset to keys.shape[2]
             c.state = (keys_compact, values_compact)
-
-        # DON'T restore original offset — let offset = compacted length.
-        # Kept K vectors already have their original RoPE baked in, so the
-        # Q-K dot product sees the correct relative distance.
 
     # Force evaluation of compacted state
     to_eval = []
@@ -648,7 +730,7 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64) -> None:
                     captured, cache, obs_window=obs_window)
                 keep_mask = snapkv_select(importance, keep_count)
                 indices = get_keep_indices(keep_mask)
-                compact_cache(cache, indices)
+                compact_cache(cache, indices, model=model)
                 new_len = len(indices)
                 _logger.info(
                     f"SnapKV eviction: {old_offset} -> {new_len} tokens "

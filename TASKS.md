@@ -506,7 +506,7 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-_(none)_
+- **Task 46 (completion)**: GPU validation benchmark for SnapKV physical compaction
 
 ## Completed
 

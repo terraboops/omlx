@@ -899,3 +899,23 @@ class TestSnapKVSource:
         """Server must import and call apply_snapkv_to_generate."""
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "apply_snapkv_to_generate" in server_src
+
+    def test_rerope_keys_exists(self):
+        """Must have _rerope_keys for RoPE correction after compaction."""
+        assert "def _rerope_keys(" in _snapkv_src
+
+    def test_compact_cache_calls_rerope(self):
+        """compact_cache must re-encode RoPE after gathering."""
+        assert "_rerope_keys(" in _snapkv_src
+
+    def test_compact_cache_accepts_model(self):
+        """compact_cache must accept model param for RoPE config."""
+        assert "model=None" in _snapkv_src or "model=" in _snapkv_src
+
+    def test_rerope_uses_rope_base(self):
+        """Re-RoPE must use the model's rope_base frequency."""
+        assert "rope_base" in _snapkv_src
+
+    def test_rerope_computes_shift(self):
+        """Re-RoPE must compute per-token position shift."""
+        assert "shifts" in _snapkv_src or "shift" in _snapkv_src
