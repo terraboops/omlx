@@ -919,3 +919,41 @@ class TestSnapKVSource:
     def test_rerope_computes_shift(self):
         """Re-RoPE must compute per-token position shift."""
         assert "shifts" in _snapkv_src or "shift" in _snapkv_src
+
+    # --- CAOTE (Task 100) ---
+
+    def test_caote_importance_exists(self):
+        """Must have compute_caote_importance for value-aware scoring."""
+        assert "def compute_caote_importance(" in _snapkv_src
+
+    def test_caote_uses_values(self):
+        """CAOTE must access value vectors, not just keys."""
+        assert "_get_fp16_values" in _snapkv_src
+
+    def test_caote_formula_components(self):
+        """CAOTE score = (alpha / (1-alpha)) * ||V_mean - v_j||."""
+        assert "alpha_clamped" in _snapkv_src
+        assert "v_dist" in _snapkv_src or "v_diff" in _snapkv_src
+
+    def test_caote_fast_approximation(self):
+        """FastCAOTE uses mean of all values (not weighted mean)."""
+        assert "mx.mean(values" in _snapkv_src or "V_mean" in _snapkv_src
+
+    def test_caote_flag_in_apply_snapkv(self):
+        """apply_snapkv_to_generate must accept use_caote parameter."""
+        assert "use_caote" in _snapkv_src
+
+    def test_caote_flag_in_server(self):
+        """hypercar_server must have --caote CLI flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--caote" in server_src
+
+    def test_caote_gpu_validation_exists(self):
+        """GPU validation results should exist from benchmark run."""
+        results_path = Path("research/snapkv_compaction_bench.json")
+        assert results_path.exists()
+        import json
+        data = json.loads(results_path.read_text())
+        # Check at least one result used CAOTE scoring
+        has_caote = any(r.get("scoring") == "CAOTE" for r in data.get("results", []))
+        assert has_caote, "No CAOTE results in benchmark output"

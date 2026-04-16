@@ -238,6 +238,93 @@ def _get_fp16_keys(cache_entry) -> mx.array:
     return keys_raw
 
 
+def _get_fp16_values(cache_entry) -> mx.array:
+    """Extract fp16 value tensor from any cache type."""
+    state = cache_entry.state
+    values_raw = state[1]
+
+    if isinstance(values_raw, tuple):
+        return mx.dequantize(
+            *values_raw,
+            group_size=cache_entry.group_size,
+            bits=cache_entry.bits,
+        )
+    return values_raw
+
+
+def compute_caote_importance(
+    captured_queries: dict,
+    cache: list,
+    obs_window: int = 64,
+) -> mx.array:
+    """Compute CAOTE importance: attention × value distinctiveness.
+
+    From CAOTE (arXiv:2504.14051, Theorem 3.2): the eviction cost of
+    token j equals (alpha_j / (1 - alpha_j)) * ||V_mean - v_j||_2,
+    which is the MSE between attention output before and after evicting j.
+
+    FastCAOTE approximation: uses mean of all value vectors instead of
+    the weighted mean. This is O(n*d) per head instead of O(n^2*d).
+
+    Args:
+        captured_queries: dict from install_q_capture_hook (layer_idx → Q)
+        cache: KVCache list (for K and V values)
+        obs_window: Observation window size
+
+    Returns:
+        importance: (B, H_kv, T) — CAOTE eviction cost (higher = more important)
+    """
+    all_importance = []
+
+    for layer_idx, queries in captured_queries.items():
+        keys = _get_fp16_keys(cache[layer_idx])    # (B, H_kv, T, D)
+        values = _get_fp16_values(cache[layer_idx])  # (B, H_kv, T, D)
+        B, H_kv, T, D = keys.shape
+        H_q = queries.shape[1]
+        gqa_ratio = H_q // H_kv
+        scale = D ** -0.5
+
+        # --- Attention scores (same as compute_importance_from_real_q) ---
+        obs_start = max(0, queries.shape[2] - obs_window)
+        Q_obs = queries[:, :, obs_start:, :]
+        obs_len = Q_obs.shape[2]
+
+        K_expanded = mx.repeat(keys, gqa_ratio, axis=1)
+        scores = (Q_obs @ K_expanded.swapaxes(-1, -2)) * scale
+
+        q_pos = mx.arange(obs_start, obs_start + obs_len).reshape(1, 1, obs_len, 1)
+        k_pos = mx.arange(T).reshape(1, 1, 1, T)
+        scores = mx.where(k_pos <= q_pos, scores, mx.array(float('-inf')))
+
+        weights = mx.softmax(scores, axis=-1)  # (B, H_q, obs_len, T)
+
+        # Pool attention: max over obs window, then max across GQA group
+        alpha = mx.max(weights, axis=2)  # (B, H_q, T)
+        alpha = alpha.reshape(B, H_kv, gqa_ratio, T)
+        alpha = mx.max(alpha, axis=2)  # (B, H_kv, T)
+
+        # --- Value distinctiveness (FastCAOTE) ---
+        # V_mean: mean of all value vectors per head (B, H_kv, 1, D)
+        V_mean = mx.mean(values, axis=2, keepdims=True)
+
+        # ||V_mean - v_j||_2 for each token j (B, H_kv, T)
+        v_diff = values - V_mean  # (B, H_kv, T, D)
+        v_dist = mx.sqrt(mx.sum(v_diff * v_diff, axis=-1) + 1e-8)  # (B, H_kv, T)
+
+        # --- CAOTE score: (alpha / (1 - alpha)) * ||V_mean - v_j|| ---
+        # Clamp alpha to avoid division by zero (alpha=1 → max importance)
+        alpha_clamped = mx.clip(alpha, 1e-6, 1.0 - 1e-6)
+        caote = (alpha_clamped / (1.0 - alpha_clamped)) * v_dist
+
+        mx.eval(caote)
+        all_importance.append(caote)
+
+    stacked = mx.stack(all_importance, axis=0)
+    result = mx.max(stacked, axis=0)
+    mx.eval(result)
+    return result
+
+
 def compute_importance_from_real_q(
     captured_queries: dict,
     cache: list,
@@ -659,7 +746,8 @@ def count_kept(keep_mask: mx.array) -> int:
     return int(mx.sum(keep_mask).item())
 
 
-def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64) -> None:
+def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
+                              use_caote: bool = False) -> None:
     """Monkey-patch generate_step to run SnapKV eviction after prefill.
 
     When prompt length >= 2 * keep_count, the wrapper:
@@ -675,6 +763,9 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64) -> None:
     Args:
         keep_count: Number of tokens to keep after eviction.
         obs_window: Observation window for importance scoring.
+        use_caote: If True, use CAOTE scoring (attention × value distinctiveness)
+            instead of attention-only scoring. CAOTE preserves tokens whose
+            eviction would cause the most attention-output error.
     """
     import threading
     import mlx_lm.generate as gen_mod
@@ -726,14 +817,20 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64) -> None:
 
             if cache and captured:
                 old_offset = cache[0].offset
-                importance = compute_importance_from_real_q(
-                    captured, cache, obs_window=obs_window)
+                if use_caote:
+                    importance = compute_caote_importance(
+                        captured, cache, obs_window=obs_window)
+                    scoring = "CAOTE"
+                else:
+                    importance = compute_importance_from_real_q(
+                        captured, cache, obs_window=obs_window)
+                    scoring = "attention-only"
                 keep_mask = snapkv_select(importance, keep_count)
                 indices = get_keep_indices(keep_mask)
                 compact_cache(cache, indices, model=model)
                 new_len = len(indices)
                 _logger.info(
-                    f"SnapKV eviction: {old_offset} -> {new_len} tokens "
+                    f"SnapKV eviction ({scoring}): {old_offset} -> {new_len} tokens "
                     f"(kept {new_len * 100 // max(old_offset, 1)}%)"
                 )
 

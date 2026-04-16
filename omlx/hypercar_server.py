@@ -293,6 +293,9 @@ def main():
     parser.add_argument("--snapkv-keep", type=int, default=0,
                         help="SnapKV eviction: keep top-K tokens after prefill (0=off). "
                              "Activates for prompts >= 2*K tokens. Uses real Q capture.")
+    parser.add_argument("--caote", action="store_true", default=False,
+                        help="Use CAOTE scoring (attention × value distinctiveness) for "
+                             "SnapKV eviction. Requires --snapkv-keep > 0.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
@@ -365,8 +368,10 @@ def main():
     # Apply SnapKV eviction if requested (must be AFTER patches, BEFORE server starts)
     if args.snapkv_keep > 0:
         from omlx.patches.snapkv import apply_snapkv_to_generate
-        apply_snapkv_to_generate(keep_count=args.snapkv_keep)
-        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens after prefill")
+        apply_snapkv_to_generate(
+            keep_count=args.snapkv_keep, use_caote=args.caote)
+        scoring = "CAOTE" if args.caote else "attention-only"
+        logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}")
 
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")

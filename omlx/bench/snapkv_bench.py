@@ -91,7 +91,8 @@ def generate_tokens(model, tokenizer, input_ids, cache, n_tokens=32):
     return tokens
 
 
-def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64):
+def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
+             use_caote=False):
     """Run one SnapKV compaction test at given context length and keep ratio.
 
     Returns dict with results.
@@ -99,6 +100,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64):
     from mlx_lm.models.cache import KVCache
     from omlx.patches.snapkv import (
         install_q_capture_hook, compute_importance_from_real_q,
+        compute_caote_importance,
         snapkv_select, get_keep_indices, compact_cache,
     )
 
@@ -107,9 +109,10 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64):
     actual_tokens = len(input_ids)
     keep_count = max(64, int(actual_tokens * keep_ratio))
 
+    scoring_label = "CAOTE" if use_caote else "attention-only"
     logger.info(f"\n{'='*60}")
     logger.info(f"Context: {actual_tokens} tokens, keep ratio: {keep_ratio:.0%} "
-                f"({keep_count} tokens)")
+                f"({keep_count} tokens), scoring: {scoring_label}")
 
     # --- Baseline: generate without eviction ---
     gc.collect(); mx.clear_cache()
@@ -142,8 +145,12 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64):
     metal_after_prefill = mx.get_active_memory() / 1e9
     kv_offset_before = cache[0].offset
 
-    # Compute importance from captured Q
-    importance = compute_importance_from_real_q(captured, cache, obs_window=obs_window)
+    # Compute importance from captured Q (+ values if CAOTE)
+    scoring = "CAOTE" if use_caote else "attention-only"
+    if use_caote:
+        importance = compute_caote_importance(captured, cache, obs_window=obs_window)
+    else:
+        importance = compute_importance_from_real_q(captured, cache, obs_window=obs_window)
     mx.eval(importance)
     cleanup()  # remove hooks
 
@@ -204,6 +211,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64):
         "context_tokens": actual_tokens,
         "keep_ratio": keep_ratio,
         "keep_count": keep_count,
+        "scoring": scoring_label,
         "actual_kept": actual_kept,
         "metal_before_gb": round(metal_before_compact, 2),
         "metal_after_gb": round(metal_after_compact, 2),
@@ -231,6 +239,8 @@ def main():
                         help="Context length in tokens (default: 4096)")
     parser.add_argument("--keep-ratios", type=str, default="0.25,0.50,0.75",
                         help="Comma-separated keep ratios to test")
+    parser.add_argument("--caote", action="store_true", default=False,
+                        help="Use CAOTE scoring (attention × value distinctiveness)")
     args = parser.parse_args()
 
     keep_ratios = [float(r) for r in args.keep_ratios.split(",")]
@@ -264,7 +274,8 @@ def main():
 
     results = []
     for ratio in keep_ratios:
-        result = run_test(model, tokenizer, args.context, ratio)
+        result = run_test(model, tokenizer, args.context, ratio,
+                          use_caote=args.caote)
         results.append(result)
 
     elapsed = time.perf_counter() - t0

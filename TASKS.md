@@ -510,6 +510,16 @@ _(none)_
 
 ## Completed
 
+- **Task 100: CAOTE attention-output-error scoring** — value-aware eviction VALIDATED (2026-04-16)
+  - `compute_caote_importance()`: score = (α/(1-α)) × ||V_mean - v_j|| per token per head
+  - FastCAOTE approximation: O(n·d) per head using mean-of-values, not O(n²·d)
+  - `--caote` flag on hypercar_server and snapkv_bench
+  - GPU validation: **CAOTE fixes the 16K@25% NIAH failure** that attention-only missed
+    - 16K@25%: attention-only FAIL (3% agreement) → **CAOTE 100% agreement**
+    - 4K@25%/50%, 16K@50%: both methods 100% (CAOTE matches)
+  - Key insight: needle token has high attention AND distinctive value vector;
+    attention-only misses tokens with moderate attention but critical information
+
 - **Task 46: SnapKV physical compaction — VALIDATED** (2026-04-16)
   - `--snapkv-keep` flag on hypercar_server wraps `generate_step` with Q capture hooks
   - `compact_cache` supports KVCache (fp16) and QuantizedKVCache (dequant→gather→requant)
