@@ -25,6 +25,7 @@ _SAFE_WITHOUT_MLX = {
     "test_chat_image_upload.py",
     "test_find_matching_dmg.py",
     "test_grammar_live.py",
+    "test_latent_kv_cache.py",
 }
 
 collect_ignore = []
