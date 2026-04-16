@@ -896,6 +896,54 @@ def count_kept(keep_mask: mx.array) -> int:
     return int(mx.sum(keep_mask).item())
 
 
+def compact_cache_pyramidal(
+    cache: list,
+    importance: mx.array,
+    budgets: list[int],
+    model=None,
+    segment_size: int = 0,
+    always_keep_last: int = 64,
+) -> dict:
+    """Compact KV cache with per-layer budgets (PyramidKV).
+
+    Each layer gets its own keep count from the budget vector. Layers
+    with lower budgets (middle layers) evict more aggressively.
+
+    Args:
+        cache: KVCache list (one per layer)
+        importance: (B, H_kv, T) — aggregated importance (from CAOTE etc.)
+        budgets: Per-layer keep counts (len = len(cache))
+        model: Model for RoPE config
+        segment_size: BUZZ segment size for per-segment selection
+        always_keep_last: Tokens always kept at end
+
+    Returns:
+        dict with per-layer compaction stats
+    """
+    T = importance.shape[2]
+    stats = {"layers": len(cache), "original_T": T, "per_layer": []}
+
+    for layer_idx, c in enumerate(cache):
+        keep_count = budgets[layer_idx] if layer_idx < len(budgets) else T
+
+        if keep_count >= T:
+            stats["per_layer"].append({"layer": layer_idx, "kept": T, "budget": keep_count})
+            continue
+
+        keep_mask = snapkv_select(importance, keep_count,
+                                   always_keep_last=always_keep_last,
+                                   segment_size=segment_size)
+        indices = get_keep_indices(keep_mask)
+
+        # Compact this single layer
+        compact_cache([c], indices, model=model)
+        stats["per_layer"].append({
+            "layer": layer_idx, "kept": len(indices), "budget": keep_count,
+        })
+
+    return stats
+
+
 def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                               use_caote: bool = False,
                               segment_size: int = 0,

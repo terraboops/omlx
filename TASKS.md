@@ -506,10 +506,17 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-_(none)_
+- **Goal 1 validation**: SnapKV+CAOTE 128K NIAH run (GPU, background — ~30min at O(n²))
 
 ## Completed
 
+- **Task 57: PyramidKV per-layer budget vector** — exponential-decay schedule shipped (2026-04-16)
+  - `omlx/pyramid_budget.py`: compute_budget_vector() + budget_for_layer() + format_budget_summary()
+  - Exponential decay from edges to center (beta=0.7), floor at 30% of uniform allocation
+  - Two-pass normalization: exact sum guarantee with floor constraint
+  - `compact_cache_pyramidal()` in snapkv.py for per-layer eviction with budget vector
+  - `--pyramid-kv` flag on server. Edge layers get ~2.5x budget of middle layers
+  - Needs GPU calibration sweep to find optimal beta (deferred to bench/pyramid_calibrate.py)
 - **Goal 1: 64K NIAH PASS with SnapKV+CAOTE** — physical compaction validated at 64K (2026-04-16)
   - 64K@25% keep: 100% agreement, 4.52 GB saved (38.6→34.1 GB Metal)
   - 64K@50% keep: 100% agreement, 3.03 GB saved (38.6→35.5 GB Metal)

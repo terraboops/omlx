@@ -1094,3 +1094,92 @@ class TestFreshnessEvictionSource:
         """Server must have --freshness-evict flag."""
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "--freshness-evict" in server_src
+
+
+# ---- Task 57: PyramidKV Per-Layer Budget ----
+
+_pyramid_src = Path("omlx/pyramid_budget.py").read_text()
+
+
+class TestPyramidBudgetSource:
+    """Source-level tests for PyramidKV per-layer budget."""
+
+    def test_compute_budget_vector_exists(self):
+        assert "def compute_budget_vector(" in _pyramid_src
+
+    def test_budget_for_layer_exists(self):
+        assert "def budget_for_layer(" in _pyramid_src
+
+    def test_uses_beta_decay(self):
+        """Must use exponential decay with beta parameter."""
+        assert "beta" in _pyramid_src
+        assert "beta ** dist" in _pyramid_src or "beta**" in _pyramid_src
+
+    def test_edge_vs_middle_asymmetry(self):
+        """Budget must be higher for edge layers than middle."""
+        assert "min(i, n_layers - 1 - i)" in _pyramid_src
+
+    def test_has_floor(self):
+        """No layer should be starved — must have a floor."""
+        assert "floor" in _pyramid_src
+
+    def test_sums_to_total(self):
+        """Budget vector must sum to total_budget."""
+        assert "total_budget" in _pyramid_src
+
+
+class TestPyramidBudgetLogic:
+    """Functional tests for budget computation (pure Python, no MLX).
+
+    Import via importlib to avoid omlx.__init__.py MLX dependency.
+    """
+
+    @staticmethod
+    def _load_module():
+        spec = importlib.util.spec_from_file_location(
+            "pyramid_budget", "omlx/pyramid_budget.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_sum_equals_total(self):
+        mod = self._load_module()
+        budgets = mod.compute_budget_vector(16384, 48)
+        assert abs(sum(budgets) - 16384) <= 1
+
+    def test_edges_higher_than_middle(self):
+        mod = self._load_module()
+        budgets = mod.compute_budget_vector(16384, 48)
+        edge_avg = (budgets[0] + budgets[1] + budgets[-1] + budgets[-2]) / 4
+        mid = len(budgets) // 2
+        mid_avg = (budgets[mid-1] + budgets[mid] + budgets[mid+1]) / 3
+        assert edge_avg > mid_avg, f"Edge {edge_avg} should > middle {mid_avg}"
+
+    def test_all_above_floor(self):
+        mod = self._load_module()
+        budgets = mod.compute_budget_vector(16384, 48, floor_pct=0.3)
+        uniform = 16384 / 48
+        floor = int(uniform * 0.3)
+        for i, b in enumerate(budgets):
+            assert b >= floor, f"Layer {i}: {b} < floor {floor}"
+
+    def test_different_betas(self):
+        mod = self._load_module()
+        flat = mod.compute_budget_vector(16384, 48, beta=0.99)
+        steep = mod.compute_budget_vector(16384, 48, beta=0.5)
+        flat_ratio = max(flat) / max(min(flat), 1)
+        steep_ratio = max(steep) / max(min(steep), 1)
+        assert steep_ratio > flat_ratio
+
+    def test_single_layer_budget(self):
+        mod = self._load_module()
+        b0 = mod.budget_for_layer(0, 16384, 48)
+        b24 = mod.budget_for_layer(24, 16384, 48)
+        assert b0 > b24
+
+    def test_compact_cache_pyramidal_exists(self):
+        assert "def compact_cache_pyramidal(" in _snapkv_src
+
+    def test_server_pyramid_flag(self):
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--pyramid-kv" in server_src

@@ -302,6 +302,9 @@ def main():
     parser.add_argument("--freshness-evict", action="store_true", default=False,
                         help="Freshness-aware eviction: penalize superseded tokens via "
                              "cosine similarity conflict detection. Requires --snapkv-keep > 0.")
+    parser.add_argument("--pyramid-kv", action="store_true", default=False,
+                        help="PyramidKV per-layer budgets: allocate more KV to edge layers, "
+                             "less to redundant middle layers. Requires --snapkv-keep > 0.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
