@@ -1,0 +1,13 @@
+02d59c756fd9d655c7b795820efae22f4cbd49d3
+ M research/LIT_REVIEW.md
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run66_2026-04-16T00-37/console.txt
+?? bench/snapshots/run66_2026-04-16T00-37/git.txt
+?? bench/snapshots/run66_2026-04-16T00-37/profile.json
+?? bench/snapshots/run66_2026-04-16T00-37/results.json
+?? research/2407.05347_queueing_llm_inference.pdf
+?? research/2503.11108_kv_compression_lower_bounds.pdf
+?? research/2601.22705_concur_congestion_kv.pdf
+?? research/2603.14517_sleepgate_memory_consolidation.pdf
+ research/LIT_REVIEW.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
