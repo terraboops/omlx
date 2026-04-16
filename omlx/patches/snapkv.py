@@ -103,6 +103,64 @@ def compute_attention_importance(
     return importance
 
 
+def compute_multi_layer_importance(
+    cache: list,
+    model,
+    obs_window: int = 64,
+    layers: list[int] | None = None,
+) -> mx.array:
+    """Compute importance by aggregating attention from multiple layers.
+
+    The SnapKV paper recommends using the last few layers (e.g., layers
+    44-47 for a 48-layer model) because late layers have already
+    aggregated information and their attention patterns reflect which
+    tokens are globally important.
+
+    Single-layer importance from a middle layer (e.g., 24) doesn't
+    generalize — different layers attend to different tokens. The E2E
+    validation (commit 5ec4fd7) confirmed this: layer-24-only importance
+    produced 6% agreement on NIAH.
+
+    Args:
+        cache: List of KVCache objects (one per layer)
+        model: The loaded model (for attention config)
+        obs_window: Observation window size
+        layers: Which layers to aggregate (default: last 4)
+
+    Returns:
+        importance: (B, H_kv, T) — aggregated importance across layers
+    """
+    n_layers = len(cache)
+    if layers is None:
+        layers = list(range(max(0, n_layers - 4), n_layers))
+
+    # Get attention config from model
+    attn = model.layers[layers[0]].self_attn
+    H_q = attn.n_heads if hasattr(attn, 'n_heads') else 32
+    H_kv = cache[layers[0]].state[0].shape[1]
+    D = cache[layers[0]].state[0].shape[3]
+    scale = D ** -0.5
+
+    # Aggregate importance across selected layers
+    all_importance = []
+    for layer_idx in layers:
+        keys = cache[layer_idx].state[0]  # (B, H_kv, T, D)
+        # Use K as Q proxy (GQA-expanded) — approximation, but
+        # late layers' K contains rich aggregated representations
+        Q_proxy = mx.repeat(keys, H_q // H_kv, axis=1)
+
+        imp = compute_attention_importance(Q_proxy, keys, scale, obs_window)
+        mx.eval(imp)
+        all_importance.append(imp)
+
+    # Pool across layers: max (any layer considers token important → keep it)
+    stacked = mx.stack(all_importance, axis=0)  # (n_layers, B, H_kv, T)
+    importance = mx.max(stacked, axis=0)         # (B, H_kv, T)
+    mx.eval(importance)
+
+    return importance
+
+
 def snapkv_select(
     importance: mx.array,
     keep_count: int,

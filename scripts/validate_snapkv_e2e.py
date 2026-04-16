@@ -44,8 +44,8 @@ def main():
     from mlx_lm import load
     from mlx_lm.models.cache import KVCache
     from omlx.patches.snapkv import (
-        compute_attention_importance, snapkv_select,
-        get_keep_indices, compact_cache, count_kept,
+        compute_attention_importance, compute_multi_layer_importance,
+        snapkv_select, get_keep_indices, compact_cache, count_kept,
     )
 
     logger.info(f"Loading model: {MODEL_ID}")
@@ -55,7 +55,7 @@ def main():
     n_layers = len(model.layers)
 
     tests = [
-        ("NIAH", "The activation code is SNAPKV-E2E-PASS. " + "Filler. " * 80
+        ("NIAH", "The activation code is SNAPKV-E2E-PASS. " + "Filler text for padding the context to a reasonable length. " * 200
          + "What is the activation code? Reply with just the code:"),
         ("Math", "What is 17 * 23? Show your work:"),
         ("Code", "def reverse_string(s: str) -> str:\n    '''Reverse a string.'''\n    return"),
@@ -88,19 +88,11 @@ def main():
         logits = model(mx.array([input_ids]), cache=cache_skv)
         mx.eval(logits)
 
-        # Get attention config
-        attn = model.layers[24].self_attn
-        H_q = attn.n_heads if hasattr(attn, 'n_heads') else 32
+        # Compute importance from last 4 layers (paper recommendation)
+        importance = compute_multi_layer_importance(
+            cache_skv, model, obs_window=64,
+            layers=list(range(n_layers - 4, n_layers)))
         H_kv = cache_skv[0].state[0].shape[1]
-        D = cache_skv[0].state[0].shape[3]
-        scale = D ** -0.5
-
-        # Compute importance from a middle layer's KV
-        keys_mid = cache_skv[24].state[0]
-        Q_proxy = mx.repeat(keys_mid, H_q // H_kv, axis=1)
-
-        importance = compute_attention_importance(Q_proxy, keys_mid, scale, obs_window=64)
-        mx.eval(importance)
 
         # Select tokens to keep (50%)
         keep_count = T // 2

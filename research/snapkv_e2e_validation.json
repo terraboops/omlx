@@ -2,13 +2,13 @@
   "results": [
     {
       "name": "NIAH",
-      "T": 272,
-      "kept": 136,
-      "evicted": 136,
+      "T": 2432,
+      "kept": 1216,
+      "evicted": 1216,
       "keep_pct": 50.0,
-      "agreement_pct": 6.0,
-      "base_text": "SNAPKV-E2E-PASS<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E-PASS. Filler. Filler. F",
-      "skv_text": "SN<|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end|><|im_end"
+      "agreement_pct": 3.0,
+      "base_text": "SNAPKV-E2E-PASS<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E-PASS. Filler text for padding the contex",
+      "skv_text": "SNV text for padding the context to a reasonable length.<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E"
     },
     {
       "name": "Math",
@@ -31,6 +31,6 @@
       "skv_text": "```python\ndef reverse_string(s: str) -> str:\n    '''Reverse a string.'''\n    return s[::-1]\n```\n\nThis implementation use"
     }
   ],
-  "avg_agreement": 68.7,
+  "avg_agreement": 67.7,
   "elapsed_s": 25.0
 }
