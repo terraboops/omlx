@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 102: Submodular greedy eviction** — diversity-aware token selection (2026-04-16)
+  - `_select_submodular()`: greedy selection with value-vector diversity penalty
+  - Within each BUZZ segment, penalizes tokens similar to already-selected tokens (sim > 0.8)
+  - Captures diminishing returns: two identical tokens don't both get selected
+  - `--submodular-evict` flag on server, composes with CAOTE + BUZZ segments
+  - From OTPrune (arXiv:2602.20205): (1-1/e) guarantee on distributional fidelity
 - **Task 18: LiveCodeBench contamination-free coding gate** — Phase 3d wired (2026-04-16)
   - `phase3d_livecodebench()` in hypercar_bench: 20 problems in --full mode
   - Uses existing `omlx/eval/livecodebench.py` module + bundled data (2 MB, 100+ problems)

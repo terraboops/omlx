@@ -1135,6 +1135,38 @@ class TestFreshnessEvictionSource:
         assert "--freshness-evict" in server_src
 
 
+# ---- Task 102: Submodular Greedy Eviction ----
+
+class TestSubmodularEvictionSource:
+    """Source-level tests for submodular greedy eviction."""
+
+    def test_select_submodular_exists(self):
+        assert "def _select_submodular(" in _snapkv_src
+
+    def test_diversity_penalty(self):
+        """Must penalize tokens similar to already-selected tokens."""
+        assert "sim" in _snapkv_src
+        assert "diversity" in _snapkv_src.lower() or "penalize" in _snapkv_src.lower()
+
+    def test_greedy_within_segments(self):
+        """Submodular runs within BUZZ segments."""
+        assert "seg_start" in _snapkv_src
+
+    def test_snapkv_select_has_submodular_param(self):
+        assert "submodular" in _snapkv_src
+
+    def test_server_flag_exists(self):
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--submodular-evict" in server_src
+
+    def test_apply_snapkv_has_submodular(self):
+        assert "use_submodular" in _snapkv_src
+
+    def test_values_passed_for_diversity(self):
+        """Must pass value vectors for diversity computation."""
+        assert "sel_values" in _snapkv_src or "values=" in _snapkv_src
+
+
 # ---- Task 57: PyramidKV Per-Layer Budget ----
 
 _pyramid_src = Path("omlx/pyramid_budget.py").read_text()

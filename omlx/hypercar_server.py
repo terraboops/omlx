@@ -305,6 +305,9 @@ def main():
     parser.add_argument("--pyramid-kv", action="store_true", default=False,
                         help="PyramidKV per-layer budgets: allocate more KV to edge layers, "
                              "less to redundant middle layers. Requires --snapkv-keep > 0.")
+    parser.add_argument("--submodular-evict", action="store_true", default=False,
+                        help="Submodular greedy selection with diversity penalty instead of "
+                             "independent top-K. Reduces redundancy in kept tokens.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
@@ -393,11 +396,14 @@ def main():
         apply_snapkv_to_generate(
             keep_count=args.snapkv_keep, use_caote=args.caote,
             segment_size=args.segmented_evict,
-            use_freshness=args.freshness_evict)
+            use_freshness=args.freshness_evict,
+            use_submodular=args.submodular_evict)
         scoring = "CAOTE" if args.caote else "attention-only"
         extras = []
         if args.segmented_evict > 0:
             extras.append(f"seg={args.segmented_evict}")
+        if args.submodular_evict:
+            extras.append("submodular")
         if args.freshness_evict:
             extras.append("freshness")
         extra_str = f" ({', '.join(extras)})" if extras else ""

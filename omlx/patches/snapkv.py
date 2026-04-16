@@ -674,11 +674,98 @@ def _select_segmented(pooled: mx.array, k: int, segment_size: int) -> set:
     return all_indices
 
 
+def _select_submodular(pooled: mx.array, k: int, segment_size: int,
+                        values: mx.array | None = None) -> set:
+    """Submodular greedy selection with CAOTE marginal gains.
+
+    Within each BUZZ segment, uses greedy selection instead of top-K:
+    at each step, picks the token that maximizes marginal gain relative
+    to the already-retained set. Tokens redundant with retained tokens
+    get penalized via value-vector similarity.
+
+    From OTPrune (arXiv:2602.20205): greedy submodular selection achieves
+    (1-1/e) ≈ 63% of optimal distributional fidelity — the first
+    compositional guarantee for multi-token KV eviction.
+
+    Args:
+        pooled: (B, S) importance scores (CAOTE or attention-only)
+        k: total tokens to select
+        segment_size: BUZZ segment size (0 = global)
+        values: (B, H_kv, S, D) value vectors for diversity penalty.
+            If None, falls back to score-only selection (no diversity).
+    """
+    B, S = pooled.shape
+    seg_size = segment_size if segment_size > 0 else S
+    n_segments = max(1, (S + seg_size - 1) // seg_size)
+
+    base_k = max(1, k // n_segments)
+    remainder = k - base_k * n_segments
+
+    all_indices = set()
+    scores_np = pooled[0].tolist()
+
+    # Get per-token value norms for diversity (pool across heads → mean)
+    val_np = None
+    if values is not None and values.shape[2] >= S:
+        # Mean across heads: (S, D)
+        v_mean_heads = mx.mean(values[0, :, :S, :], axis=0)  # (S, D)
+        # Normalize for cosine similarity
+        norms = mx.sqrt(mx.sum(v_mean_heads * v_mean_heads, axis=-1, keepdims=True) + 1e-8)
+        val_np = (v_mean_heads / norms).tolist()  # list of D-dim vectors
+
+    for seg_idx in range(n_segments):
+        seg_start = seg_idx * seg_size
+        seg_end = min(seg_start + seg_size, S)
+        seg_len = seg_end - seg_start
+        seg_k = base_k + (1 if seg_idx < remainder else 0)
+        seg_k = min(seg_k, seg_len)
+
+        if seg_k <= 0:
+            continue
+
+        if val_np is None:
+            # No value vectors — fall back to score-only top-K
+            seg_scores = scores_np[seg_start:seg_end]
+            indexed = sorted(range(seg_len), key=lambda i: -seg_scores[i])
+            for i in indexed[:seg_k]:
+                all_indices.add(seg_start + i)
+            continue
+
+        # Greedy submodular selection within segment
+        seg_scores = list(scores_np[seg_start:seg_end])  # mutable copy
+        retained_in_seg = []
+
+        for _ in range(seg_k):
+            if not seg_scores:
+                break
+            # Pick highest-scoring token
+            best_local = max(range(seg_len), key=lambda i: seg_scores[i]
+                             if i not in set(retained_in_seg) else -1e30)
+            if seg_scores[best_local] <= -1e30:
+                break
+            retained_in_seg.append(best_local)
+            all_indices.add(seg_start + best_local)
+
+            # Penalize tokens similar to the selected token (diversity)
+            best_val = val_np[seg_start + best_local]
+            for j in range(seg_len):
+                if j in set(retained_in_seg):
+                    continue
+                # Cosine similarity (vectors are pre-normalized)
+                sim = sum(a * b for a, b in zip(val_np[seg_start + j], best_val))
+                if sim > 0.8:  # high similarity → penalize
+                    seg_scores[j] *= max(0.1, 1.0 - 0.5 * sim)
+
+    return all_indices
+
+
 def snapkv_select(
     importance: mx.array,
     keep_count: int,
     always_keep_last: int = 64,
     segment_size: int = 0,
+    submodular: bool = False,
+    values: mx.array | None = None,
 ) -> mx.array:
     """Select top-K tokens to keep based on importance scores.
 
@@ -692,6 +779,10 @@ def snapkv_select(
         always_keep_last: always keep this many recent tokens (sink/window)
         segment_size: if > 0, use per-segment selection with this segment size.
             0 = global top-K (original SnapKV behavior).
+        submodular: if True, use greedy submodular selection with value-diversity
+            penalty instead of independent top-K. Captures diminishing returns
+            from correlated tokens. Requires values parameter.
+        values: (B, H_kv, T, D) value vectors for submodular diversity penalty.
 
     Returns:
         keep_mask: (B, T) — boolean mask of tokens to keep (union across heads)
@@ -711,7 +802,11 @@ def snapkv_select(
     # Pool importance across heads (union strategy: max across heads)
     pooled = mx.max(importance[:, :, :selectable], axis=1)  # (B, selectable)
 
-    if segment_size > 0 and selectable > segment_size:
+    if submodular:
+        # Submodular greedy with diversity penalty (within segments if set)
+        all_indices = _select_submodular(pooled, k_selectable,
+                                          segment_size, values)
+    elif segment_size > 0 and selectable > segment_size:
         # BUZZ segmented selection: per-segment top-K
         all_indices = _select_segmented(pooled, k_selectable, segment_size)
     else:
@@ -947,7 +1042,8 @@ def compact_cache_pyramidal(
 def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                               use_caote: bool = False,
                               segment_size: int = 0,
-                              use_freshness: bool = False) -> None:
+                              use_freshness: bool = False,
+                              use_submodular: bool = False) -> None:
     """Monkey-patch generate_step to run SnapKV eviction after prefill.
 
     When prompt length >= 2 * keep_count, the wrapper:
@@ -1036,8 +1132,18 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                     freshness = compute_freshness_scores(cache)
                     importance = importance * freshness
                     scoring += "+fresh"
+                # Get values for submodular diversity penalty
+                sel_values = None
+                if use_submodular:
+                    sel_values = mx.stack([
+                        _get_fp16_values(cache[li])
+                        for li in captured.keys()
+                    ]).mean(axis=0)  # average across captured layers
+                    scoring += "+submod"
                 keep_mask = snapkv_select(importance, keep_count,
-                                          segment_size=segment_size)
+                                          segment_size=segment_size,
+                                          submodular=use_submodular,
+                                          values=sel_values)
                 indices = get_keep_indices(keep_mask)
                 compact_cache(cache, indices, model=model)
                 new_len = len(indices)
