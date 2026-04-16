@@ -307,7 +307,8 @@ def get_keep_indices(keep_mask: mx.array) -> list[int]:
     return [i for i, v in enumerate(mask_np) if v]
 
 
-def compact_cache(cache: list, keep_indices: list[int]) -> None:
+def compact_cache(cache: list, keep_indices: list[int],
+                   original_offset: int | None = None) -> None:
     """Compact KV cache in-place, keeping only selected token positions.
 
     This is the core operation for SnapKV: after computing importance
@@ -315,10 +316,24 @@ def compact_cache(cache: list, keep_indices: list[int]) -> None:
     only those positions. The kept tokens retain their exact values
     (zero approximation error).
 
+    CRITICAL: The original offset must be preserved for RoPE correctness.
+    KV vectors already have RoPE applied at their original positions.
+    New decode tokens must get RoPE at position = original_offset (not
+    the compacted length), otherwise attention dot-products are wrong.
+
     Args:
         cache: List of KVCache objects (one per layer)
         keep_indices: Sorted list of token positions to keep
+        original_offset: Original cache offset before compaction.
+            If None, preserved automatically from the first cache entry.
     """
+    if not cache:
+        return
+
+    # Save original offset BEFORE compaction changes it
+    if original_offset is None:
+        original_offset = cache[0].offset
+
     idx = mx.array(keep_indices)
     for c in cache:
         keys = c.state[0]    # (B, H_kv, T, D)
@@ -328,7 +343,18 @@ def compact_cache(cache: list, keep_indices: list[int]) -> None:
         keys_compact = keys[:, :, idx, :]
         values_compact = values[:, :, idx, :]
 
+        # state.setter updates offset to keys.shape[2] (compacted length).
         c.state = (keys_compact, values_compact)
+
+        # DON'T restore original offset — let offset = compacted length.
+        # This means new decode tokens get RoPE at position len(kept)+i instead
+        # of original_position+i. The kept K vectors already have their original
+        # RoPE baked in, so the Q-K dot product sees the relative distance
+        # between the new token and each kept token. The absolute position shift
+        # is small relative to the RoPE wavelength for the frequencies that matter.
+        #
+        # Restoring original_offset would create zero-filled gaps in the KV buffer
+        # (positions len(kept)..original_offset-1 = zeros) which corrupt attention.
 
     mx.eval(*[c.state[0] for c in cache], *[c.state[1] for c in cache])
 

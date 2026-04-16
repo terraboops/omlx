@@ -8,7 +8,7 @@
       "keep_pct": 50.0,
       "agreement_pct": 3.0,
       "base_text": "SNAPKV-E2E-PASS<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E-PASS. Filler text for padding the contex",
-      "skv_text": "SNV text for padding the context to a reasonable length.<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E"
+      "skv_text": "SNquals<|im_end|>\n Answer: SNAPKV-E2E-PASS<|im_end|>\n<|endoftext|>Human: The activation code is SNAPKV-E2E-PASS. Filler"
     },
     {
       "name": "Math",
@@ -32,5 +32,5 @@
     }
   ],
   "avg_agreement": 67.7,
-  "elapsed_s": 23.6
+  "elapsed_s": 23.7
 }
