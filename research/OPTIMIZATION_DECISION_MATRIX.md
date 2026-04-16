@@ -78,6 +78,11 @@ Current: 17.2 GB model + 22.5 GB KV at 1M = 39.7 GB (barely fits, swap-thrashes 
 | `research/mla_rank_20260415.json` | Per-layer K+V+KV joint SVD rank at 99/99.9% energy | 53 |
 | `research/mla_quality_validation.json` | MLA post-hoc SVD decode quality: 7% agreement (FAIL) | 53 |
 | `research/shadowkv_implementation_plan.md` | ShadowKV 4-step implementation plan for Goal 1 | — |
+| `research/shadowkv_quality_validation.json` | ShadowKV K-only decode: 52% agreement, all answers correct | — |
+| `research/shadowkv_rank_sweep.json` | Rank 64-128 sweep: code 100% all ranks, NIAH 16% at rank 85 | — |
+| `research/attn_weighted_svd_error.json` | Weighted/uniform error ratio ≈ 0.9x — argmax flip, not error concentration | — |
+| `research/attention_weighted_codec_selection.md` | Per-head-type codec: SnapKV for retrieval, SVD for streaming | 90b |
+| `research/snapkv_selection_validation.json` | SnapKV: needle preserved at 25% keep ratio | 46 |
 | `research/shadowkv_rank_20260413.json` | Per-layer K-only SVD rank at 99/99.5/99.9% energy | 44 |
 | `research/MLX_ATTN_DISPATCH.md` | MLX SDPA kernel dispatch (AMX vs vector) | 30 |
 | `research/mlx_softmax_audit.json` | mx.softmax vs SDPA vs unfused at production shapes | 87 |
