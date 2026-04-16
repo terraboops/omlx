@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 46 (partial): SnapKV server integration** — `--snapkv-keep` flag wired (2026-04-16)
+  - `apply_snapkv_to_generate(keep_count)` wraps `generate_step` with Q capture hooks
+  - `compact_cache` now supports QuantizedKVCache (dequant→gather→requant for native mode)
+  - `_get_fp16_keys()` for cache-agnostic key extraction in importance computation
+  - Hooks installed before prefill, eviction after first token, cleanup in finally block
+  - Remaining: GPU validation benchmark with `--snapkv-keep 2048 --kv-mode native` at 16K+
 - **SnapKV with real Q capture**: 100% agreement at 25% keep — BREAKTHROUGH (2026-04-15)
   - `install_q_capture_hook()` + `compute_importance_from_real_q()` capture actual Q projections
   - `patch_model_for_eviction_mask()` injects eviction into attention via bfloat16 masking
