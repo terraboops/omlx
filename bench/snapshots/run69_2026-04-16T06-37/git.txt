@@ -1,0 +1,11 @@
+f0ba1c36ba5e4bb2c37a773cbc00d40ffdedddd0
+ M research/LIT_REVIEW.md
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run69_2026-04-16T06-37/console.txt
+?? bench/snapshots/run69_2026-04-16T06-37/git.txt
+?? bench/snapshots/run69_2026-04-16T06-37/profile.json
+?? bench/snapshots/run69_2026-04-16T06-37/results.json
+?? research/2504.14051_caote_attention_output_error_eviction.pdf
+?? research/2508.11356_ettrl_entropy_test_time_rl.pdf
+?? research/2604.04722_dont_waste_bits_adaptive_kv_quantization.pdf
+?? research/2604.10235_codecomp_structural_kv_agentic_coding.pdf
