@@ -1254,3 +1254,55 @@ class TestPyramidBudgetLogic:
     def test_server_pyramid_flag(self):
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "--pyramid-kv" in server_src
+
+
+# ---- Eviction Stack Integration ----
+
+class TestEvictionStackComposition:
+    """Verify all 6 eviction stack layers compose correctly at source level."""
+
+    def test_all_server_flags_exist(self):
+        """All eviction flags must be on the server."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        for flag in ["--snapkv-keep", "--caote", "--segmented-evict",
+                      "--freshness-evict", "--submodular-evict", "--pyramid-kv"]:
+            assert flag in server_src, f"Missing flag: {flag}"
+
+    def test_apply_snapkv_accepts_all_params(self):
+        """apply_snapkv_to_generate must accept all composition params."""
+        for param in ["use_caote", "segment_size", "use_freshness", "use_submodular"]:
+            assert param in _snapkv_src, f"Missing param: {param}"
+
+    def test_snapkv_select_accepts_all_params(self):
+        """snapkv_select must accept segment_size, submodular, values."""
+        for param in ["segment_size", "submodular", "values"]:
+            assert f"{param}" in _snapkv_src
+
+    def test_scoring_methods_independent(self):
+        """CAOTE and attention-only must be separate functions."""
+        assert "def compute_caote_importance(" in _snapkv_src
+        assert "def compute_importance_from_real_q(" in _snapkv_src
+
+    def test_freshness_multiplies_with_importance(self):
+        """Freshness composes multiplicatively with any importance method."""
+        assert "importance * freshness" in _snapkv_src
+
+    def test_submodular_uses_values(self):
+        """Submodular greedy needs value vectors for diversity."""
+        assert "sel_values" in _snapkv_src
+
+    def test_rerope_always_applied(self):
+        """Re-RoPE must run on every compact_cache call."""
+        assert "_rerope_keys(" in _snapkv_src
+
+    def test_server_wires_all_flags_to_apply(self):
+        """Server must pass all flags to apply_snapkv_to_generate."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        for param in ["use_caote=", "segment_size=", "use_freshness=", "use_submodular="]:
+            assert param in server_src, f"Server missing: {param}"
+
+    def test_full_invocation_documented(self):
+        """CLAUDE.md must document the full eviction invocation."""
+        claude_src = Path("CLAUDE.md").read_text()
+        assert "--snapkv-keep" in claude_src
+        assert "--caote" in claude_src
