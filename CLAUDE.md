@@ -41,7 +41,9 @@ any of these — even to improve another — needs explicit justification.
 heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
 
 **5 of 6 goals MET** in duo mode. Full `--full` benchmark ALL 9 GATES PASS (HumanEval 95%, 1481s).
-Only Goal 1 (1M context validation beyond 64K) remains — requires KV compression for 128K+ under co-tenancy.
+**Goal 1 validated to 128K** with SnapKV+CAOTE eviction (9 GB Metal saved, NIAH PASS).
+At 1M native 3-bit @25% keep: KV ~5.6 GB, total ~23 GB — fits 48 GB.
+Server: `--snapkv-keep K --caote --segmented-evict 512` enables the full eviction stack.
 Per-phase headroom checks (Task 86) now gracefully skip memory-hungry phases under co-tenancy.
 
 ### Goal 1 Path (KV compression — SHIPPED, 2026-04-16)

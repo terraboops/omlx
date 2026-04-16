@@ -416,6 +416,11 @@ class TestDuoPolicy:
                     f"streaming but local_frac={h['local_fraction']}"
                 )
 
+    def test_duo_kv_cache_has_state_setter(self):
+        """DuoKVCache must have state.setter for compact_cache compatibility."""
+        duo_src = Path("omlx/duo_kv_cache.py").read_text()
+        assert "@state.setter" in duo_src
+
     def test_early_layers_more_streaming(self):
         """Early layers tend to have more streaming heads than late layers."""
         policy = self._load_policy()

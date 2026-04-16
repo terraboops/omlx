@@ -249,3 +249,10 @@ class DuoKVCache:
         if self._keys is None:
             return None, None
         return self._keys, self._values
+
+    @state.setter
+    def state(self, v):
+        """Set state — needed for SnapKV compact_cache compatibility."""
+        self._keys, self._values = v
+        if self._keys is not None:
+            self.offset = self._keys.shape[2]
