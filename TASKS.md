@@ -506,16 +506,22 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-- **Task 46 (completion)**: GPU validation benchmark for SnapKV physical compaction
+_(none)_
 
 ## Completed
 
-- **Task 46 (partial): SnapKV server integration** — `--snapkv-keep` flag wired (2026-04-16)
-  - `apply_snapkv_to_generate(keep_count)` wraps `generate_step` with Q capture hooks
-  - `compact_cache` now supports QuantizedKVCache (dequant→gather→requant for native mode)
-  - `_get_fp16_keys()` for cache-agnostic key extraction in importance computation
-  - Hooks installed before prefill, eviction after first token, cleanup in finally block
-  - Remaining: GPU validation benchmark with `--snapkv-keep 2048 --kv-mode native` at 16K+
+- **Task 46: SnapKV physical compaction — VALIDATED** (2026-04-16)
+  - `--snapkv-keep` flag on hypercar_server wraps `generate_step` with Q capture hooks
+  - `compact_cache` supports KVCache (fp16) and QuantizedKVCache (dequant→gather→requant)
+  - **Re-RoPE fix**: `_rerope_keys()` applies per-token rotation shift after gathering —
+    fixes the fundamental RoPE position mismatch that caused 0% quality without it
+  - GPU validation (`omlx/bench/snapkv_bench.py`):
+    - 4K: **100% token agreement** at 25%, 50%, 75% keep
+    - 16K: **100% agreement at 50% keep**, FAIL at 25% (too aggressive for retrieval)
+    - Memory: 1.14 GB saved at 25% keep, 0.77 GB at 50% (16K, fp16)
+    - At 1M native 3-bit, 50% projects to ~11 GB savings — **Goal 1 enabler**
+  - Key insight: RoPE rotations compose additively. After physical compaction,
+    shift = new_pos - old_pos corrects each key's encoding to sequential positions.
 - **SnapKV with real Q capture**: 100% agreement at 25% keep — BREAKTHROUGH (2026-04-15)
   - `install_q_capture_hook()` + `compute_importance_from_real_q()` capture actual Q projections
   - `patch_model_for_eviction_mask()` injects eviction into attention via bfloat16 masking
