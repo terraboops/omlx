@@ -510,13 +510,18 @@ _(none)_
 
 ## Completed
 
-- **Task 53**: Multi-head Latent Attention (MLA) rank probe on Qwen3-Coder KV (2026-04-15)
-  - K rank@99%: median 229/512 (45%). V rank@99%: median 246/512 (48%).
-  - **Joint KV rank@99%: median 241/1024 (24%)** — K and V share latent structure
-  - Memory at 1M: separate SVD ~10.4 GB (54% savings), joint MLA **~5.3 GB (76% savings)**
-  - Model+KV = 22.5 GB total — fits in 48 GB with 25 GB headroom
-  - **VERDICT: MLA joint compression VIABLE and preferred over separate ShadowKV**
-  - This is the critical path to Goal 1 (1M context on 48 GB)
+- **SnapKV with real Q capture**: 100% agreement at 25% keep — BREAKTHROUGH (2026-04-15)
+  - `install_q_capture_hook()` + `compute_importance_from_real_q()` capture actual Q projections
+  - `patch_model_for_eviction_mask()` injects eviction into attention via bfloat16 masking
+  - 100% token agreement on NIAH, Math, Code at 25%, 50%, 75% keep ratios
+  - K-as-Q proxy was the entire quality problem (0% NIAH); real Q capture fixes it completely
+  - At 128K with 25% keep: KV = 1.4 GB, model+KV = 18.6 GB — fits trivially
+  - Remaining: SparseKVCache for physical compaction (masking validated, memory savings need custom cache)
+- **Task 53**: MLA rank probe + quality validation on Qwen3-Coder KV (2026-04-15)
+  - Joint KV rank 241/1024 (24%) — good compression ratio
+  - BUT post-hoc SVD quality FAIL: 7% token agreement during decode
+  - ShadowKV per-head SVD also poor: 34% K compression → 16% NIAH, rank sweep confirmed
+  - **VERDICT: SVD approaches fail for post-trained models; SnapKV eviction is the path**
 - **Task 56**: Add MagicDec cost-model gate for speculative decoding decisions (2026-04-15)
   - New `omlx/specdec_gate.py` — closed-form predictor based on MagicDec Eq. 2-4
   - Calibrated on M4 Pro: compute=19.1ms/tok, KV-load=0.34µs/ctx-token, crossover ~57K
