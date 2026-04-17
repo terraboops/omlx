@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 103: Trigonometric pre-RoPE importance scoring** — calibrated + scorer shipped (2026-04-17)
+  - `scripts/calibrate_qk_centres.py`: captures pre-RoPE Q/K for all 48 layers (22s GPU)
+  - `omlx/patches/trig_score.py`: TrigScorer class with O(d)-per-key scoring
+  - Calibrated centres: 889 KB at `omlx/patches/qk_centres/qwen3_coder_30b.npz`
+  - Q centres (32 heads, 128 dims), K centres (4 heads, 128 dims) per layer
+  - `classify_heads()`: frequency-based streaming/retrieval classification
+  - Composes with SnapKV: trigonometric score as alternative importance signal
 - **Task 45: XGrammar tool-call JSON guarantee** — constrained decoding shipped (2026-04-17)
   - `omlx/patches/xgrammar_constrain.py`: grammar compilation, caching, sampler creation
   - `get_compiled_grammar()`: compiles JSON schemas, caches by hash for reuse

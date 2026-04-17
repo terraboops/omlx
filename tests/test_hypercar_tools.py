@@ -1397,3 +1397,43 @@ class TestXGrammarLogic:
 
         assert mod.extract_json_schema_from_request({}) is None
         assert mod.extract_json_schema_from_request({"tools": []}) is None
+
+
+# ---- Task 103: Trigonometric Pre-RoPE Scoring ----
+
+_trig_src = Path("omlx/patches/trig_score.py").read_text()
+
+
+class TestTrigScoreSource:
+    """Source-level tests for trigonometric scoring module."""
+
+    def test_trig_scorer_class_exists(self):
+        assert "class TrigScorer" in _trig_src
+
+    def test_load_method(self):
+        assert "def load(" in _trig_src
+
+    def test_score_method(self):
+        assert "def score(" in _trig_src
+
+    def test_classify_heads_method(self):
+        assert "def classify_heads(" in _trig_src
+
+    def test_uses_cosine(self):
+        """Trigonometric scoring must use cosine for RoPE decomposition."""
+        assert "mx.cos(" in _trig_src or "cos_angles" in _trig_src
+
+    def test_uses_theta(self):
+        """Must use RoPE theta frequencies."""
+        assert "theta" in _trig_src
+
+    def test_head_freq_products(self):
+        """Must precompute q_centre * k_centre per frequency."""
+        assert "head_freq_products" in _trig_src
+
+    def test_calibration_file_exists(self):
+        """Calibrated Q/K centres must exist from GPU calibration run."""
+        assert Path("omlx/patches/qk_centres/qwen3_coder_30b.npz").exists()
+
+    def test_calibration_script_exists(self):
+        assert Path("scripts/calibrate_qk_centres.py").exists()
