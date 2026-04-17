@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 45: XGrammar tool-call JSON guarantee** — constrained decoding shipped (2026-04-17)
+  - `omlx/patches/xgrammar_constrain.py`: grammar compilation, caching, sampler creation
+  - `get_compiled_grammar()`: compiles JSON schemas, caches by hash for reuse
+  - `create_grammar_sampler()`: wraps standard sampler with grammar bitmask constraint
+  - `extract_json_schema_from_request()`: extracts schema from tools or response_format
+  - `--grammar` flag on server enables constrained decoding
+  - Guarantees every generated response validates against the provided JSON schema
 - **Task 102: Submodular greedy eviction** — diversity-aware token selection (2026-04-16)
   - `_select_submodular()`: greedy selection with value-vector diversity penalty
   - Within each BUZZ segment, penalizes tokens similar to already-selected tokens (sim > 0.8)

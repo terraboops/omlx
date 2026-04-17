@@ -1313,3 +1313,87 @@ class TestEvictionStackComposition:
         claude_src = Path("CLAUDE.md").read_text()
         assert "--snapkv-keep" in claude_src
         assert "--caote" in claude_src
+
+
+# ---- Task 45: XGrammar Tool-Call JSON Guarantee ----
+
+_xgrammar_src = Path("omlx/patches/xgrammar_constrain.py").read_text()
+
+
+class TestXGrammarSource:
+    """Source-level tests for XGrammar integration."""
+
+    def test_get_compiled_grammar_exists(self):
+        assert "def get_compiled_grammar(" in _xgrammar_src
+
+    def test_create_grammar_sampler_exists(self):
+        assert "def create_grammar_sampler(" in _xgrammar_src
+
+    def test_extract_schema_from_request(self):
+        assert "def extract_json_schema_from_request(" in _xgrammar_src
+
+    def test_cache_stats_exists(self):
+        assert "def grammar_cache_stats(" in _xgrammar_src
+
+    def test_handles_response_format(self):
+        """Must extract schema from response_format.json_schema."""
+        assert "response_format" in _xgrammar_src
+        assert "json_schema" in _xgrammar_src
+
+    def test_handles_tools(self):
+        """Must extract schema from tools[*].function.parameters."""
+        assert "tools" in _xgrammar_src
+        assert "parameters" in _xgrammar_src
+
+    def test_caches_by_hash(self):
+        """Must cache compiled grammars by schema hash."""
+        assert "schema_hash" in _xgrammar_src
+        assert "_grammar_cache" in _xgrammar_src
+
+    def test_server_grammar_flag(self):
+        """Server must have --grammar flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--grammar" in server_src
+
+
+class TestXGrammarLogic:
+    """Functional tests for schema extraction (no GPU needed)."""
+
+    def test_extract_from_response_format(self):
+        spec = importlib.util.spec_from_file_location(
+            "xgrammar_constrain", "omlx/patches/xgrammar_constrain.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        req = {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"schema": {"type": "object", "properties": {"x": {"type": "integer"}}}}
+            }
+        }
+        schema = mod.extract_json_schema_from_request(req)
+        assert schema is not None
+        assert "integer" in schema
+
+    def test_extract_from_tools(self):
+        spec = importlib.util.spec_from_file_location(
+            "xgrammar_constrain", "omlx/patches/xgrammar_constrain.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        req = {
+            "tools": [{"function": {"name": "get_weather",
+                        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+        }
+        schema = mod.extract_json_schema_from_request(req)
+        assert schema is not None
+        assert "string" in schema
+
+    def test_no_schema_returns_none(self):
+        spec = importlib.util.spec_from_file_location(
+            "xgrammar_constrain", "omlx/patches/xgrammar_constrain.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod.extract_json_schema_from_request({}) is None
+        assert mod.extract_json_schema_from_request({"tools": []}) is None

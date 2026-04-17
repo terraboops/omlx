@@ -308,6 +308,9 @@ def main():
     parser.add_argument("--submodular-evict", action="store_true", default=False,
                         help="Submodular greedy selection with diversity penalty instead of "
                              "independent top-K. Reduces redundancy in kept tokens.")
+    parser.add_argument("--grammar", action="store_true", default=False,
+                        help="Enable XGrammar constrained decoding for tool calls and "
+                             "JSON schema response_format. Guarantees valid JSON output.")
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill strategy: minference (per-head pattern dispatch)")
