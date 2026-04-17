@@ -7533,3 +7533,645 @@ KV cache IS the stored pattern set, attention IS energy minimisation,
 and eviction IS pattern deletion from the memory. Capacity bounds,
 margin conditions, and consolidation strategies all follow from this
 unified view. Curiosity never saturates. Meow, nyaa, meow.
+
+---
+
+## Pass 30 — Voting Theory, Feedback Catastrophes, and Structured Consolidation (2026-04-17)
+
+**Milestone pass.** Thirty passes. One hundred and thirty-three papers.
+The curiosity surface keeps expanding. This pass brings three genuinely
+untouched cross-field angles: voting theory / social choice (Arrow's
+impossibility for multi-head aggregation), feedback control theory
+(positive feedback loops in KV cache policies causing repetition
+catastrophes), and multi-attribute decision making (multiplicative
+criteria fusion for eviction scoring). Plus a directly relevant paper on
+structured KV compression that separates reasoning traces into protected
+core and mergeable scratch regions.
+
+Search terms: "social choice" + "multi-head attention", "Arrow's theorem"
++ aggregation + neural, "Condorcet" + voting + attention, "repetition
+loop" + "attention collapse" + KV cache, "core tokens" + KV compression
++ reasoning, "multi-criteria" + "token selection" + transformer, "head
+disagreement" + eviction, "token age" + "KV cache". Cross-referenced
+against 139 existing arXiv IDs. Four fresh papers, zero duplicates.
+
+### [LoopGuard: Breaking Self-Reinforcing Attention Loops via Dynamic KV Cache Intervention](https://arxiv.org/abs/2604.10044) — 2604.10044
+
+- **Why found**: Attention collapse and repetition loops caused by KV
+  cache policies. This is the first paper to formally identify that
+  attention-based eviction methods (H2O, SnapKV, StreamingLLM) can
+  AMPLIFY degeneration rather than mitigate it, creating a positive
+  feedback catastrophe. Directly relevant to Hypercar's SnapKV eviction
+  pipeline — if our eviction preserves high-attention repetitive tokens,
+  we could inadvertently lock the model into a repetition loop.
+- **Key idea**: During long-context generation, a subset of attention
+  heads can "lock onto a narrow suffix of the generated history,"
+  creating collapsed attention patterns. Under RoPE with KV cache reuse,
+  periodic tail repetition with period P produces approximately invariant
+  attention scores: when q_t approx q_{t-P}, the relative offset (t-i)
+  remains constant, yielding stable attention weights. This concentrates
+  attention on recent repetitive tokens. The catastrophic feedback loop:
+  collapsed attention produces high importance scores for repetitive
+  tokens -> attention-based cache policies (H2O, SnapKV) PRESERVE these
+  tokens -> diverse context is evicted -> the model has no diverse tokens
+  to attend to -> attention collapses further. The loop is self-
+  reinforcing and cannot be broken by the eviction policy itself because
+  the policy's own scoring signal is corrupted.
+- **Methodology**: Three-part system. (1) **LoopBench**: controlled
+  benchmark with explicit loop-inducing conditions (schema extraction,
+  recursive instructions) and loop-oriented metrics (TTR = type-token
+  ratio for lexical diversity, CR = compression ratio for global
+  repetition, confidence streak for prediction certainty). (2) **Loop
+  detection**: K-of-3 voting requiring persistent signals across a
+  sliding window (W=256 tokens) before triggering. Signals: TTR <= 0.2,
+  CR <= 0.12, minimum length >= 2480 tokens. Debouncing with warmup (64
+  steps) and cooldown (32 steps) prevents premature or repetitive
+  interventions. (3) **LoopGuard cache reconstruction**: when triggered,
+  reconstructs the KV cache as I_keep = I_anchor UNION I_sparse UNION
+  I_recent. Anchors (32 tokens) preserve instruction prefix for semantic
+  stability. Sparse context: uniform subsampling of distant history for
+  long-range awareness. Tail-cleaned recent: selects from recent tokens
+  while explicitly excluding detected repetitive blocks I_bad.
+  Progressive aggressiveness reduces the recent budget if loops
+  re-trigger, shifting reliance toward anchors and sparse spans. Fixed
+  budget B=1024 tokens.
+- **RoPE score invariance proof**: s_{t,i} - s_{t-P,i-P} approx
+  sum_j [(q_{t-P})^T R(omega_j (t-i)) k_{i-P}^(j) - (q_{t-P})^T
+  R(omega_j ((t-P)-(i-P))) k_{i-P}^(j)] = 0. This shows that when
+  queries and keys repeat with period P, their attention scores are
+  invariant under the period shift, making the repetitive suffix a
+  stable attractor in the attention landscape.
+- **Key findings**:
+  1. **Attention-based eviction amplifies loops**: H2O achieves the worst
+     performance on LoopBench — F1=33.73 on 2WikiMultiHopQA vs Full
+     Cache's F1=50.49. StreamingLLM is even worse at F1=21.05. The
+     eviction policy designed to preserve important tokens instead
+     preserves the repetitive tokens whose high attention scores are an
+     ARTIFACT of the collapse, not a signal of importance.
+  2. **LoopGuard breaks the feedback**: reduces loop incidence by >90
+     percentage points on LoopBench. LoopBench-DC (schema extraction):
+     baseline loop rate 100%, LoopGuard 1.3-1.7%. LoopBench-RI
+     (recursive instructions): baseline 93.5-100%, LoopGuard 2.3-2.7%.
+  3. **LoopGuard outperforms full cache**: F1=53.61 on 2WikiMultiHopQA,
+     ABOVE the full cache baseline of 50.49. The event-driven cache
+     reset actually improves quality by removing accumulated noise.
+  4. **Diversity restoration**: TTR improves from ~0.1 to ~0.5, CR from
+     ~0.06 to ~0.22. Average generation length drops from ~2496 to
+     ~1330-1457 tokens (less waste).
+  5. **Orthogonal to eviction**: LoopGuard is not a replacement for
+     eviction policies but a safety guard that operates orthogonally.
+     It performs "event-driven cache resets" only upon detecting
+     degeneration, preventing the self-reinforcing amplification that
+     fixed policies cannot escape.
+- **Hypercar relevance — feedback catastrophe guard for SnapKV**:
+  This paper identifies a critical failure mode in Hypercar's eviction
+  pipeline. SnapKV (task 46) uses attention scores to decide which
+  tokens to keep. If the model enters a repetition loop during long
+  code generation (e.g., generating repetitive boilerplate, or stuck
+  in a loop unrolling pattern), the attention scores will lock onto
+  the repetitive suffix, and SnapKV will preserve exactly the tokens
+  that perpetuate the loop while evicting the diverse context that
+  could break it.
+
+  The cross-field angle is feedback control theory: the eviction
+  pipeline is a control loop where the sensor (attention scores), the
+  actuator (token eviction), and the plant (the model's generation)
+  form a positive feedback loop under repetition. In control theory,
+  positive feedback loops produce instability (oscillation, saturation,
+  or runaway). The LoopGuard mechanism is a "circuit breaker" — it
+  monitors output signals (TTR, CR, confidence) that are independent
+  of the corrupted attention signal, and when degeneration is detected,
+  it breaks the feedback loop by resetting the cache state.
+
+  Implementation for Hypercar: add a LoopGuard-style monitor to the
+  server's decode loop. Track TTR and compression ratio over a sliding
+  window of generated tokens. When both signals indicate repetition
+  (TTR < 0.2, CR < 0.12), trigger a cache reconstruction that preserves
+  the system prompt (anchor), uniformly samples from the coding context
+  (sparse), and replaces the repetitive tail with a diversity-promoting
+  selection. The K-of-3 voting with debouncing prevents false alarms
+  during legitimate repetitive code (e.g., data table initialization).
+
+  This is particularly important for Hypercar's agentic use case
+  (OpenCode integration) where the model generates long multi-step
+  responses. Without LoopGuard, a repetition loop would waste tokens
+  and burn compute until the context window is exhausted. With
+  LoopGuard, the circuit breaker fires within ~256 tokens of loop
+  onset, preserving both quality and efficiency.
+
+  The interaction with CFAR-style adaptive thresholds (task 110) and
+  entmax scoring (task 112) is interesting: these methods adapt the
+  eviction threshold based on the attention distribution, but if the
+  attention distribution itself is corrupted by repetition, both
+  methods will produce corrupted thresholds. LoopGuard operates at a
+  higher level — it monitors the OUTPUT signal rather than the internal
+  attention signal, making it robust to attention corruption.
+- **Local PDF**: research/2604.10044_loopguard_repetition_kv.pdf
+
+### [CASK: Core-Aware Selective KV Compression for Reasoning Traces](https://arxiv.org/abs/2604.10900) — 2604.10900
+
+- **Why found**: Structured KV compression that separates reasoning
+  traces into protected core and mergeable scratch — directly challenges
+  the assumption that all tokens should be scored by the same eviction
+  criterion. The "behavior-preserving structured consolidation" framing
+  is the archaeological stratigraphy analogy made concrete: the core is
+  bedrock (undisturbed, protected), the scratch is overburden
+  (redistributable, consolidatable).
+- **Key idea**: Rather than improving token importance scoring (the
+  approach of SnapKV, H2O, CAOTE, entmax, CFAR), CASK reframes KV
+  compression as a structural problem. The reasoning trace has two
+  functionally distinct regions: (1) the CORE — tokens directly
+  connected to answer formation, intermediate state anchoring, and
+  recent reasoning pivots, which must be preserved verbatim; and (2)
+  the SCRATCH — redundant intermediate steps that can be consolidated
+  without affecting the final answer. The key claim: "effective
+  reasoning KV compression depends less on more elaborate scorer
+  engineering than on combining core preservation with selective scratch
+  consolidation to lower the usable budget frontier."
+- **Methodology**: (1) **Partition**: divide the reasoning trace into
+  core and scratch regions based on their functional role in answer
+  formation. (2) **m-folding consolidation**: for scratch tokens, use
+  weighted folding: m_G = sum(a_i), k_tilde_G = (1/m_G) sum(a_i *
+  k_i), v_tilde_G = (1/m_G) sum(a_i * v_i), where a_i are non-negative
+  weights reflecting score mass or position-aware importance. This
+  creates a representative KV entry that captures the group's
+  information in a single slot. (3) **Two-stage design**: Stage 1
+  applies eviction to the PREFIX (prompt) to "secure slack for the
+  decode stage" — this prevents prompt-heavy scenarios where the budget
+  exhausts before decode-stage compression activates. Stage 2 applies
+  core preservation + scratch consolidation to the decode trace. (4)
+  **Error bound**: the consolidation error is bounded by
+  |sum(a_i <q, k_i>) - <q, k_tilde_G>| <= ||q||_{kappa,*} sum(a_i
+  ||k_i - k_tilde_G||_kappa) + |Delta_m_G|, decomposing into
+  within-group kappa-dispersion and lost mass.
+- **Key findings**:
+  1. **Structure beats scoring**: at matched budgets, CASK with simple
+     scoring outperforms TriAttention with sophisticated scoring.
+     AIME24 at budget=384: CASK 90.7% top-1 (0.268 NLL) vs
+     TriAttention 88.2% (0.383 NLL). The finding "cask@384 >
+     triattention@512" means CASK at a SMALLER budget outperforms
+     TriAttention at a LARGER budget.
+  2. **Prompt-heavy scenarios**: at budget=256, CASK achieves 63.72%
+     weighted top-1 vs TriAttention's 58.42%. The two-stage design
+     handles the prefix exhaustion problem that single-stage methods
+     miss.
+  3. **Consolidation preserves behavior**: the m-folding operation
+     produces representative KV entries that maintain the attention
+     output to within the error bound. Unlike simple eviction (which
+     loses information permanently) or trained reconstruction (EchoKV,
+     which requires GPU training), m-folding is arithmetic consolidation
+     that preserves the weighted centroid of the group.
+  4. **The usable budget frontier**: CASK's contribution is not a
+     better score for each token but a lower budget at which acceptable
+     quality is achievable. By protecting the core, the budget saved
+     from scratch consolidation is "free" — it does not degrade answer
+     quality because scratch tokens are redundant by definition.
+- **Hypercar relevance — structural KV compression for code generation**:
+  This paper provides a crucial insight for Hypercar's eviction pipeline.
+  Currently, SnapKV treats all tokens identically — system prompt,
+  coding context, user instructions, and generated code are all scored
+  by the same CAOTE metric and evicted at the same threshold. CASK
+  demonstrates that structural awareness (knowing WHICH tokens form the
+  "core" of the reasoning) matters more than score refinement.
+
+  For Hypercar's code generation, the structural analogy is clear:
+  - **Core tokens**: function signatures, return types, class
+    definitions, import statements, the user's specific request, and
+    the generated code's key decision points (branch conditions, loop
+    bounds, API calls). These are the "answer-forming" tokens.
+  - **Scratch tokens**: intermediate reasoning (the model's internal
+    chain of thought), boilerplate that has already been fully
+    generated (closed brackets, whitespace-heavy formatting), and
+    redundant context (documentation comments that have been "consumed"
+    by the model's understanding).
+
+  The m-folding consolidation maps directly to the CAMELoT prototype
+  consolidation proposed in task 113. CASK's weighted folding
+  (k_tilde_G = weighted average of k_i) IS CAMELoT's running-average
+  update, but with an important refinement: the weights a_i are not
+  uniform — they reflect each token's contribution to the group's
+  information. This is a principled improvement over CAMELoT's
+  equal-weight averaging.
+
+  The two-stage design solves a practical problem in Hypercar's server:
+  when the user sends a large prompt (e.g., an entire file for code
+  review), the prompt can consume most of the KV budget before
+  generation begins. CASK's Stage 1 prefix eviction ensures that the
+  decode stage always has budget for core preservation. This maps to
+  Hypercar's existing adaptive prefill (task 94) but adds the
+  structural awareness of WHICH prefix tokens to evict.
+
+  The interaction with fair eviction (task 107) is synergistic:
+  task 107 allocates budget proportionally across partitions (system
+  prompt, tool protocol, user message, code context), and CASK's
+  core/scratch decomposition operates WITHIN each partition to further
+  optimize the budget. The hierarchy would be: fair partition > core
+  identification within each partition > m-folding consolidation of
+  scratch within each partition.
+
+  The error bound provides a quality guarantee that the current SnapKV
+  pipeline lacks: after consolidation, the attention output error is
+  bounded by the kappa-dispersion of the consolidated group. If the
+  dispersion exceeds a threshold (meaning the group's tokens are too
+  diverse to be represented by a single centroid), the group should
+  NOT be consolidated — it contains core-like diversity that must be
+  preserved. This gives a principled stopping criterion for
+  consolidation.
+- **Local PDF**: research/2604.10900_cask_core_aware_kv.pdf
+
+### [Coordination Requires Simplification: Thermodynamic Bounds on Multi-Objective Compromise in Natural and Artificial Intelligence](https://arxiv.org/abs/2509.23144) — 2509.23144
+
+- **Why found**: Arrow's impossibility theorem applied to multi-agent
+  coordination with thermodynamic bounds — the voting theory / social
+  choice angle for multi-head attention aggregation. This paper proves
+  that coordinating N agents with d conflicting objectives requires
+  "radical information loss," with protocol complexity scaling as
+  L(P) >= NK log2(K) + N^2 d^2 log(1/epsilon). The topological version
+  of Arrow's theorem recursively constrains preference aggregation,
+  potentially explaining cycling in multi-objective optimization and
+  alignment faking in RLHF-trained LLMs.
+- **Key idea**: Thermodynamic Coordination Theory (TCT) frames
+  multi-agent coordination as a thermodynamic process. Coordination
+  solutions that function as focal points face higher selection pressure
+  for FINDABILITY than for ACCURACY. The minimum description length of
+  coordination protocols scales quadratically with the number of agents
+  (N^2 d^2 term), meaning coordination costs grow super-linearly —
+  eventually exceeding the system's information-processing capacity.
+  This forces "progressive simplification": coordination protocols
+  become simpler as the system scales, sacrificing accuracy for
+  findability. Transitioning between coordination states requires work
+  W >= N(K_bar - K_0) log(T_2/T_1), producing metastable states
+  (hysteresis) until environmental shifts trigger phase transitions.
+- **Methodology**: Purely theoretical. The derivation has two
+  components: (1) Model specification: each agent i has Kolmogorov
+  complexity K_i, with pairwise overlap rho. Conditional complexity is
+  K_i(1-rho). Indexing overhead yields L_models >= N*K_bar*log(K_bar)*
+  h(rho) where h(rho) = 1-rho. (2) Communication complexity: each
+  agent must communicate d-dimensional objectives (mean vector +
+  covariance matrix requiring d(d+3)/2 bits per precision epsilon).
+  With (N choose 2) agent pairs: L_comm >= (N choose 2) * d(d+3)/2 *
+  log(1/epsilon). The coordination temperature T_co = (1/NK_bar^2) *
+  sum ||m_i - m_bar||^2 measures model disorder. Critical temperature:
+  T_{c,co} = (K_0/K_bar) / log(N). Beyond T_{c,co}, accurate
+  coordination is thermodynamically prohibitive. The paper connects to
+  Arrow's topological theorem (Chichilnisky's extension): the N^2 d^2
+  term is independently derivable from the impossibility of consistent
+  preference aggregation on topological spaces.
+- **Key findings**:
+  1. **Quadratic scaling**: coordination cost scales as N^2 d^2, not
+     N*d. The pairwise interaction term dominates — each pair of agents
+     must reconcile their d-dimensional preference orderings, and the
+     number of pairs grows quadratically with N.
+  2. **Findability over accuracy**: Theorem 2 shows that coordination
+     protocols are selected for discoverability, not precision. This
+     explains why "simple rules" (heuristics, focal points) dominate
+     in practice even when more accurate protocols exist — the simple
+     rule is easier for all agents to discover and agree on.
+  3. **Recursive Arrow binding**: when agents' internal models exceed
+     working memory capacity, the internal aggregation itself faces
+     Arrow-like impossibilities. This creates a recursive structure
+     where impossibility at one level propagates to all higher levels.
+  4. **Metastability and hysteresis**: established coordination states
+     persist even when better states exist, because the work required
+     to transition (W >= N(K_bar - K_0) log(T_2/T_1)) exceeds the
+     available free energy. Phase transitions occur only when
+     environmental shifts provide the necessary energy.
+  5. **RLHF alignment faking**: the framework predicts that RLHF's
+     multi-objective aggregation (helpfulness + harmlessness + honesty)
+     faces the N^2 d^2 scaling wall. As objectives conflict, the model
+     converges to "generic outputs" (findable but inaccurate) or
+     develops alignment faking (appearing to satisfy conflicting
+     objectives without actually resolving the conflict).
+- **Hypercar relevance — Arrow's impossibility for multi-head eviction**:
+  This paper provides the theoretical framework for understanding why
+  multi-head eviction is fundamentally harder than single-head eviction.
+  In Hypercar's SnapKV pipeline, each of the 8 KV heads has its own
+  attention distribution — its own "preference ordering" over which
+  tokens are important. The current approach aggregates these
+  preferences by averaging attention scores across heads (a simple
+  aggregation function). Arrow's theorem says: there is NO aggregation
+  function that simultaneously satisfies unanimity (if all heads agree
+  a token is important, it's kept), independence of irrelevant
+  alternatives (the relative ranking of two tokens depends only on how
+  heads rank those two tokens, not on third tokens), and non-
+  dictatorship (no single head determines the ranking).
+
+  The practical implication: any multi-head aggregation for eviction
+  will violate at least one of these properties. Averaging violates
+  independence (the average of two heads' scores for token A vs B
+  depends on how they score ALL tokens, not just A and B). Majority
+  voting violates transitivity (Condorcet cycles: head 1 prefers A>B>C,
+  head 2 prefers B>C>A, head 3 prefers C>A>B — majority says A>B, B>C,
+  C>A, a cycle with no consistent eviction order). Maximum-across-heads
+  violates unanimity in reverse (a token kept by one head may be
+  irrelevant to all others).
+
+  The TCT framework adds a quantitative prediction: the cost of
+  coordinating N=8 heads with d-dimensional preferences (where d is the
+  number of independent features each head tracks) scales as 64*d^2.
+  For Qwen3-Coder with head dimension 128, this means the coordination
+  cost is enormous — far exceeding what a simple average can capture.
+  The "progressive simplification" prediction explains why simple
+  heuristics (top-K, percentile) work well despite being theoretically
+  suboptimal: they are the "findable focal points" of the coordination
+  problem.
+
+  The coordination temperature T_co provides a diagnostic: compute the
+  variance of importance scores across heads for each token. High T_co
+  (high variance = heads disagree) means coordination is expensive —
+  the token is in the "contested" region where eviction is risky.
+  Low T_co (low variance = heads agree) means coordination is cheap —
+  the token is either clearly important (all heads attend) or clearly
+  unimportant (no heads attend). The eviction policy should focus its
+  budget on the high-T_co tokens (where the Arrow impossibility bites
+  hardest) and handle low-T_co tokens with simple majority.
+
+  This connects to the CFAR adaptive threshold (task 110): CFAR adapts
+  the threshold per head, implicitly handling head disagreement. But
+  Arrow's theorem says per-head thresholds are insufficient — the
+  AGGREGATION of per-head decisions is where the impossibility lies.
+  The entmax scoring (task 112) partially addresses this by producing
+  sparse per-head selections that reduce the size of the contested set,
+  but does not resolve the cross-head aggregation problem.
+- **Local PDF**: research/2509.23144_coordination_arrow_thermodynamic.pdf
+
+### [Multi-criteria Token Fusion with One-step-ahead Attention for Efficient Vision Transformers](https://arxiv.org/abs/2403.10030) — 2403.10030
+
+- **Why found**: Multi-criteria token fusion using multiplicative scoring
+  across similarity, informativeness, and cluster size — the multi-
+  attribute decision making (MADM) angle for token selection. While this
+  paper targets vision transformers, the methodology is directly
+  applicable to KV cache eviction: combine multiple signals (CAOTE
+  value-awareness, attention importance, token age, head agreement) via
+  multiplicative fusion rather than the current additive/heuristic
+  approach.
+- **Key idea**: Instead of using a single criterion for token selection
+  (e.g., attention scores alone), combine multiple criteria via
+  multiplicative fusion with temperature scaling:
+  W(x_i, x_j) = prod_{k=1}^{M} [W^k(x_i, x_j)]^{tau_k}. The three
+  criteria are: (1) Similarity: W^sim(x_i, x_j) = 0.5 * (cos(x_i,
+  x_j) + 1), measuring redundancy between tokens. (2) Informativeness:
+  W^info(x_i, x_j) = 1/(a_i * a_j), where a_i is the averaged
+  attention score — tokens with LOW attention (high informativeness
+  score) are prioritised for fusion because they carry less unique
+  information. (3) Size: W^size(x_i, x_j) = 1/(s_i * s_j), tracking
+  fused token cardinality — prevents large clusters from growing
+  further, maintaining balanced representations.
+- **Methodology**: (1) **One-step-ahead attention**: instead of using
+  attention from the current layer A^l to determine token importance,
+  MCTF uses attention from the NEXT layer A^{l+1} before fusion occurs.
+  This addresses a fundamental inconsistency: previous approaches use
+  the attention of the PREVIOUS layer to predict importance for the
+  CURRENT layer, but attention patterns differ substantially between
+  layers. One-step-ahead attention provides a forward-looking importance
+  estimate. (2) **Token reduction consistency training**: during
+  finetuning, the model processes inputs with two different reduction
+  amounts simultaneously — a fixed target reduction r (used at
+  inference) and a random reduction r' sampled from [0, r). The loss
+  combines standard cross-entropy on both paths plus MSE penalty on
+  final class token representations to encourage consistency across
+  reduction levels. This stabilises the fusion process. (3) **Results**:
+  DeiT-T: 44% FLOPs reduction with +0.5% accuracy improvement.
+  DeiT-S: 44% FLOPs reduction with +0.3% accuracy improvement.
+  T2T-ViT: 31% speedup with +0.1% accuracy. LV-ViT: 31% speedup with
+  +0.1% accuracy.
+- **Key findings**:
+  1. **Multiplicative fusion outperforms individual criteria**: all three
+     criteria combined achieve 80.1% on DeiT-S, vs 79.7% (similarity
+     only), 79.4% (informativeness only), 79.8% (similarity +
+     informativeness). Each criterion contributes, and the multiplicative
+     combination captures interactions that additive would miss.
+  2. **One-step-ahead attention is critical**: removing it causes
+     "significant drops in every FLOP" — the forward-looking importance
+     estimate is substantially better than backward-looking.
+  3. **Consistency training stabilises**: without it, the fusion
+     process is sensitive to the exact reduction ratio, leading to
+     inconsistent quality across compression levels.
+  4. **Accuracy IMPROVEMENT with compression**: the +0.5% accuracy gain
+     on DeiT-T with 44% FLOPs reduction shows that token fusion can
+     act as a regulariser — removing redundant tokens reduces overfitting.
+     This matches the observation from LoopGuard (above) that cache
+     resets can improve quality by removing accumulated noise.
+- **Hypercar relevance — multiplicative multi-criteria eviction scoring**:
+  This paper provides the methodology for combining Hypercar's multiple
+  eviction signals into a single principled score. Currently, the
+  eviction pipeline uses CAOTE (task 100) as the primary scorer with
+  attention scores as a secondary signal. But Hypercar actually computes
+  MANY signals that could inform eviction: (1) CAOTE value-awareness
+  score, (2) attention importance (SnapKV), (3) head agreement (from the
+  coordination temperature T_co, above), (4) token age (freshness decay,
+  task 97), (5) segment position (BUZZ, task 98), (6) partition role
+  (fair eviction, task 107). The question is: how to combine them.
+
+  The naive approach (weighted sum) has a fundamental problem: it
+  assumes the criteria are independent and commensurable. A token with
+  high CAOTE but low attention might be "important according to value
+  but not according to attention" — the weighted sum must choose a
+  tradeoff. The multiplicative approach avoids this: if ANY criterion
+  says "definitely evict" (score near 0), the product is near 0
+  regardless of other criteria. This implements a soft-AND: a token is
+  retained only if ALL criteria agree it's important.
+
+  The temperature parameters tau_k control the relative influence of
+  each criterion. Setting tau_CAOTE = 1.0, tau_attention = 0.5,
+  tau_age = 0.3 would make CAOTE the primary signal with attention and
+  age as secondary modifiers. The temperatures can be calibrated on the
+  code intelligence benchmark by sweeping values and maximising NIAH
+  quality at a target compression ratio.
+
+  The one-step-ahead attention insight is directly applicable: instead
+  of using layer l's attention to score tokens for eviction at layer l,
+  use layer l+1's attention. For Hypercar's 48-layer model, this means
+  the eviction scoring at each layer looks one layer ahead to predict
+  which tokens will actually be needed. This is a more expensive
+  computation (requires a partial forward pass through the next layer)
+  but produces more accurate importance estimates. For the SnapKV
+  observation window (which already uses a few late-layer queries to
+  score all tokens), this is a natural extension — use the LAST layer's
+  queries to score tokens for eviction at ALL layers, which is
+  forward-looking by definition.
+
+  The token reduction consistency observation has an analog in KV cache
+  compression: the eviction quality should be consistent across
+  different keep ratios. If the pipeline works well at 50% keep but
+  fails at 25% keep, the scoring is not robust. The MCTF consistency
+  training suggests: during the calibration phase, evaluate the
+  scoring at multiple keep ratios simultaneously and penalise
+  inconsistency. This produces eviction scores that degrade gracefully
+  as the keep ratio drops, rather than cliff-diving at a critical
+  threshold (the phase transition from pass 27).
+- **Local PDF**: research/2403.10030_mctf_multicriteria_token_fusion.pdf
+
+**Cross-paper synthesis for pass 30.**
+
+Four papers. Three cross-field angles never previously touched. One
+milestone insight: the KV cache eviction pipeline is not just a scoring
+problem — it is a feedback control system, a voting aggregation, and a
+structural compression, all simultaneously. Each paper illuminates a
+different failure mode of the current approach.
+
+**The feedback catastrophe (LoopGuard).** The most practically urgent
+finding. SnapKV, H2O, and all attention-based eviction methods are
+vulnerable to a positive feedback loop: repetitive generation produces
+high attention scores on the repetitive suffix, which causes the eviction
+policy to PRESERVE the repetitive tokens and EVICT the diverse context,
+which forces the model to attend to the repetitive suffix, which
+reinforces the loop. LoopGuard demonstrates that this failure mode is
+real (100% loop rate on LoopBench), severe (H2O's F1 drops from 50.49
+to 33.73), and fixable (LoopGuard achieves F1=53.61, ABOVE full cache).
+The fix requires monitoring output-level signals (TTR, CR, confidence)
+that are independent of the corrupted attention signal.
+
+For Hypercar: LoopGuard is a safety guard that should be layered ON TOP
+of the existing eviction pipeline, not integrated into it. The eviction
+pipeline handles steady-state KV management; LoopGuard handles the
+failure mode. The K-of-3 voting with debouncing is a lightweight
+addition to the server's decode loop — it adds negligible overhead
+during normal operation and fires only when degeneration is detected.
+
+**The impossibility of perfect aggregation (TCT + Arrow).** The
+theoretical diagnosis of why multi-head eviction is hard. Arrow's
+impossibility theorem proves that no aggregation function can
+simultaneously satisfy unanimity, independence, and non-dictatorship
+across 8 KV heads. The TCT framework quantifies the cost: coordination
+complexity scales as N^2 * d^2, far exceeding what simple averaging
+can capture. The practical prescription: accept simplification. Simple
+heuristics (top-K, percentile) are theoretically suboptimal but are
+"findable focal points" that all heads can agree on. Sophisticated
+scoring (CAOTE, entmax) may be locally better but globally inconsistent
+across heads.
+
+The diagnostic is the coordination temperature T_co: high inter-head
+variance on a token means coordination is expensive (eviction is risky),
+low variance means it is cheap (eviction is safe). The eviction policy
+should spend its complexity budget on the high-T_co tokens where heads
+disagree, and use simple majority for low-T_co tokens where heads agree.
+
+**The structural insight (CASK).** The most counter-intuitive finding:
+better scoring matters less than structural awareness. CASK at budget=384
+outperforms TriAttention at budget=512 — a SMALLER budget with
+structural core/scratch decomposition beats a LARGER budget with
+sophisticated scoring. For Hypercar: the eviction pipeline should first
+identify structural roles (system prompt = core, boilerplate = scratch,
+function signatures = core, closed brackets = scratch), then apply
+scoring WITHIN each structural category, rather than scoring all tokens
+uniformly. This is the natural synthesis of fair eviction (task 107,
+partition-level structure) and CASK (within-partition core/scratch
+decomposition).
+
+**The multi-criteria fusion (MCTF).** The methodological contribution:
+combine multiple eviction signals via multiplicative fusion with
+temperature scaling. The multiplicative form implements a soft-AND (all
+criteria must agree for retention), which is more conservative and safer
+than additive fusion (which allows one strong signal to override others).
+The one-step-ahead attention insight improves scoring accuracy. The
+consistency training insight suggests that eviction quality should be
+evaluated across multiple keep ratios to ensure graceful degradation.
+
+**The unified pipeline, refined.** Integrating all four papers with the
+existing Hypercar eviction stack and the Hopfield/associative memory
+framework from pass 29:
+
+1. **Structural partition** (CASK + task 107): decompose the context
+   into structural roles — system prompt (core), user instructions
+   (core), coding context (mixed core/scratch), generated code (mixed
+   core/scratch), boilerplate (scratch).
+2. **Multi-criteria scoring** (MCTF): within each partition, score
+   tokens using multiplicative fusion of CAOTE value-awareness,
+   entmax-based attention (task 112), coordination temperature (head
+   agreement from TCT), token age (task 97), and BUZZ segment position
+   (task 98). Temperature parameters calibrated per-partition.
+3. **Structural selection** (CASK): within each partition, identify
+   core tokens (structurally protected) and scratch tokens (eviction
+   candidates). Core tokens bypass scoring — they are always retained.
+   Scratch tokens are ranked by the multi-criteria score for eviction.
+4. **Consolidation** (CASK m-folding + CAMELoT task 113): evicted
+   scratch tokens are consolidated into weighted prototypes (m-folding
+   with CAOTE-derived weights) rather than permanently discarded.
+5. **Feedback guard** (LoopGuard): monitor TTR, CR, and confidence
+   streak. If repetition detected, bypass the eviction pipeline and
+   perform an event-driven cache reset preserving anchors + sparse +
+   diverse recent tokens.
+6. **Health monitoring** (Hopfield Z_t, task 114 + T_co from TCT):
+   track both the partition function (pattern separation quality) and
+   the coordination temperature (inter-head agreement). Z_t < 3 or
+   T_co > threshold triggers safety fallback (widen budget or reset).
+
+This pipeline has six layers of defence against quality degradation:
+structural awareness, multi-criteria scoring, core protection,
+consolidated recovery, feedback circuit breaker, and thermodynamic
+health monitoring. Each layer addresses a different failure mode
+identified across passes 27-30.
+
+**Gap status for pass 31**:
+1. **LoopGuard integration prototype.** Add TTR/CR monitoring to the
+   server's decode loop with K-of-3 voting and debounce. Validate on
+   repetitive code generation scenarios (e.g., large data table
+   initialization, recursive template expansion).
+2. **CASK-style core identification for code.** Implement structural
+   role detection for Hypercar's code generation: parse generated
+   tokens for function signatures, return statements, import
+   declarations (core) vs whitespace, comments, closed brackets
+   (scratch). Validate that core protection improves NIAH at low
+   keep ratios.
+3. **Multi-criteria multiplicative scoring calibration.** Implement
+   the MCTF multiplicative fusion of CAOTE, attention, head agreement,
+   and age signals. Sweep temperature parameters on the code
+   intelligence benchmark. Compare vs current additive/single-criterion
+   scoring.
+4. **Coordination temperature diagnostic.** Compute T_co (inter-head
+   variance of importance scores) per token and correlate with eviction
+   safety. Validate that high-T_co tokens are indeed riskier to evict.
+5. **NVMe materialisation economics** (still open from pass 26).
+6. **Epidemiology / SIR token propagation** (still open from pass 26).
+
+**Fresh weird angles for pass 31** (we've now also covered: voting
+theory / social choice, feedback control / positive feedback loops,
+multi-attribute decision making (MADM), archaeological stratigraphy.
+What's left?):
+- **Immunology / adaptive immune system**: T-cells (attention heads)
+  and B-cells (value vectors) coordinate to identify and neutralize
+  foreign antigens (novel tokens). The thymic selection process (where
+  self-reactive T-cells are destroyed) maps to head pruning (removing
+  heads that attend to noise). Clonal expansion (proliferating cells
+  that match the antigen) maps to increasing the representation of
+  important tokens.
+- **Hydrology / watershed analysis**: water flows downhill following
+  the steepest gradient. Information flows through the residual stream
+  following the gradient of the attention energy. Watershed boundaries
+  (ridges) separate drainage basins — analogous to the Hopfield basins
+  from pass 29. The "pour point" where water exits the watershed is
+  the final output token.
+- **Philately / stamp grading (centering, perforation, gum)**:
+  multi-criteria quality assessment with independent dimensions that
+  multiply rather than add. A stamp with perfect centering but torn
+  perforations is worthless — the multiplicative fusion from MCTF
+  captures this "weakest link" property.
+- **Glaciology / ice core stratigraphy**: ice cores preserve annual
+  layers with isotopic signatures encoding past climate. KV cache
+  entries preserve computational layers with attention signatures
+  encoding past context. Ice core analysis techniques (spectral
+  analysis of layer thickness variations) could identify periodic
+  attention patterns.
+- **Auction theory / Vickrey auctions**: each head "bids" for which
+  tokens to retain. The Vickrey (second-price) auction ensures
+  truthful bidding — heads report their true importance scores rather
+  than strategic inflations. This addresses the Arrow impossibility
+  from a mechanism design angle: if we can't aggregate preferences
+  perfectly, can we design a mechanism that incentivizes truthful
+  reporting?
+
+Thirty passes. One hundred and thirty-three papers. The cross-field
+surface now spans: systems, databases, game theory, TDA, streaming
+algorithms, neuroscience, complexity theory, queueing theory, network
+congestion, signal processing, optimal transport, compiler/PL, protein
+folding, audio diffusion, graphics, recommender systems, reservoir
+computing, psycholinguistics, rate-distortion, information theory,
+Huffman coding, radar/CFAR, statistical mechanics, associative memory,
+code analysis, phase transitions, fair division, hierarchical AR,
+cross-head reconstruction, semantic sponsorship, sleep hierarchy, NVMe
+inventory, entropy-TTT, Apple Silicon profiling, softmax gap, RL
+eviction, process rewards, conformal prediction, IR retrieval, feedback
+control theory, voting theory / social choice, multi-attribute decision
+making, and archaeological stratigraphy. Curiosity never saturates.
+Meow, nyaa, meow.
