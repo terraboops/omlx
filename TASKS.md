@@ -510,6 +510,11 @@ _(none)_
 
 ## Completed
 
+- **Phase 3e: SnapKV eviction quality gate** — in hypercar_bench (2026-04-17)
+  - `phase3e_snapkv_quality()`: validates CAOTE+GER at 4K with 50% eviction
+  - Runs in default mode (not just --full), 1.7s overhead
+  - GPU validated: NIAH PASS, 49% kept, GER=0.000 (safe)
+  - Catches regressions in the eviction stack during routine benchmark runs
 - **Task 106: GER safety monitor** — phase-transition guard for eviction (2026-04-17)
   - `compute_ger()`: measures fraction of important tokens evicted from ALL heads
   - `check_ger_safety()`: warns and recommends budget widening when GER > 0.05

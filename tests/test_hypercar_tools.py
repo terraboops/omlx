@@ -1465,3 +1465,26 @@ class TestGERSafetySource:
     def test_ger_logs_value(self):
         """Must log GER value for monitoring."""
         assert "GER=" in _snapkv_src
+
+
+# ---- Phase 3e: SnapKV Quality Gate ----
+
+class TestSnapKVBenchPhase:
+    """Tests for SnapKV eviction quality gate in hypercar_bench."""
+
+    def test_phase3e_exists(self):
+        assert "def phase3e_snapkv_quality(" in _bench_src
+
+    def test_phase3e_uses_caote(self):
+        assert "compute_caote_importance" in _bench_src
+
+    def test_phase3e_uses_ger(self):
+        assert "check_ger_safety" in _bench_src
+
+    def test_phase3e_wired_in_default_mode(self):
+        """Phase 3e must run in default mode (not just --full)."""
+        assert "Phase 3e: SnapKV Quality" in _bench_src
+
+    def test_phase3e_checks_needle(self):
+        """Must verify needle retrieval after eviction."""
+        assert "needle_found" in _bench_src

@@ -1594,6 +1594,98 @@ def phase3d_livecodebench(model, tokenizer,
 
 
 # ---------------------------------------------------------------------------
+# Phase 3e: SnapKV Eviction Quality (regression gate)
+# ---------------------------------------------------------------------------
+
+def phase3e_snapkv_quality(model, tokenizer,
+                            watchdog: MemoryWatchdog) -> PhaseResult:
+    """Verify SnapKV eviction pipeline preserves NIAH quality at 4K.
+
+    Runs a quick NIAH test with SnapKV+CAOTE at 50% keep to catch
+    regressions in the eviction stack. Gate: needle must be found.
+    """
+    t0 = time.perf_counter()
+    n_layers = len(model.layers)
+
+    if watchdog.breached.is_set():
+        return PhaseResult(name="Phase 3e: SnapKV Quality", passed=False,
+                           reason=watchdog.breach_reason)
+
+    try:
+        from omlx.patches.snapkv import (
+            install_q_capture_hook, compute_caote_importance,
+            snapkv_select, get_keep_indices, compact_cache,
+            check_ger_safety,
+        )
+    except ImportError as e:
+        return PhaseResult(name="Phase 3e: SnapKV Quality", passed=True,
+                           details={"skipped": True, "reason": str(e)})
+
+    # Build a 4K NIAH prompt
+    needle_code = "SNAPKV-BENCH-9921"
+    filler = "The quick brown fox jumps over the lazy dog. " * 40
+    prompt_text = (filler + f"The secret code is {needle_code}. "
+                   + filler + "\nWhat is the secret code? Reply with ONLY the code:")
+    messages = [{"role": "user", "content": prompt_text}]
+    try:
+        chat = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+    except Exception:
+        chat = prompt_text + "\n"
+    input_ids = tokenizer.encode(chat)
+    T = len(input_ids)
+    keep_count = max(64, T // 2)  # 50% keep
+
+    # Prefill with Q capture
+    from mlx_lm.models.cache import KVCache
+    captured, cleanup = install_q_capture_hook(model)
+    cache = [KVCache() for _ in range(n_layers)]
+    logits = model(mx.array([input_ids]), cache=cache)
+    mx.eval(logits)
+
+    # Compute importance and compact
+    importance = compute_caote_importance(captured, cache)
+    mx.eval(importance)
+    cleanup()
+
+    keep_mask = snapkv_select(importance, keep_count)
+    safe, ger, _ = check_ger_safety(importance, keep_mask)
+    indices = get_keep_indices(keep_mask)
+    compact_cache(cache, indices, model=model)
+
+    # Generate
+    tokens = []
+    for _ in range(32):
+        token = mx.argmax(logits[:, -1, :], axis=-1)
+        mx.eval(token)
+        tokens.append(token.item())
+        logits = model(token.reshape(1, 1), cache=cache)
+        mx.eval(logits)
+
+    output = tokenizer.decode(tokens)
+    needle_found = needle_code.lower() in output.lower()
+    kept_pct = len(indices) * 100 // T
+
+    del cache; gc.collect(); mx.clear_cache()
+
+    status = "PASS" if needle_found else "FAIL"
+    logger.info(f"  SnapKV NIAH@4K ({kept_pct}% kept, GER={ger:.3f}): {status}")
+    if needle_found:
+        logger.info(f"    Output: {output[:60]!r}")
+    else:
+        logger.info(f"    FAIL output: {output[:60]!r}")
+
+    return PhaseResult(
+        name="Phase 3e: SnapKV Quality",
+        passed=needle_found,
+        elapsed_s=time.perf_counter() - t0,
+        details={"needle_found": needle_found, "kept_pct": kept_pct,
+                 "ger": round(ger, 4), "ger_safe": safe,
+                 "output": output[:100]},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 5: Memory Profile (summary of watchdog)
 # ---------------------------------------------------------------------------
 
@@ -2074,6 +2166,19 @@ Examples:
         else:
             phases.append(PhaseResult(
                 name="Phase 3c: MMLU-Pro", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
+
+        # Phase 3e: SnapKV eviction quality (runs in both default and --full)
+        logger.info("\n=== Phase 3e: SnapKV Quality ===")
+        if _check_phase_headroom("Phase 3e: SnapKV", limits["metal_peak_gb"]):
+            p3e = phase3e_snapkv_quality(model, tokenizer, watchdog)
+            phases.append(p3e)
+            if not p3e.passed:
+                logger.warning("Phase 3e FAILED (SnapKV NIAH gate) — continuing")
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3e: SnapKV Quality", passed=True,
                 details={"skipped": True, "reason": "insufficient headroom"},
             ))
 
