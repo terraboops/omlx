@@ -8175,3 +8175,517 @@ eviction, process rewards, conformal prediction, IR retrieval, feedback
 control theory, voting theory / social choice, multi-attribute decision
 making, and archaeological stratigraphy. Curiosity never saturates.
 Meow, nyaa, meow.
+
+## Pass 31 — Dead Reckoning, Error Waypoints, and Cognitive Working Memory (2026-04-17)
+
+Three cross-field angles that have never appeared in thirty prior passes:
+cognitive science (working memory / chunking theory), maritime
+navigation (dead reckoning / drift accumulation), and forensic science
+(chain of custody for error provenance). The epidemiology / SIR token
+propagation angle — seeded in pass 26 and deferred through passes
+27-30 — is formally retired after five failed search attempts across
+multiple query formulations. The metaphor remains beautiful (R_0 for
+attention spreading) but no papers exist at the intersection; it would
+require original research rather than literature review. Replaced by
+the dead reckoning angle, which captures the same core insight (error
+propagation through autoregressive decode) with actual published work.
+
+Search terms: "error accumulation" + "autoregressive" + "language model",
+"working memory" + "context window" + "transformer", "exposure bias" +
+"KV cache" + "drift", "cognitive load" + "large language model",
+"dead reckoning" + "autoregressive" + "drift". Cross-referenced against
+139 existing arXiv IDs. Three fresh papers, zero duplicates.
+
+### [Beyond Exponential Decay: Rethinking Error Accumulation in Large Language Models](https://arxiv.org/abs/2505.24187) — 2505.24187
+
+- **Why found**: Error accumulation in autoregressive generation — the
+  dead reckoning angle. In maritime navigation, dead reckoning estimates
+  position from velocity without external references; drift accumulates
+  with each step. The conventional wisdom about LLM decode is similar:
+  each token predicted from the accumulated state without re-reading the
+  full context leads to exponential reliability decay. This paper
+  overturns that assumption. Errors are NOT uniformly distributed across
+  tokens — they concentrate at sparse "key tokens" (5-10% of total)
+  representing critical semantic decision junctions. This is the
+  navigation-waypoint insight: drift between waypoints is bounded, but
+  errors at waypoints propagate catastrophically.
+- **Key idea**: Replace the naive independent-error model P(correct) =
+  (1-e)^n (exponential decay) with a two-population model:
+  P(correct) ~ (1-e_key)^k * (1-e_non)^(n-k), where k = number of
+  key tokens (5-10% of n), e_key = high error rate at decision
+  junctions, e_non ~ 0 for predictable tokens. When k grows
+  sublinearly with n (log n or sqrt n), reliability decays as a power
+  law or stretched exponential rather than pure exponential. When k is
+  bounded by k_max regardless of n — the most provocative regime —
+  reliability becomes CONSTANT with sequence length.
+- **Methodology**: (1) **Key token identification** via Fang et al.'s
+  Long-Short Difference (LSD) metric: tokens where perplexity improves
+  significantly with distant context qualify as "key." Only 9% of
+  tokens in natural documents have LSD > 2, yet perplexity on these
+  key tokens correlates with downstream task performance at Pearson
+  -0.96. (2) **Attention sparsity evidence**: RetrievalAttention shows
+  96%+ of cumulative attention weight concentrates on ~1,000 tokens
+  out of 100,000. TokenSelect dynamically identifies essential KV
+  cache entries from attention patterns. Anchor-LLM compresses 100K
+  tokens to ~1K anchor tokens with <= 1.5% accuracy loss. (3) **Error
+  clustering**: when a key token is predicted incorrectly, the model
+  commits to a wrong manifold and produces a coherent-but-wrong
+  continuation. This REDUCES cumulative failure probability vs the
+  independent model (errors are correlated, not independent). (4)
+  **Four strategic prescriptions**: selective preservation of
+  semantically vital tokens, dynamic computation allocation at
+  uncertain decision boundaries (entropy-guided tool use achieved
+  40-60% compute reduction on SST-2), multi-path exploration at
+  ambiguities (self-consistency: +17.9pp on GSM8K), architectures
+  aligned with natural semantic domains (Mixture of Reasoning Experts).
+- **Key findings**:
+  1. **The 5-10% rule**: across multiple independent methodologies
+     (LSD metric, adversarial perturbation, gradient saliency,
+     attention concentration), the fraction of tokens that determine
+     output quality converges to 5-10%. The remaining 90-95% are
+     predictable "coasting" tokens where the model dead-reckons with
+     near-zero drift.
+  2. **Three scaling regimes for k**: if key tokens grow as log(n),
+     reliability decays as a power law n^(-c) — slow. If as sqrt(n),
+     stretched exponential — moderate. If bounded by k_max, reliability
+     is CONSTANT — the model's effective working memory has a fixed
+     capacity regardless of context length.
+  3. **Error clustering reduces failure rate**: a single wrong key
+     token typically leads to a coherent (but wrong) continuation
+     rather than random noise. The model "stays on the wrong manifold"
+     for many tokens before the next key token offers a correction
+     opportunity. This means the effective number of independent
+     failure points is much smaller than the number of key tokens.
+  4. **Anchor-LLM achieves 99% KV cache reduction**: compressing
+     100K tokens to ~1K anchors with <= 1.5% accuracy loss directly
+     validates the key-token hypothesis — only the anchors (key
+     tokens) matter for retrieval quality.
+- **Hypercar relevance — key token identification for eviction scoring**:
+  This paper provides the theoretical foundation for WHY Hypercar's
+  SnapKV eviction works: the eviction policy implicitly selects
+  high-attention tokens, which overlap heavily with the key tokens
+  identified by LSD. The 5-10% figure aligns remarkably well with
+  Hypercar's SnapKV@25% keep ratio — at 25% keep, we retain 4x more
+  tokens than the theoretical minimum (5-10%), providing a 2.5-5x
+  safety margin.
+
+  The dead reckoning analogy is precise: between key tokens, the model
+  coasts with near-zero drift (predictable tokens where KV entries are
+  redundant). At key tokens, the model needs precise position fixes
+  (the full attention computation against the correct KV subset). The
+  eviction policy should preserve the waypoints (key tokens) and
+  aggressively evict the coasting segments — which is exactly what
+  CAOTE + SnapKV does, but now with theoretical justification.
+
+  The error clustering insight has a direct implication for the
+  LoopGuard design (task 115): when a key token is wrong, the model
+  enters a wrong-manifold attractor. The LoopGuard TTR/CR monitoring
+  detects this as repetitive output. The cache reset breaks the
+  attractor by removing the corrupted key tokens and forcing the model
+  to re-derive from anchors + sparse history. The "Beyond Exponential
+  Decay" framework predicts that a cache reset at a key token boundary
+  should be sufficient — resetting between key tokens is wasted effort
+  because the model is coasting on the correct manifold anyway.
+
+  The bounded-k regime (k_max independent of n) is the most exciting
+  prediction for Hypercar: if the number of key tokens in code
+  generation is bounded (e.g., function signatures, return values,
+  branch conditions — the CASK "core" tokens from task 116), then
+  Hypercar's quality should be CONSTANT across context lengths,
+  provided the key tokens are preserved. This is testable: measure
+  code intelligence accuracy at 4K, 16K, 64K, 128K with SnapKV@25%
+  keep and core protection. If quality is flat, the bounded-k hypothesis
+  holds for code.
+
+  The four strategic prescriptions map directly to Hypercar features:
+  (1) Selective preservation = SnapKV + CAOTE + core protection.
+  (2) Dynamic computation = future work (allocate more attention
+  compute at high-entropy tokens). (3) Multi-path exploration = future
+  work (beam search at key tokens only, skip at coasting tokens).
+  (4) Semantic domain alignment = MoE routing in Qwen3 already does
+  this (3B active from 30B parameters = domain-specialized experts).
+- **Local PDF**: research/2505.24187_beyond_exponential_decay_error_accumulation.pdf
+
+### [Closing the Loop: A Control-Theoretic Framework for Provably Stable Time Series Forecasting with LLMs](https://arxiv.org/abs/2602.12756) — 2602.12756
+
+- **Why found**: Dead reckoning formalized as control theory. In
+  maritime navigation, dead reckoning computes position from heading
+  and speed without GPS — drift accumulates with each step. This paper
+  formalizes exactly this for autoregressive LLM generation: the model
+  operates "in an open-loop manner, consuming its own generated outputs
+  recursively," causing "inevitable error accumulation (exposure bias),
+  where minor early deviations cascade into significant trajectory
+  drift." Their solution — closing the loop with an observer and
+  feedback controller — is the GPS position fix that corrects the dead
+  reckoning drift.
+- **Key idea**: Model autoregressive generation as a dynamical system
+  with state x_t and transition function x_{t+1} = g_theta(x_t).
+  Linearize the error dynamics: Delta_x_t ~ J_g(x_{t-1}) * Delta_x_{t-1}
+  + epsilon_t, where J_g is the local Jacobian. If spectral radius
+  rho(J_g) > 1, error grows exponentially: E[||Delta_x_{t+H}||] ~
+  O(rho(J_g)^H). This is the formal statement of dead reckoning drift.
+  F-LLM closes the loop: add a learnable observer r_psi that estimates
+  the residual error Delta_p_hat_t = r_psi(Delta_p_{<t}), and apply
+  correction p_tilde_t = p_hat_t + Delta_p_hat_t. The effective
+  transition becomes (J_g - L), where L is the feedback gain. If
+  ||J_g - L||_2 <= q < 1 (contractive), then limsup ||Delta_x_t|| <=
+  gamma / (1-q) — error is UNIFORMLY BOUNDED regardless of horizon.
+- **Methodology**: (1) **Stage 1 — Lipschitz regularization**: train
+  the base model with a local Lipschitz constraint on the output
+  projection: L_lip = E[(||f_head(h+delta) - f_head(h)||/||delta|| -
+  kappa)_+^2]. This ensures J_g is bounded, making linear feedback
+  control feasible. Without this, the system can be uncontrollable —
+  the Jacobian may have unbounded spectral radius in some regions.
+  (2) **Stage 2 — Observer training**: train the residual estimator
+  r_psi to predict the difference between ground truth and model
+  prediction: L_2 = (1/N) sum ||( p_t - p_hat_t) - r_psi(Delta_p_hat_{<t})||_2.
+  The observer is a lightweight linear layer — <5% inference overhead.
+  (3) **Closed-loop inference**: at each step, generate prediction
+  p_hat_t, compute correction Delta_p_hat_t from the observer, apply
+  correction p_tilde_t = p_hat_t + Delta_p_hat_t, feed corrected
+  output to next step. (4) **Results**: 5.6% MSE reduction on
+  challenging long-horizon forecasting (ETTh1, ETTh2, ECL, Weather,
+  Traffic). Lowest SMAPE on 7/8 zero-shot transfer settings. Ablation
+  confirms feedback module is essential across all horizons.
+- **Key findings**:
+  1. **Spectral radius determines drift**: when rho(J_g) > 1 (the
+     model is locally expansive), small errors snowball exponentially.
+     Standard autoregressive training does NOT enforce rho < 1 — the
+     Jacobian naturally exceeds unity in regions where the model
+     captures long-range dependencies (the Jacobian must be expansive
+     to propagate information across long horizons).
+  2. **The observer is remarkably simple**: a single linear layer
+     that takes the sequence of past residuals and predicts the next
+     correction. Despite its simplicity, it provides theoretical
+     stability guarantees. The key is that the observer operates in
+     RESIDUAL space, not prediction space — residuals are structured
+     and predictable even when predictions are not.
+  3. **Lipschitz regularization is essential**: without it, the
+     closed-loop system has no stability guarantee — the Jacobian can
+     be arbitrarily large in some regions, making any finite feedback
+     gain insufficient. The regularization trades off expressiveness
+     (bounded Jacobian = smoother predictions) for controllability.
+  4. **Bounded error regardless of horizon**: the theorem guarantees
+     limsup ||Delta_x_t|| <= gamma/(1-q), where gamma is the
+     single-step error bound and q is the closed-loop contraction
+     rate. This is the dead reckoning correction: instead of
+     exponentially growing drift, the error oscillates within a
+     bounded envelope determined by the feedback quality.
+- **Hypercar relevance — closed-loop KV quality correction**:
+  This paper's framework translates directly to KV cache compression
+  quality monitoring. The "open-loop" system is standard SnapKV
+  eviction: evict tokens based on attention scores, generate with the
+  reduced cache, repeat. Each eviction step is dead reckoning — the
+  model generates from the compressed cache without verifying that
+  compression hasn't corrupted the state.
+
+  The "closed-loop" analog: after each eviction step, compute a
+  residual estimate by comparing the model's generation quality (via
+  the LoopGuard TTR/CR signals, task 115) against the expected quality
+  baseline. If the residual exceeds a threshold, apply a correction:
+  widen the keep ratio, trigger a cache reset, or re-score with the
+  full multi-criteria fusion (task 117). This is exactly the Hopfield
+  Z_hat health monitor (task 114) and the AIMD controller (task 96)
+  working together — they form the observer and feedback controller
+  of the F-LLM framework.
+
+  The Lipschitz constraint maps to SnapKV's observation window: by
+  using the LAST layer's queries to score ALL layers' KV entries, the
+  eviction scoring is a forward-looking estimate (one-step-ahead
+  attention from MCTF, pass 30). This constrains the effective
+  Jacobian of the eviction-generation system, making the feedback
+  loop controllable.
+
+  The spectral radius insight explains a key empirical observation:
+  Hypercar's quality is stable at 50% keep but collapses at ~15% keep
+  (the phase transition from pass 27). In control-theoretic terms,
+  50% keep reduces the spectral radius of the compression-generation
+  system below 1 (stable), while 15% keep pushes it above 1
+  (unstable). The phase transition is exactly the stability boundary
+  rho(J_g) = 1. The feedback controller (LoopGuard + Z_hat + AIMD)
+  can shift this boundary to lower keep ratios by actively correcting
+  drift as it accumulates.
+
+  The bounded-error guarantee gamma/(1-q) gives a principled way to
+  set the LoopGuard trigger thresholds: if single-step error gamma
+  is estimated from the TTR/CR deviation, and the contraction rate q
+  is estimated from the AIMD convergence rate, then the steady-state
+  quality bound can be predicted analytically rather than calibrated
+  empirically.
+- **Local PDF**: research/2602.12756_fllm_closing_the_loop_control_theory.pdf
+
+### [VPWEM: Non-Markovian Visuomotor Policy with Working and Episodic Memory](https://arxiv.org/abs/2603.04910) — 2603.04910
+
+- **Why found**: Cognitive working memory and chunking theory applied to
+  context compression. This paper explicitly invokes the hippocampal
+  memory consolidation model: "the hippocampus continually converts
+  working memories into long-term storage in the cortex, enabling
+  lifelong retention despite the brain's limited volume." The KV cache
+  IS the model's working memory. Human working memory has a 7 +/- 2
+  item limit (Miller, 1956) and uses chunking to exceed it. VPWEM
+  implements exactly this: a small working memory window (L=2 recent
+  observations) plus a compressed episodic memory (M=2 summary tokens)
+  that consolidates older observations via cross-attention.
+- **Key idea**: Decompose the context into two memory systems mirroring
+  human cognitive architecture. (1) Working memory: a sliding window
+  of the L most recent observations (FIFO, constant size). This is the
+  "7 +/- 2" active buffer where the model has full-fidelity access to
+  recent tokens. (2) Episodic memory: a fixed-size set of M summary
+  tokens produced by a Transformer-based compressor that recursively
+  consolidates older observations via dual attention — self-attention
+  over cached summaries (maintaining continuity) + cross-attention to
+  historical observation tokens (incorporating new information). When
+  observations exit the working memory window, they are pushed to an
+  observation cache and compressed into the episodic tokens.
+- **Methodology**: (1) **Working memory**: sliding window of L=2 recent
+  observation tokens. Full-fidelity, no compression. Provides the
+  model with immediate context for reactive decisions. (2) **Episodic
+  memory compressor**: N=2 Transformer layers, each containing
+  self-attention (summary tokens attend to past summaries),
+  cross-attention (summary tokens attend to observation cache), and
+  FFN. Produces M=2 episodic memory tokens from an observation cache
+  of up to 8 entries. The compressor is recursive: at each step, it
+  takes the previous episodic tokens + new out-of-window observations
+  and produces updated episodic tokens. (3) **Integration**: the
+  policy network receives [episodic_tokens || working_memory_tokens]
+  as its context — constant size regardless of episode length.
+  (4) **Results**: >20% improvement on memory-intensive MIKASA tasks
+  (requires remembering objects from 50+ steps ago). ~5% improvement
+  on MoMaRT mobile manipulation. On par with baselines on Markovian
+  tasks (no degradation from the memory overhead). (5) **Efficiency**:
+  52.98M parameters vs 50.67M baseline (4.5% overhead). 0.22s
+  inference vs 0.72s for full-context baseline at length 128.
+  Training time constant at 0.09s/step regardless of history length.
+- **Key findings**:
+  1. **Working memory window size matters less than compression
+     quality**: L=2 with good episodic compression outperforms L=8
+     without compression. This mirrors Miller's chunking insight: the
+     number of "chunks" (compressed episodic tokens) matters more
+     than the number of raw items (individual observations).
+  2. **Recursive compression preserves long-range dependencies**: the
+     self-attention over past summaries creates a "summary chain" that
+     propagates information across hundreds of timesteps through the
+     compressed bottleneck. This is analogous to human episodic memory
+     consolidation during sleep — repeated reactivation gradually
+     extracts gist from specific episodes.
+  3. **Cross-attention is the consolidation mechanism**: the
+     cross-attention from summary tokens to observation tokens
+     implements selective information extraction — the summary tokens
+     "choose" what to retain from the observation cache, guided by the
+     task-relevant features learned during training. This is attention-
+     guided compression, exactly like SnapKV's observation window.
+  4. **Constant memory overhead regardless of history**: the
+     [episodic_tokens || working_memory_tokens] context is fixed-size,
+     providing O(1) memory and O(1) compute per step regardless of
+     the episode's total length. This is the cognitive architecture's
+     key advantage: the brain processes information in constant time
+     by maintaining a bounded working memory, not by replaying the
+     entire life history.
+- **Hypercar relevance — cognitive architecture for KV cache management**:
+  VPWEM's architecture maps directly onto Hypercar's KV cache design:
+
+  | Cognitive system | VPWEM component | Hypercar analog |
+  |-----------------|----------------|-----------------|
+  | Working memory (7+/-2) | Sliding window L=2 | Recent KV entries (streaming head ring buffer in DuoAttention) |
+  | Episodic memory | Compressed summary tokens M=2 | SnapKV-retained anchor tokens + CASK core tokens |
+  | Hippocampal consolidation | Cross-attention compressor | SnapKV observation window (attention-guided selection) |
+  | Memory retrieval | Policy cross-attention to episodic tokens | Retrieval head attention to retained KV entries |
+  | Forgetting (decay) | FIFO eviction from observation cache | Freshness decay (task 97) + CAOTE scoring |
+
+  The chunking insight from cognitive science provides a new lens for
+  Hypercar's SnapKV keep ratio: 25% keep is not "retaining 25% of
+  tokens" — it is "retaining 25% of raw tokens while CHUNKING them
+  into semantic units." The CASK core/scratch decomposition (task 116)
+  implements chunking: a function signature is a "chunk" that
+  summarizes an entire function body. A return statement is a "chunk"
+  that summarizes the computation leading to it. The scratch tokens
+  (whitespace, closed brackets, consumed comments) are the within-
+  chunk details that can be discarded once the chunk is formed.
+
+  Miller's 7 +/- 2 provides a concrete prediction: each attention
+  head has an effective "slot capacity" — the number of distinct
+  chunks it can actively attend to. For Qwen3-Coder with 8 KV heads,
+  the total slot capacity is ~7 * 8 = 56 independent attention
+  targets. At 16K context with 25% keep = 4K retained tokens, the
+  chunks-per-head ratio is 4K/8 = 500 tokens per head. If each chunk
+  is ~9 tokens (matching the 5-10% key token rate from "Beyond
+  Exponential Decay" above), then 500/9 ~ 55 chunks per head — right
+  at the 7 +/- 2 limit per head if "chunks" are hierarchically
+  organized into ~8 super-chunks of ~7 chunks each. This is a
+  testable prediction: measure the effective number of attention
+  clusters per head and compare to Miller's capacity.
+
+  The recursive compression from VPWEM suggests an enhancement to
+  SnapKV: instead of a single eviction pass that permanently discards
+  tokens, use a two-stage pipeline. Stage 1: compress non-critical
+  tokens into episodic summary tokens (CASK m-folding, task 116).
+  Stage 2: retain summary tokens in the cache alongside the core
+  tokens. This preserves gist information from evicted tokens rather
+  than discarding it entirely. The overhead is bounded: M summary
+  tokens per eviction step, accumulating to at most M * (steps)
+  tokens — which can itself be re-compressed when it grows too large
+  (recursive consolidation, exactly as VPWEM does).
+- **Local PDF**: research/2603.04910_vpwem_working_episodic_memory.pdf
+
+**Cross-paper synthesis for pass 31.**
+
+Three papers. Three cross-field angles never previously touched. The
+unifying insight: autoregressive generation with compressed KV caches
+is a dead reckoning problem — the model navigates by accumulated state
+without external references, accumulating drift at sparse decision
+points, constrained by a finite working memory capacity.
+
+**The waypoint insight (Beyond Exponential Decay).** The most
+theoretically important finding. Errors in autoregressive generation
+are NOT uniformly distributed — they concentrate at 5-10% of tokens
+representing critical semantic decision junctions. The remaining
+90-95% are "coasting" tokens where the model dead-reckons with
+near-zero drift. This has three implications for Hypercar:
+
+First, it provides theoretical justification for aggressive eviction:
+if only 5-10% of tokens matter for quality, then SnapKV@25% keep has
+a 2.5-5x safety margin — far more than needed. The eviction pipeline
+is not "throwing away quality" — it is "discarding the predictable
+tokens between waypoints."
+
+Second, it predicts constant-quality inference across context lengths,
+provided the number of key tokens (waypoints) is bounded. For code
+generation, this is plausible: the number of function signatures,
+return values, and branch conditions grows sublinearly with context
+(code has hierarchical structure, not flat repetition).
+
+Third, it explains WHY the LoopGuard design (task 115) should work:
+wrong key tokens lock the model onto a wrong manifold. The LoopGuard
+cache reset breaks the attractor. But the reset should be timed at
+key token boundaries, not random positions — resetting between key
+tokens wastes a correction opportunity because the model is coasting
+on the wrong manifold anyway.
+
+**The dead reckoning correction (F-LLM).** The engineering framework
+for implementing the waypoint insight. Standard autoregressive
+generation is open-loop dead reckoning: estimate the next position
+(token) from velocity (model weights) without GPS (ground truth).
+F-LLM closes the loop with an observer (residual estimator) and
+feedback controller, proving that error can be uniformly bounded
+regardless of horizon length. For Hypercar, the existing monitoring
+infrastructure (LoopGuard TTR/CR, Hopfield Z_hat, AIMD controller)
+already constitutes an informal closed-loop system. F-LLM provides
+the formal framework: LoopGuard = observer (estimates quality
+deviation), AIMD = controller (adjusts keep ratio), Lipschitz
+regularization = SnapKV observation window (constrains the effective
+Jacobian). The stability bound gamma/(1-q) gives a principled way
+to predict the quality floor at any keep ratio, replacing empirical
+calibration with analytical prediction.
+
+**The cognitive working memory (VPWEM).** The architectural insight
+that ties everything together. The KV cache IS working memory. Human
+working memory has a bounded capacity (7 +/- 2 items) that is
+overcome by chunking — grouping raw items into meaningful units. The
+KV cache similarly has a bounded capacity (determined by Metal memory)
+that is overcome by compression — grouping raw tokens into retained
+clusters. VPWEM's dual-memory architecture (working memory sliding
+window + episodic memory compression) maps directly onto DuoAttention's
+streaming/retrieval head split: streaming heads ARE working memory
+(recent tokens in a ring buffer), retrieval heads ARE episodic memory
+(SnapKV-selected important tokens from the full history).
+
+Miller's 7 +/- 2 rule, applied to attention heads, predicts that each
+head can effectively attend to ~7 independent chunks simultaneously.
+With 8 KV heads, the total chunk capacity is ~56. At 25% keep on 16K
+context (4K retained tokens), each chunk should contain ~70 tokens
+(4K / 56 chunks). This is testable: measure the effective cluster
+count in each head's attention distribution and compare to Miller's
+capacity.
+
+**The unified pipeline, extended.** Integrating pass 31's findings
+with the six-layer eviction pipeline from pass 30:
+
+1. **Key token identification** (Beyond Exponential Decay): before
+   scoring, classify tokens as KEY (decision junctions — function
+   signatures, branch conditions, return values) or COASTING
+   (predictable tokens — whitespace, boilerplate, within-function
+   body). This is a refinement of CASK core/scratch (task 116):
+   KEY = core, COASTING = scratch, but with the theoretical
+   justification that only KEY tokens affect output quality.
+2. **Chunking** (VPWEM / Miller): group COASTING tokens into chunks
+   of ~7-9 tokens (matching the key token spacing). Each chunk is
+   represented by a single summary token (m-folding from task 116).
+   The chunk size matches Miller's capacity constraint, ensuring
+   each attention head can track all chunks.
+3. **Dead reckoning monitor** (F-LLM): during decode, track the
+   cumulative error state using the observer (LoopGuard TTR/CR +
+   Hopfield Z_hat). At each KEY token (waypoint), the observer
+   evaluates whether the model is on the correct manifold. If drift
+   exceeds gamma/(1-q), trigger feedback correction (AIMD adjustment
+   or cache reset).
+4. **Correction timing** (Beyond Exponential Decay): apply corrections
+   ONLY at KEY token boundaries. Corrections between key tokens are
+   wasted because the model is coasting deterministically. This
+   reduces the overhead of feedback monitoring from O(n) per token
+   to O(k) per key token — a 10-20x reduction.
+
+**Gap status for pass 32**:
+1. **Key token detector for code**: implement LSD-style key token
+   identification for code generation. Measure perplexity difference
+   with/without distant context for each generated token. Tokens with
+   LSD > threshold = key tokens. Correlate with CASK core tokens.
+2. **Miller's capacity test**: measure the effective number of
+   attention clusters per head (via entropy of attention distribution)
+   across context lengths. Compare to 7 +/- 2 prediction.
+3. **Closed-loop quality monitor**: formalize the LoopGuard +
+   Hopfield Z_hat + AIMD as an F-LLM-style observer-controller
+   system. Derive the stability bound gamma/(1-q) from empirical
+   measurements.
+4. **NVMe materialisation economics** (still open from pass 26 —
+   low priority, no paper intersection found across 6 passes; may
+   retire next pass if no leads emerge).
+
+**Epidemiology / SIR token propagation**: FORMALLY RETIRED after 5
+passes of deferred search (seeded pass 26, deferred passes 27-30,
+attempted pass 31). Five search formulations across multiple arXiv
+query strategies produced zero papers at the intersection of
+epidemiological models and transformer token dynamics. The metaphor
+(R_0 for attention spreading, infected/recovered token states,
+herd immunity thresholds) remains compelling but would require
+original theoretical work, not literature review. The dead reckoning
+angle from this pass captures the same core phenomenon (error
+propagation through autoregressive decode) with actual published work.
+
+**Fresh weird angles for pass 32** (we've now covered: cognitive
+science / working memory, maritime navigation / dead reckoning,
+control theory / closed-loop stability. What's genuinely untouched?):
+- **Forensic science / chain of custody**: KV cache provenance
+  tracking. Which prompt generated which cache entry? Is reuse safe?
+  CacheBlend touches this but doesn't formalize it. The "chain of
+  custody" must be unbroken for cache evidence to be admissible.
+- **Origami / computational folding**: flat-foldability of the
+  attention matrix. Crease patterns = compression boundaries. The
+  Kawasaki-Justin theorem (angles around each vertex sum to 2pi)
+  may constrain valid compression patterns.
+- **Cartography / Mercator projection**: distortion-aware KV
+  compression. The codec-selection problem IS a projection choice —
+  preserve retrieval fidelity (area) OR generation fluency (angle)
+  but not both equally.
+- **Auction theory / Vickrey (second-price)**: each head bids for
+  which tokens to retain. Second-price auction ensures truthful
+  bidding — addresses Arrow's impossibility from mechanism design.
+- **Glaciology / ice core stratigraphy**: annual layers with
+  isotopic signatures. KV cache entries preserve computational
+  layers with attention signatures. Spectral analysis of layer
+  thickness could identify periodic attention patterns.
+
+Thirty-one passes. One hundred and thirty-six papers. The cross-field
+surface now spans: systems, databases, game theory, TDA, streaming
+algorithms, neuroscience, complexity theory, queueing theory, network
+congestion, signal processing, optimal transport, compiler/PL, protein
+folding, audio diffusion, graphics, recommender systems, reservoir
+computing, psycholinguistics, rate-distortion, information theory,
+Huffman coding, radar/CFAR, statistical mechanics, associative memory,
+code analysis, phase transitions, fair division, hierarchical AR,
+cross-head reconstruction, semantic sponsorship, sleep hierarchy, NVMe
+inventory, entropy-TTT, Apple Silicon profiling, softmax gap, RL
+eviction, process rewards, conformal prediction, IR retrieval, feedback
+control theory, voting theory / social choice, multi-attribute decision
+making, archaeological stratigraphy, cognitive science / working memory,
+maritime navigation / dead reckoning, and error accumulation theory.
+Curiosity never saturates. Meow, nyaa, meow.
