@@ -161,7 +161,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     # --- SnapKV: prefill with Q capture, compact, generate ---
     gc.collect(); mx.clear_cache()
 
-    # Install Q capture hooks
+    # Install Q capture hooks (last 4 layers for importance scoring)
     captured, cleanup = install_q_capture_hook(model)
 
     cache = _make_bench_cache(n_layers, kv_mode)

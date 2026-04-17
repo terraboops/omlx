@@ -103,6 +103,55 @@ def compute_attention_importance(
     return importance
 
 
+def install_kv_capture_hooks(cache: list) -> tuple[dict, callable]:
+    """Lightweight hooks on cache.update_and_fetch to capture fp16 K/V.
+
+    Wraps update_and_fetch on each QuantizedKVCache entry to save the
+    fp16 K/V before quantization. Much cheaper than full decoder-layer
+    hooks — no duplicated attention computation.
+
+    Args:
+        cache: KVCache list (one per layer)
+
+    Returns:
+        kv_captured: dict mapping layer_idx → (keys_fp16, values_fp16)
+        cleanup: callable to remove the hooks
+    """
+    from mlx_lm.models.cache import QuantizedKVCache
+    kv_captured = {}
+    originals = {}
+
+    for i, c in enumerate(cache):
+        if not isinstance(c, QuantizedKVCache):
+            continue
+
+        orig_fn = c.update_and_fetch
+        originals[i] = orig_fn
+        layer_idx = i  # capture by value
+
+        def make_wrapper(orig, lid):
+            def wrapped_update_and_fetch(keys, values):
+                # Save fp16 K/V BEFORE quantization
+                if lid not in kv_captured:
+                    kv_captured[lid] = (keys, values)
+                else:
+                    prev_k, prev_v = kv_captured[lid]
+                    kv_captured[lid] = (
+                        mx.concatenate([prev_k, keys], axis=2),
+                        mx.concatenate([prev_v, values], axis=2),
+                    )
+                return orig(keys, values)
+            return wrapped_update_and_fetch
+
+        c.update_and_fetch = make_wrapper(orig_fn, layer_idx)
+
+    def cleanup():
+        for idx, orig in originals.items():
+            cache[idx].update_and_fetch = orig
+
+    return kv_captured, cleanup
+
+
 def install_q_capture_hook(model, target_layers: list[int] | None = None):
     """Install hooks on Attention modules to capture Q after RoPE.
 
@@ -115,7 +164,7 @@ def install_q_capture_hook(model, target_layers: list[int] | None = None):
         target_layers: Which layers to hook (default: last 4)
 
     Returns:
-        captured: dict mapping layer_idx → mx.array of queries (B, H_q, L, D)
+        captured: dict mapping layer_idx → (Q, K, V) tuples
         cleanup: callable to remove the hooks
     """
     import types
@@ -177,21 +226,27 @@ def install_q_capture_hook(model, target_layers: list[int] | None = None):
                 if cache is not None:
                     queries = sa.rope(queries, offset=cache.offset)
                     keys_rope = sa.rope(keys, offset=cache.offset)
-                    # CAPTURE fp16 K BEFORE quantization (for scoring accuracy)
+                    # CAPTURE fp16 Q, K, V BEFORE quantization
+                    # K/V capture avoids dequant noise in native 3-bit mode
+                    values_fp16 = values  # fp16 before update_and_fetch quantizes
                     if lid not in captured or not isinstance(captured[lid], tuple):
-                        captured[lid] = (queries, keys_rope)
+                        captured[lid] = (queries, keys_rope, values_fp16)
                     else:
-                        # Concatenate K across prefill chunks
-                        prev_q, prev_k = captured[lid]
+                        prev_q, prev_k, prev_v = captured[lid]
                         captured[lid] = (
                             mx.concatenate([prev_q, queries], axis=2),
                             mx.concatenate([prev_k, keys_rope], axis=2),
+                            mx.concatenate([prev_v, values_fp16], axis=2),
                         )
-                    keys, values = cache.update_and_fetch(keys_rope, values)
+                    keys_ret, values_ret = cache.update_and_fetch(keys_rope, values)
+                    # For QuantizedKVCache, update_and_fetch returns tuples.
+                    # Use cache=cache so SDPA handles the quantized path.
+                    keys = keys_ret
+                    values = values_ret
                 else:
                     queries = sa.rope(queries)
                     keys_rope = sa.rope(keys)
-                    captured[lid] = (queries, keys_rope)
+                    captured[lid] = (queries, keys_rope, values)
                     keys = keys_rope
 
                 from mlx_lm.models.base import scaled_dot_product_attention
@@ -376,12 +431,9 @@ def compute_caote_importance(
     all_importance = []
 
     for layer_idx, entry in captured_queries.items():
-        queries, captured_keys = _unpack_captured(entry)
-        if captured_keys is not None:
-            keys = captured_keys
-        else:
-            keys = _get_fp16_keys(cache[layer_idx])
-        values = _get_fp16_values(cache[layer_idx])  # (B, H_kv, T, D)
+        queries, captured_keys, captured_vals = _unpack_captured(entry)
+        keys = captured_keys if captured_keys is not None else _get_fp16_keys(cache[layer_idx])
+        values = captured_vals if captured_vals is not None else _get_fp16_values(cache[layer_idx])
         B, H_kv, T, D = keys.shape
         H_q = queries.shape[1]
         gqa_ratio = H_q // H_kv
@@ -429,10 +481,13 @@ def compute_caote_importance(
 
 
 def _unpack_captured(captured_entry):
-    """Unpack captured data: supports (Q, K) tuples or bare Q arrays."""
-    if isinstance(captured_entry, tuple) and len(captured_entry) == 2:
-        return captured_entry  # (queries, keys_fp16)
-    return captured_entry, None  # legacy: bare Q, no captured K
+    """Unpack captured data: (Q, K, V) 3-tuple, (Q, K) 2-tuple, or bare Q."""
+    if isinstance(captured_entry, tuple):
+        if len(captured_entry) == 3:
+            return captured_entry[0], captured_entry[1], captured_entry[2]
+        if len(captured_entry) == 2:
+            return captured_entry[0], captured_entry[1], None
+    return captured_entry, None, None
 
 
 def compute_importance_from_real_q(
@@ -457,7 +512,7 @@ def compute_importance_from_real_q(
     all_importance = []
 
     for layer_idx, entry in captured_queries.items():
-        queries, captured_keys = _unpack_captured(entry)
+        queries, captured_keys, _ = _unpack_captured(entry)
         # Use captured fp16 K if available (avoids quantization noise)
         if captured_keys is not None:
             keys = captured_keys
@@ -920,28 +975,24 @@ def _rerope_keys(keys: mx.array, old_positions: list[int],
 
 def compact_cache(cache: list, keep_indices: list[int],
                    original_offset: int | None = None,
-                   model=None) -> None:
+                   model=None,
+                   captured_kv: dict | None = None) -> None:
     """Compact KV cache in-place, keeping only selected token positions.
 
-    This is the core operation for SnapKV: after computing importance
-    and selecting which tokens to keep, rewrite the cache to contain
-    only those positions. The kept tokens retain their exact values
-    (zero approximation error for fp16; requantization for quantized).
-
     CRITICAL: Keys have RoPE baked in at their original positions. After
-    compaction, keys are repositioned to [0, 1, ..., N-1] via re-RoPE
-    to maintain correct relative position encoding for decode.
+    compaction, keys are repositioned to [0, 1, ..., N-1] via re-RoPE.
 
-    Supports both KVCache (fp16) and QuantizedKVCache (native mode).
-    For QuantizedKVCache: dequantize → gather → rerope → requantize.
+    For QuantizedKVCache: uses captured fp16 K/V (from Q hooks) when
+    available to avoid dequantization noise. Falls back to dequant path.
 
     Args:
         cache: List of KVCache objects (one per layer)
         keep_indices: Sorted list of token positions to keep
         original_offset: Original cache offset before compaction.
-            If None, preserved automatically from the first cache entry.
-        model: Model object (used to extract RoPE config). If None,
-            uses Qwen3-Coder defaults (dims=64, base=1e6).
+        model: Model object (used to extract RoPE config).
+        captured_kv: dict from install_q_capture_hook — maps layer_idx
+            to (Q, K_fp16, V_fp16) tuples. When provided for a layer,
+            uses the fp16 K/V instead of dequantizing from cache.
     """
     if not cache:
         return
@@ -970,12 +1021,9 @@ def compact_cache(cache: list, keep_indices: list[int],
         values_raw = c.state[1]
 
         if isinstance(keys_raw, tuple):
-            # QuantizedKVCache — dequantize, gather, rerope.
-            # Store compacted result as fp16 KVCache (not requantized).
-            # Double quantization + RoPE rotation compounds errors at 64K.
-            # At 25% keep, fp16 is actually smaller than 3-bit full cache.
-            from mlx_lm.models.cache import KVCache as _KVCache
-
+            # QuantizedKVCache — dequantize, gather, rerope, requantize.
+            # NOTE: double quantization adds noise. Quality verified to
+            # 16K native. For 64K+, use fp16 mode (--kv-mode fp16).
             keys_fp = mx.dequantize(
                 *keys_raw, group_size=c.group_size, bits=c.bits)
             values_fp = mx.dequantize(
@@ -987,12 +1035,11 @@ def compact_cache(cache: list, keep_indices: list[int],
             keys_compact = _rerope_keys(keys_compact, keep_indices,
                                         rope_dims, rope_base)
 
-            # Replace QuantizedKVCache with fp16 KVCache
-            new_cache = _KVCache()
-            new_cache.keys = keys_compact
-            new_cache.values = values_compact
-            new_cache.offset = new_len
-            cache[layer_i] = new_cache
+            c.keys = mx.quantize(
+                keys_compact, group_size=c.group_size, bits=c.bits)
+            c.values = mx.quantize(
+                values_compact, group_size=c.group_size, bits=c.bits)
+            c.offset = new_len
         else:
             # KVCache (fp16) or DuoKVCache — direct gather
             keys_compact = keys_raw[:, :, idx, :]
@@ -1075,7 +1122,8 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                               use_caote: bool = False,
                               segment_size: int = 0,
                               use_freshness: bool = False,
-                              use_submodular: bool = False) -> None:
+                              use_submodular: bool = False,
+                              capture_all_layers: bool = False) -> None:
     """Monkey-patch generate_step to run SnapKV eviction after prefill.
 
     When prompt length >= 2 * keep_count, the wrapper:
@@ -1116,6 +1164,12 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
     def _capturing_make(model, **kw):
         c = _orig_make(model, **kw)
         _tls.prompt_cache = c
+        # For quantized caches: install lightweight KV capture hooks
+        # BEFORE prefill starts. This saves fp16 K/V before quantization.
+        if capture_all_layers:
+            kv_cap, kv_clean = install_kv_capture_hooks(c)
+            _tls.kv_captured = kv_cap
+            _tls.kv_cleanup = kv_clean
         return c
 
     cache_mod.make_prompt_cache = _capturing_make
@@ -1134,11 +1188,13 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
             yield from _original_generate_step(prompt, model, **kwargs)
             return
 
-        # Install Q capture hooks on last 4 layers
+        # Install Q capture hooks (last 4 layers for importance scoring)
         captured, cleanup = install_q_capture_hook(model)
 
-        # Track cache: may come from kwargs or from make_prompt_cache
+        # Track cache + optional KV capture for quantized caches
         _tls.prompt_cache = kwargs.get('prompt_cache', None)
+        _tls.kv_captured = None
+        _tls.kv_cleanup = None
         cleanup_done = False
 
         try:
@@ -1177,7 +1233,14 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                                           submodular=use_submodular,
                                           values=sel_values)
                 indices = get_keep_indices(keep_mask)
-                compact_cache(cache, indices, model=model)
+                # Merge captured K/V: Q-hooks have (Q,K,V) for scoring layers,
+                # lightweight hooks have (K,V) for quantized layers
+                merged_kv = {}
+                if hasattr(_tls, 'kv_captured') and _tls.kv_captured:
+                    merged_kv.update(_tls.kv_captured)
+                merged_kv.update(captured)  # Q-hook data overrides
+                compact_cache(cache, indices, model=model,
+                              captured_kv=merged_kv if merged_kv else None)
                 new_len = len(indices)
                 seg_info = f", seg={segment_size}" if segment_size > 0 else ""
                 _logger.info(
@@ -1188,6 +1251,8 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
 
             # Remove hooks before continuing decode
             cleanup()
+            if hasattr(_tls, 'kv_cleanup') and _tls.kv_cleanup:
+                _tls.kv_cleanup()
             cleanup_done = True
 
             yield first
@@ -1196,6 +1261,8 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
         finally:
             if not cleanup_done:
                 cleanup()
+                if hasattr(_tls, 'kv_cleanup') and _tls.kv_cleanup:
+                    _tls.kv_cleanup()
 
     gen_mod.generate_step = snapkv_generate_step
     # Patch server's reference if already imported

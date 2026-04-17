@@ -393,11 +393,15 @@ def main():
     # Apply SnapKV eviction if requested (must be AFTER patches, BEFORE server starts)
     if args.snapkv_keep > 0:
         from omlx.patches.snapkv import apply_snapkv_to_generate
+        # For native 3-bit mode, capture fp16 K/V at ALL layers during prefill
+        # to avoid dequantization noise that corrupts compaction at 64K+.
+        all_layer_capture = (args.kv_mode == "native" or args.kv_mode == "tq3")
         apply_snapkv_to_generate(
             keep_count=args.snapkv_keep, use_caote=args.caote,
             segment_size=args.segmented_evict,
             use_freshness=args.freshness_evict,
-            use_submodular=args.submodular_evict)
+            use_submodular=args.submodular_evict,
+            capture_all_layers=all_layer_capture)
         scoring = "CAOTE" if args.caote else "attention-only"
         extras = []
         if args.segmented_evict > 0:
