@@ -510,6 +510,13 @@ _(none)_
 
 ## Completed
 
+- **Task 59: OPLoRA safety rail for TTT** — orthogonal projection shipped (2026-04-17)
+  - `omlx/oplora.py`: double-sided orthogonal projection for LoRA gradients
+  - `project_lora_grads()`: projects dA, dB onto subspace orthogonal to W's top-k SVD
+  - `_truncated_svd()`: randomized SVD for large matrices (avoids full-matrix OOM)
+  - `compute_svd_cache()`, `save_svd_cache()`, `load_svd_cache()` for persistence
+  - 10 tests: orthogonality, k=0 passthrough, norm reduction, idempotence
+  - Ready for TTT integration via `--oplora` flag
 - **Phase 3e: SnapKV eviction quality gate** — in hypercar_bench (2026-04-17)
   - `phase3e_snapkv_quality()`: validates CAOTE+GER at 4K with 50% eviction
   - Runs in default mode (not just --full), 1.7s overhead
