@@ -840,6 +840,81 @@ def _select_submodular(pooled: mx.array, k: int, segment_size: int,
     return all_indices
 
 
+def _select_fair(pooled: mx.array, k: int,
+                  partitions: list[tuple[int, int]],
+                  min_tokens: int = 20,
+                  segment_size: int = 0) -> set:
+    """Fair eviction: proportional budget allocation across partitions.
+
+    From "The Pitfalls of KV Cache Compression" (arXiv:2510.00231):
+    allocates budget proportionally to each partition's size, then runs
+    per-partition top-K selection independently. This prevents
+    preferential eviction of early-context instructions.
+
+    Args:
+        pooled: (B, S) importance scores
+        k: total tokens to select
+        partitions: list of (start, end) token ranges
+        min_tokens: minimum budget per partition (floor)
+        segment_size: BUZZ segment size within each partition (0=global)
+    """
+    B, S = pooled.shape
+    total_tokens = sum(max(0, min(e, S) - s) for s, e in partitions)
+
+    # Allocate budget proportionally with floor
+    n_parts = len(partitions)
+    floor_total = min_tokens * n_parts
+    if floor_total >= k:
+        # Not enough budget for floors — distribute evenly
+        budgets = [max(1, k // n_parts)] * n_parts
+    else:
+        remaining = k - floor_total
+        budgets = []
+        for s, e in partitions:
+            part_len = max(0, min(e, S) - s)
+            part_budget = min_tokens + int(remaining * part_len / max(total_tokens, 1))
+            budgets.append(min(part_budget, part_len))
+
+    # Adjust to hit exact total
+    delta = k - sum(budgets)
+    if delta > 0:
+        for i in range(delta):
+            idx = i % n_parts
+            s, e = partitions[idx]
+            part_len = max(0, min(e, S) - s)
+            if budgets[idx] < part_len:
+                budgets[idx] += 1
+
+    # Run per-partition selection
+    all_indices = set()
+    pooled_np = pooled[0].tolist()
+
+    for i, ((start, end), budget) in enumerate(zip(partitions, budgets)):
+        part_start = start
+        part_end = min(end, S)
+        part_len = part_end - part_start
+        part_k = min(budget, part_len)
+
+        if part_k <= 0:
+            continue
+
+        if segment_size > 0 and part_len > segment_size:
+            # BUZZ segments within this partition
+            part_pooled = mx.array([pooled_np[part_start:part_end]])[None, :]
+            part_pooled = pooled[:, part_start:part_end]
+            seg_indices = _select_segmented(part_pooled, part_k, segment_size)
+            for idx in seg_indices:
+                all_indices.add(part_start + idx)
+        else:
+            # Top-K within partition
+            seg_scores = pooled_np[part_start:part_end]
+            indexed = sorted(range(part_len), key=lambda j: -seg_scores[j])
+            for j in indexed[:part_k]:
+                all_indices.add(part_start + j)
+
+    return all_indices
+
+
 def snapkv_select(
     importance: mx.array,
     keep_count: int,
@@ -847,6 +922,8 @@ def snapkv_select(
     segment_size: int = 0,
     submodular: bool = False,
     values: mx.array | None = None,
+    partitions: list[tuple[int, int]] | None = None,
+    partition_min_tokens: int = 20,
 ) -> mx.array:
     """Select top-K tokens to keep based on importance scores.
 
@@ -854,12 +931,19 @@ def snapkv_select(
     top-K) instead of global top-K. This preserves local attention structure
     and prevents the "lost in the middle" problem at long contexts.
 
+    When partitions is set, allocates budget proportionally across partitions
+    (fair eviction from arXiv:2510.00231). Each partition gets budget
+    proportional to its size, with a minimum floor to protect small partitions.
+
     Args:
         importance: (B, H_kv, T) — per-token importance per head
         keep_count: total tokens to keep (including always_keep_last)
         always_keep_last: always keep this many recent tokens (sink/window)
         segment_size: if > 0, use per-segment selection with this segment size.
             0 = global top-K (original SnapKV behavior).
+        partitions: list of (start, end) token ranges for fair eviction.
+            Budget is allocated proportionally to each partition's size.
+        partition_min_tokens: minimum tokens to keep per partition (floor).
         submodular: if True, use greedy submodular selection with value-diversity
             penalty instead of independent top-K. Captures diminishing returns
             from correlated tokens. Requires values parameter.
@@ -883,7 +967,11 @@ def snapkv_select(
     # Pool importance across heads (union strategy: max across heads)
     pooled = mx.max(importance[:, :, :selectable], axis=1)  # (B, selectable)
 
-    if submodular:
+    if partitions and len(partitions) > 1:
+        # Fair eviction: proportional budget per partition
+        all_indices = _select_fair(pooled, k_selectable, partitions,
+                                    partition_min_tokens, segment_size)
+    elif submodular:
         # Submodular greedy with diversity penalty (within segments if set)
         all_indices = _select_submodular(pooled, k_selectable,
                                           segment_size, values)

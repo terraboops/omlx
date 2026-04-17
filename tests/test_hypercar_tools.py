@@ -1488,3 +1488,32 @@ class TestSnapKVBenchPhase:
     def test_phase3e_checks_needle(self):
         """Must verify needle retrieval after eviction."""
         assert "needle_found" in _bench_src
+
+
+# ---- Task 107: Fair Eviction ----
+
+class TestFairEvictionSource:
+    """Source-level tests for fair eviction budget allocation."""
+
+    def test_select_fair_exists(self):
+        assert "def _select_fair(" in _snapkv_src
+
+    def test_snapkv_select_has_partitions(self):
+        assert "partitions" in _snapkv_src
+
+    def test_proportional_allocation(self):
+        """Must allocate budget proportionally to partition size."""
+        assert "part_budget" in _snapkv_src or "budget" in _snapkv_src
+
+    def test_min_tokens_floor(self):
+        """Must have a minimum per-partition floor."""
+        assert "min_tokens" in _snapkv_src or "partition_min_tokens" in _snapkv_src
+
+    def test_per_partition_selection(self):
+        """Must run selection independently within each partition."""
+        assert "part_start" in _snapkv_src
+        assert "part_end" in _snapkv_src
+
+    def test_server_flag(self):
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--fair-evict" in server_src

@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 107: Fair eviction** — proportional partition budget allocation (2026-04-17)
+  - `_select_fair()`: allocates budget proportionally across instruction partitions
+  - Prevents system prompt eviction bias — each partition keeps budget ∝ its size
+  - Minimum per-partition floor (default 20 tokens) protects small critical partitions
+  - Composes with BUZZ segments: hierarchy is partition > segment > token
+  - `--fair-evict` flag on server. `partitions` param in `snapkv_select()`
 - **Task 59: OPLoRA safety rail for TTT** — orthogonal projection shipped (2026-04-17)
   - `omlx/oplora.py`: double-sided orthogonal projection for LoRA gradients
   - `project_lora_grads()`: projects dA, dB onto subspace orthogonal to W's top-k SVD
