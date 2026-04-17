@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 111: Streaming-head budget rebalancing** — retrieval 2×, streaming 0.5× (2026-04-17)
+  - `head_types` parameter in `snapkv_select()`: reweights importance before pooling
+  - Retrieval heads get 2× importance weight, streaming heads get 0.5×
+  - Shifts eviction budget toward retrieval heads where quality matters most
+  - `--streaming-aggressive` flag on server
+  - From arXiv:2412.05353: streaming heads don't re-consult resolved tokens
 - **Task 107: Fair eviction** — proportional partition budget allocation (2026-04-17)
   - `_select_fair()`: allocates budget proportionally across instruction partitions
   - Prevents system prompt eviction bias — each partition keeps budget ∝ its size

@@ -924,6 +924,7 @@ def snapkv_select(
     values: mx.array | None = None,
     partitions: list[tuple[int, int]] | None = None,
     partition_min_tokens: int = 20,
+    head_types: list[str] | None = None,
 ) -> mx.array:
     """Select top-K tokens to keep based on importance scores.
 
@@ -935,6 +936,11 @@ def snapkv_select(
     (fair eviction from arXiv:2510.00231). Each partition gets budget
     proportional to its size, with a minimum floor to protect small partitions.
 
+    When head_types is set (list of "streaming"/"retrieval" per KV head),
+    rebalances importance: retrieval heads get 2× weight in the pooling,
+    streaming heads get 0.5× weight. This shifts budget toward retrieval
+    heads where it matters more for quality.
+
     Args:
         importance: (B, H_kv, T) — per-token importance per head
         keep_count: total tokens to keep (including always_keep_last)
@@ -944,6 +950,8 @@ def snapkv_select(
         partitions: list of (start, end) token ranges for fair eviction.
             Budget is allocated proportionally to each partition's size.
         partition_min_tokens: minimum tokens to keep per partition (floor).
+        head_types: list of "streaming"/"retrieval" per KV head for budget
+            rebalancing (from DuoAttention or trig classification).
         submodular: if True, use greedy submodular selection with value-diversity
             penalty instead of independent top-K. Captures diminishing returns
             from correlated tokens. Requires values parameter.
@@ -964,8 +972,16 @@ def snapkv_select(
     if selectable == 0:
         return mx.ones((B, T), dtype=mx.bool_)
 
+    # Reweight importance by head type: retrieval heads get 2× weight,
+    # streaming heads get 0.5× (shifts budget toward retrieval)
+    imp_weighted = importance
+    if head_types and len(head_types) == H_kv:
+        weights = mx.array([2.0 if t == "retrieval" else 0.5
+                           for t in head_types]).reshape(1, H_kv, 1)
+        imp_weighted = importance * weights
+
     # Pool importance across heads (union strategy: max across heads)
-    pooled = mx.max(importance[:, :, :selectable], axis=1)  # (B, selectable)
+    pooled = mx.max(imp_weighted[:, :, :selectable], axis=1)  # (B, selectable)
 
     if partitions and len(partitions) > 1:
         # Fair eviction: proportional budget per partition

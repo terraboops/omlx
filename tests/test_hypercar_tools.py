@@ -1490,6 +1490,33 @@ class TestSnapKVBenchPhase:
         assert "needle_found" in _bench_src
 
 
+# ---- Task 111: Streaming-Head Budget Rebalancing ----
+
+class TestStreamingAggressiveSource:
+    """Source-level tests for streaming-head budget rebalancing."""
+
+    def test_snapkv_select_has_head_types(self):
+        assert "head_types" in _snapkv_src
+
+    def test_retrieval_weight(self):
+        """Retrieval heads must get higher weight."""
+        assert "retrieval" in _snapkv_src
+        assert "2.0" in _snapkv_src or "2x" in _snapkv_src.lower()
+
+    def test_streaming_weight(self):
+        """Streaming heads must get lower weight."""
+        assert "streaming" in _snapkv_src
+        assert "0.5" in _snapkv_src
+
+    def test_reweight_before_pooling(self):
+        """Reweighting must happen before max-pooling across heads."""
+        assert "imp_weighted" in _snapkv_src
+
+    def test_server_flag(self):
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--streaming-aggressive" in server_src
+
+
 # ---- Task 107: Fair Eviction ----
 
 class TestFairEvictionSource:

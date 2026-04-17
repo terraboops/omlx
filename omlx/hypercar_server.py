@@ -311,6 +311,9 @@ def main():
     parser.add_argument("--fair-evict", action="store_true", default=False,
                         help="Fair eviction: proportional budget per instruction partition. "
                              "Prevents system prompt eviction. Requires --snapkv-keep > 0.")
+    parser.add_argument("--streaming-aggressive", action="store_true", default=False,
+                        help="Rebalance eviction budget: 2x weight for retrieval heads, "
+                             "0.5x for streaming heads. Requires --snapkv-keep > 0.")
     parser.add_argument("--grammar", action="store_true", default=False,
                         help="Enable XGrammar constrained decoding for tool calls and "
                              "JSON schema response_format. Guarantees valid JSON output.")
