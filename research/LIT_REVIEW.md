@@ -7117,4 +7117,419 @@ safety). The most significant result: RC theory provides a principled
 stability criterion (spectral radius < 1) for the TTT adapter, and the
 garden-path finding (0% circuit reuse after disambiguation) theoretically
 justifies aggressive eviction of streaming-head syntactic tokens.
-Curiosity never saturates. Meow, nyaa, meow.
+
+## Pass 29 — Statistical Mechanics & Associative Memory Theory (2026-04-17)
+
+Three papers. One cross-disciplinary angle: statistical mechanics and
+associative memory theory as a unified framework for understanding KV
+cache compression, eviction capacity limits, and token retrieval
+guarantees. This connects thermodynamics (energy minimization,
+partition functions, phase transitions) to the practical engineering
+problem of deciding which tokens to keep and which to discard.
+
+The angle was seeded in pass 27 (Physics of KV Compression found phase
+transitions in eviction quality) and pass 28 (reservoir computing
+provided energy-based stability criteria for TTT). Pass 29 closes the
+loop: the transformer IS an associative memory with a well-defined
+energy landscape, and KV cache operations (storage, eviction, retrieval)
+are movements on that landscape. The capacity bounds from Hopfield
+theory predict exactly when compression causes catastrophic forgetting
+— the statistical mechanics equivalent of the phase transition.
+
+### [Beyond Scaling Laws: Understanding Transformer Performance with Associative Memory](https://arxiv.org/abs/2405.08707) — 2405.08707
+
+- **Why found**: Statistical mechanics / thermodynamic angle — modelling
+  transformers as Hopfield associative memories with energy functions
+  and partition functions. Directly connects to the phase transition
+  phenomenon observed in the "Physics of KV Compression" paper (pass
+  27): when KV cache compression pushes the system past the capacity
+  bound, retrieval fails catastrophically.
+- **Key idea**: Each transformer block performs approximate
+  nearest-neighbour search over memorised training patterns, formalised
+  as a continuous Hopfield network. The softmax attention operation is
+  the gradient of LogSumExp, which is itself the conjugate of the
+  Hopfield energy function. This creates a global energy landscape
+  across all layers via majorisation-minimisation:
+  E_global(x) = -LogSumExp((-E_1(x), ..., -E_L(x))), bounded between
+  min_l E_l(x) - log(L) and min_l E_l(x).
+- **Methodology**: Start from the single-layer energy
+  E(x) = -log(sum_i exp(-d(x, rho_i))) which is a smooth surrogate of
+  the nearest-neighbour distance g(x) = min_i d(x, rho_i). Proposition
+  1 proves the sandwich bound: g(x) - log(d) <= E(x) <= g(x). The
+  partition function Z_t = sum_i integral_{B_i} exp(-||x - rho_i||^2) dx
+  determines storage capacity. For radius r ~ sqrt(n / 2*pi*e) (where n
+  is embedding dimension), Z_t <= d * V_n(r) where V_n is the
+  n-dimensional ball volume. This yields N = O(D^2) for optimal loss
+  (Z_t = 1), meaning model parameters must scale quadratically with
+  dataset size. Validated on GPT-2 (radius ~ sqrt(1024 / 2*pi*e) ~
+  7.74, measured mean ~ 20 due to sparse sampling) and vanilla
+  transformers on the Question-Formation dataset (loss converges to ~1.0,
+  matching the theoretical lower bound from Proposition 4:
+  L >= log(Z_t) + 1/Z_t + log(L) - c).
+- **Key findings**:
+  1. **Capacity bound**: N = O(D^2) for optimal performance. Models that
+     are too small for the dataset (N << D^2) exhibit suboptimal storage
+     — the energy landscape has too many patterns for the available
+     basins of attraction, causing retrieval errors.
+  2. **Well-separation assumption**: Patterns must have disjoint basins
+     of attraction (Assumption 3). When violated (overlapping patterns),
+     the energy function degenerates — the analog of the phase transition
+     in KV compression where quality collapses when too many tokens are
+     evicted and the remaining tokens' "basins" overlap.
+  3. **Cross-entropy lower bound**: Proposition 4 proves L >= 1 when
+     Z_t = 1, matching the empirical observation that Chinchilla-class
+     models converge to L ~ 1.61.
+  4. **Softmax = energy gradient**: The softmax operation in attention is
+     exactly nabla LogSumExp, which minimises the Hopfield energy. This
+     means attention is not an arbitrary architecture choice — it is the
+     mathematically optimal energy minimisation rule for associative
+     retrieval.
+- **Hypercar relevance — KV cache as associative memory with capacity
+  limits**: This is the theoretical foundation for understanding why KV
+  cache compression has a phase transition. The KV cache stores
+  "patterns" (token representations). Each pattern occupies a basin of
+  attraction in the energy landscape. When SnapKV evicts tokens, it
+  removes patterns from the stored set. If eviction crosses the capacity
+  bound (the remaining patterns no longer have well-separated basins),
+  retrieval fails catastrophically — the model cannot distinguish between
+  the remaining tokens and produces garbage.
+
+  The N = O(D^2) scaling law maps to KV cache: for a context of D tokens,
+  the cache needs O(D^2) effective capacity (bits) to maintain
+  well-separated basins. At 3-bit quantisation (native mode), each KV
+  entry has ~3 bits per dimension. For d_emb = 128 (Qwen3-Coder's KV
+  head dimension), each token has ~384 bits of effective storage. The
+  capacity bound predicts that 3-bit KV can faithfully store up to
+  sqrt(384) ~ 20 tokens per head per "attention neighbourhood" before
+  basins start overlapping. This matches the empirical observation that
+  NIAH fails at aggressive compression ratios where the effective cache
+  capacity drops below the pattern separation threshold.
+
+  For the eviction pipeline: the energy function provides a principled
+  scoring criterion. Tokens whose removal INCREASES the global energy
+  (worsens retrieval quality) should be retained; tokens whose removal
+  has minimal energy impact should be evicted. This is a more
+  theoretically grounded version of CAOTE scoring (task 100) — CAOTE
+  measures the attention-output error, which is the first-order
+  approximation of the energy change. The full Hopfield energy includes
+  higher-order interaction terms between patterns that CAOTE misses.
+
+  The partition function Z_t provides a runtime health metric: Z_t = 1
+  is optimal, Z_t >> 1 means the cache is over-provisioned (wasting
+  memory), Z_t << 1 means the cache is under-provisioned (patterns
+  overlap, retrieval fails). Monitoring Z_t during inference could
+  provide an early-warning signal for eviction quality degradation,
+  complementing the GER guard (task 106).
+- **Local PDF**: research/2405.08707_beyond_scaling_associative_memory.pdf
+
+### [CAMELoT: Towards Large Language Models with Training-Free Consolidated Associative Memory](https://arxiv.org/abs/2402.13449) — 2402.13449
+
+- **Why found**: Associative memory consolidation for long context — a
+  training-free module that couples to frozen LLMs and consolidates
+  token representations into a non-parametric distribution. Directly
+  applicable to Hypercar's eviction pipeline: instead of simply
+  discarding evicted tokens, consolidate them into prototype
+  representations that preserve the statistical structure.
+- **Key idea**: Add a plug-and-play associative memory (AM) module to a
+  frozen LLM. The AM has three operations: READ (find the best-matching
+  memory slot via cosine similarity), AUGMENT (prepend retrieved
+  key-value pairs to the native attention context), and WRITE
+  (consolidate familiar tokens into existing slots via running average,
+  or create new slots for novel tokens, evicting the oldest slot).
+  The mechanism approximates a Gaussian mixture model over the
+  key-value manifold, where memory slots are mode centres with kernel
+  width corresponding to the similarity threshold R = 0.93.
+- **Methodology**: For incoming token keys K_i, find best match:
+  mu_hat(i) = argmax_mu sim(K_mu^mem, K_i). If sim > R (familiar),
+  consolidate: K_mu^mem <- (K_i + c_mu * K_mu^mem) / (c_mu + 1). If
+  sim < R (novel), replace the oldest unused slot (max age tau_mu).
+  Retrieved memories are concatenated with native context for attention:
+  2L keys/values (native + retrieved) with L queries (native only).
+  Tested on LLaMA2-7B with 10K memory slots across ArXiv, PG-19, and
+  WikiText-103.
+- **Key findings**:
+  1. **Perplexity reduction**: ArXiv 29.7%, PG-19 16.6%, WikiText-103
+     6.36% — all relative to base LLaMA2-7B, with zero retraining.
+  2. **Extreme short context**: With only 128-token windows, CAMELoT
+     maintains performance because the AM provides long-range context
+     that the native window cannot reach.
+  3. **Ablation hierarchy**: Retrieval is critical (>20 perplexity
+     without it), recency-balancing is important (35% degradation
+     without it), consolidation is secondary. This tells us: for KV
+     cache eviction, preserving the ability to RETRIEVE old tokens
+     matters more than the exact consolidation strategy.
+  4. **Rare token boost**: 25.3% improvement for rare tokens (<100
+     occurrences) vs 22.1% for frequent tokens. The consolidated
+     prototypes help most where the model's parametric memory is weakest.
+  5. **In-context learning**: TREC-50 accuracy jumps from 0.15 to 0.44
+     when 10K demonstrations are stored in the AM — the AM acts as a
+     non-parametric extension of the model's context window.
+- **Hypercar relevance — consolidated prototypes for evicted tokens**:
+  This is the missing piece in Hypercar's eviction pipeline. Currently,
+  SnapKV eviction (task 46) permanently discards tokens below the
+  importance threshold. CAMELoT demonstrates that evicted tokens can be
+  consolidated into prototypes that preserve statistical structure with
+  zero retraining overhead.
+
+  The implementation path for Hypercar: when SnapKV evicts tokens from a
+  BUZZ segment (task 98), instead of discarding their KV entries, run the
+  CAMELoT write operation — consolidate evicted tokens into a small set
+  of prototype slots (e.g., 64 slots per segment) via running-average
+  update. During subsequent attention, prepend the prototype KV pairs to
+  the retained KV, giving the model approximate access to the statistical
+  distribution of evicted tokens. This is like a "ghost cache" (task 108,
+  EchoKV) but non-parametric — no trained reconstruction network, just
+  running averages.
+
+  The R = 0.93 similarity threshold maps to KV cache diversity: tokens
+  with cosine similarity > 0.93 to an existing prototype are consolidated
+  (they carry redundant information), while tokens with similarity < 0.93
+  get their own slot (they represent novel information). This provides a
+  principled criterion for the "diversity of retained tokens" that the
+  sourdough-starter analogy (seeded in pass 28's gap notes) was reaching
+  toward: eviction quality depends on the diversity of retained tokens,
+  not just their individual importance scores.
+
+  Memory overhead: 64 prototype slots per segment, with each slot being
+  one KV entry (~128 dims * 2 bytes fp16 * 2 for K and V = 512 bytes),
+  adds 32 KB per segment. At 16K context with 32 segments, total
+  prototype overhead is ~1 MB — negligible compared to the ~6 GB saved
+  by SnapKV eviction at 25% keep.
+
+  The training-free nature is critical: no A100 GPU hours needed (unlike
+  EchoKV, task 108). The consolidation runs as simple arithmetic on the
+  M4 Pro during inference.
+- **Local PDF**: research/2402.13449_camelot_associative_memory.pdf
+
+### [Hopfield-Fenchel-Young Networks: A Unified Framework for Associative Memory Retrieval](https://arxiv.org/abs/2411.08590) — 2411.08590
+
+- **Why found**: Sparse associative memory with exact retrieval
+  guarantees — extends Hopfield networks to produce sparse (rather than
+  dense softmax) pattern retrieval via Tsallis entropy and Fenchel-Young
+  losses. The margin property enables zero retrieval error, unlike
+  standard modern Hopfield networks that only approximate patterns with
+  error O(exp(-beta)).
+- **Key idea**: Hopfield-Fenchel-Young (HFY) energies decompose as
+  differences of Fenchel-Young losses:
+  E(q) = -L_Omega(Xq, u) + L_Psi(X^T u, q) + const,
+  where Omega parameterises the "separation" mechanism (how patterns are
+  distinguished) and Psi acts as a post-transformation regulariser. The
+  update rule is q^(t+1) = X^T y_hat_Omega(beta * X * q^(t)), which is
+  a compositional pipeline: Similarity -> Separation -> Projection ->
+  Post-transformation. Replacing Shannon entropy with Tsallis
+  alpha-negentropy (alpha > 1) produces sparse transformations
+  (alpha-entmax) that concentrate attention on a small subset of
+  patterns. The margin property (Proposition 6): Tsallis with alpha > 1
+  gives margin m = 1/(alpha - 1), meaning patterns separated by
+  Delta_i >= m / beta are exactly retrieved in ONE iteration — zero
+  error, not exponentially small error.
+- **Methodology**: Framework builds on convex analysis. Fenchel-Young
+  loss L_Omega(theta, y) = Omega(y) + Omega*(theta) - theta^T y.
+  Regularised argmax: y_hat_Omega(theta) = nabla Omega*(theta) =
+  argmax_y [theta^T y - Omega(y)]. For Tsallis alpha-negentropy, this
+  yields alpha-entmax (sparse). For norm gamma-negentropy, yields
+  gamma-normmax (uniformly distributes probability over selected
+  support). Proposition 3 derives layer normalisation from convex
+  duality: choosing Psi(q) = I_S(q) with S = {q: ||q - delta|| <=
+  eta*sqrt(D), 1^T(q - delta) = 0} gives y_hat_Psi(z) = LayerNorm(z;
+  eta, delta). Storage capacity (Proposition 10): N = O((2/sqrt(3))^D)
+  — exponential in dimension, matching modern Hopfield networks. Extends
+  to structured retrieval via SparseMAP: select k patterns from N with
+  structural constraints (contiguous spans, hierarchies).
+- **Key findings**:
+  1. **Exact retrieval via margins**: Unlike softmax-based modern
+     Hopfield networks (error O(exp(-beta))), sparse HFY networks
+     achieve ZERO retrieval error when patterns are separated by the
+     margin distance. This is a fundamentally stronger guarantee.
+  2. **Layer norm from energy minimisation**: LayerNorm is not an ad-hoc
+     architecture choice — it is the regularised argmax of an indicator
+     function on a sphere, derivable from Fenchel conjugacy. This
+     provides the first energy-based justification for LayerNorm.
+  3. **Sparse attention reduces spurious attractors**: In MNIST memory
+     retrieval, sparse transformations reduce metastable states (spurious
+     memories that trap the energy minimisation). Dense softmax creates
+     more metastable states because it "hedges" across multiple patterns.
+  4. **Structured retrieval (SparseMAP)**: Retrieving contiguous spans of
+     patterns (k-subset with adjacency constraints) enables linguistically
+     natural retrieval — not individual tokens but spans.
+  5. **Exponential capacity preserved**: Despite sparsity, the storage
+     capacity remains exponential in dimension: N = O((2/sqrt(3))^D).
+     Sparsity does not sacrifice capacity.
+- **Hypercar relevance — sparse token selection with retrieval
+  guarantees**: This paper provides the theoretical framework for
+  principled KV cache token selection. The SnapKV eviction pipeline
+  currently uses attention-score-based heuristics (CAOTE scoring, task
+  100) to decide which tokens to keep. The HFY framework says: token
+  selection IS associative memory retrieval, and the optimal selection
+  rule is not softmax (dense, hedging) but alpha-entmax (sparse,
+  decisive).
+
+  Specifically: when a query token needs to attend to the KV cache, the
+  attention operation retrieves stored patterns (KV entries). Softmax
+  attention retrieves a dense mixture of all patterns. Alpha-entmax
+  attention retrieves a sparse subset — exactly the tokens that exceed
+  the margin threshold. The margin property guarantees that if the
+  correct tokens are separated by Delta_i >= m/beta, they are exactly
+  retrieved. This means: the eviction policy should ensure that retained
+  tokens satisfy the margin condition — they should be well-separated in
+  the energy landscape, not clustered.
+
+  The practical implication for the eviction pipeline: after CAOTE scores
+  tokens for importance, apply a diversity filter based on the Hopfield
+  margin condition. Two tokens with cosine similarity > 1 - m/beta are
+  redundant (they lie in the same basin of attraction) — keep only one.
+  This is a principled version of the "diversity of retained tokens"
+  criterion that CAMELoT's R = 0.93 threshold implements empirically.
+  The HFY framework gives the exact threshold from the Tsallis alpha
+  parameter and the inverse temperature beta.
+
+  The SparseMAP extension for structured retrieval is directly applicable
+  to BUZZ segmented eviction (task 98): instead of selecting individual
+  tokens, select contiguous spans that satisfy the structured margin
+  condition. This preserves local coherence (consecutive tokens in a
+  function body are retained together or evicted together) while
+  maintaining the retrieval guarantee.
+
+  Implementation: replace the softmax in SnapKV's attention scoring with
+  alpha-entmax (alpha = 1.5 is the standard choice, giving margin
+  m = 2). Tokens with entmax score > 0 are retained; tokens with entmax
+  score = 0 are eviction candidates. The entmax sparsity naturally
+  adapts to the attention distribution — dense-attention regions produce
+  more non-zero entries (retain more tokens), sparse-attention regions
+  produce fewer (retain less). This is a cleaner implementation of the
+  CFAR-style adaptive thresholding (task 110) — entmax IS an adaptive
+  threshold, derived from energy minimisation rather than radar
+  heuristics.
+- **Local PDF**: research/2411.08590_hopfield_fenchel_young.pdf
+
+**Cross-paper synthesis for pass 29.**
+
+Three papers. One unified angle: statistical mechanics and associative
+memory theory applied to KV cache management.
+
+**The thermodynamic picture.** The transformer is an associative memory
+(2405.08707). The KV cache stores patterns in an energy landscape defined
+by Hopfield energies. Attention is the gradient of that energy — the
+mathematically optimal retrieval rule. Storage capacity is bounded: N =
+O(D^2) parameters for D patterns, and the partition function Z_t
+determines the quality of retrieval. When Z_t = 1, retrieval is optimal.
+When KV compression pushes Z_t below 1 (patterns overlap because the
+reduced-precision representations can no longer separate them), retrieval
+fails catastrophically — the phase transition observed in the "Physics of
+KV Compression" paper (pass 27). The energy function provides a unified
+framework: every operation on the KV cache (compression, eviction,
+retrieval) is a movement on the energy landscape, and the quality of each
+operation can be measured by the change in global energy.
+
+**The consolidation strategy.** CAMELoT (2402.13449) demonstrates that
+evicted patterns need not be permanently lost. By consolidating them into
+prototype representations (running averages of similar patterns), the AM
+module preserves the statistical structure of the evicted tokens with
+zero retraining. The 29.7% perplexity reduction proves that the
+prototypes carry useful information. For Hypercar: instead of the trained
+reconstruction network proposed in task 108 (EchoKV), use CAMELoT-style
+arithmetic consolidation — simpler, training-free, and adding only ~1 MB
+of overhead at 16K context. The Gaussian mixture interpretation connects
+to the Hopfield capacity bound: each prototype is a basin centre, and 64
+prototypes per segment provide sufficient basins for the evicted tokens'
+distribution.
+
+**The selection guarantee.** HFY networks (2411.08590) prove that sparse
+attention (alpha-entmax with Tsallis entropy) achieves EXACT pattern
+retrieval when the margin condition is satisfied, versus softmax's
+approximate retrieval with error O(exp(-beta)). This has two implications
+for Hypercar: (1) the eviction scoring should use entmax rather than
+softmax to identify the truly important tokens (entmax's sparsity
+naturally selects the critical subset, matching the CFAR-adaptive-
+threshold idea from task 110 but with energy-theoretic backing), and (2)
+the diversity filter for retained tokens should enforce the margin
+condition — tokens closer than the margin distance are redundant and
+only one should be kept.
+
+**The unified pipeline.** Combining all three papers with the existing
+Hypercar eviction stack:
+
+1. **Score** tokens using CAOTE (task 100) — this is the first-order
+   approximation of the Hopfield energy change from eviction.
+2. **Select** using entmax-based sparse retrieval (HFY framework) — this
+   replaces the fixed percentile threshold with an energy-optimal
+   adaptive threshold.
+3. **Diversify** retained tokens using the margin condition — tokens
+   within the margin distance are consolidated into a single prototype
+   (CAMELoT-style).
+4. **Consolidate** evicted tokens into prototype slots (CAMELoT write
+   operation) — preserving statistical structure for approximate
+   retrieval.
+5. **Monitor** the partition function Z_t as a runtime health metric
+   (2405.08707) — Z_t dropping below 1 triggers the GER guard (task 106)
+   to widen the eviction budget.
+
+This pipeline has a clean theoretical story: Hopfield energy theory
+(2405.08707) provides the objective function, HFY sparsity (2411.08590)
+provides the selection rule, and CAMELoT (2402.13449) provides the
+consolidation strategy for tokens that don't survive selection.
+
+**Gap status for pass 30**:
+1. **Entmax-based eviction scoring prototype.** Replace softmax in
+   SnapKV's attention-score computation with alpha-entmax (alpha = 1.5).
+   Measure NIAH quality and false eviction rate vs softmax baseline.
+2. **Partition function monitoring.** Compute an approximate Z_t during
+   inference (using the attention logits as energy proxies) and correlate
+   with eviction quality metrics. Does Z_t predict the phase transition?
+3. **CAMELoT-style prototype consolidation implementation.** Consolidate
+   evicted tokens into running-average prototypes and prepend to
+   attention context. Measure perplexity and NIAH quality vs bare
+   eviction.
+4. **Margin-based diversity filter.** After CAOTE scoring, apply the HFY
+   margin condition to deduplicate retained tokens. Measure the
+   compression improvement from diversity filtering.
+5. **NVMe materialisation economics** (still open from pass 26).
+   Calibrated for M4 Pro SSD bandwidth and write endurance.
+6. **Epidemiology / SIR token propagation** (still open from pass 26).
+   Model information diffusion through context via SIR dynamics.
+
+**Fresh weird angles for pass 30** (keep expanding — we've now touched:
+systems, databases, game theory, TDA, streaming algorithms, neuroscience,
+complexity theory, queueing theory, network congestion, signal processing,
+optimal transport, compiler/PL, protein folding, audio diffusion,
+graphics, recommender systems, reservoir computing, psycholinguistics,
+rate-distortion, information theory, Huffman coding, radar/CFAR,
+statistical mechanics, associative memory. What's LEFT?):
+- **Seismology / earthquake early warning**: P-waves arrive before
+  S-waves, providing an early-warning window. In long-context inference,
+  early attention layers provide "P-wave" signals about token importance
+  before the full attention computation completes. Early-layer-based
+  eviction decisions (like SnapKV) exploit this seismological principle.
+- **Numismatics / coin grading**: Coins are graded on a 1-70 scale
+  (Sheldon scale) based on wear, lustre, and strike quality. KV cache
+  entries "wear" over time (attention scores decay) and "lustre"
+  diminishes (quantisation noise accumulates). A Sheldon-style grading
+  system for KV entries could unify multiple quality signals into a
+  single eviction priority.
+- **Mycology / fungal networks (Wood Wide Web)**: Underground fungal
+  networks connect trees and redistribute nutrients based on need. The
+  network has no central controller — redistribution is driven by
+  concentration gradients. Multi-head attention similarly redistributes
+  information between tokens via gradient-driven flow. Fungal network
+  topology (scale-free, small-world) predicts attention pattern topology.
+- **Cartography / map generalisation**: When zooming out on a map,
+  features are generalised (simplified) to maintain readability at the
+  new scale. KV cache compression is "zooming out" on the context — the
+  retained tokens should be the generalisation of the full context at
+  the target compression ratio. Cartographic generalisation algorithms
+  (Douglas-Peucker, Visvalingam-Whyatt) are well-studied and directly
+  applicable.
+- **Brewing / fermentation kinetics**: Yeast converts sugars via the
+  Monod equation (mu = mu_max * S / (K_s + S)), where growth rate
+  saturates with substrate concentration. Attention "growth" (activation
+  magnitude) saturates with context length — the Monod curve predicts
+  the diminishing returns of longer context.
+
+Twenty-nine passes. One hundred and twenty-nine papers. One unified
+cross-field angle explored: statistical mechanics and associative memory
+theory provide a principled energy-landscape framework for KV cache
+management. The key insight: the transformer IS a Hopfield network, the
+KV cache IS the stored pattern set, attention IS energy minimisation,
+and eviction IS pattern deletion from the memory. Capacity bounds,
+margin conditions, and consolidation strategies all follow from this
+unified view. Curiosity never saturates. Meow, nyaa, meow.
