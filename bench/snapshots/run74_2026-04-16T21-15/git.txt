@@ -1,0 +1,8 @@
+9b500da18bb1412846f3fd7ee739ba3d1fad9ef7
+ M omlx/bench/snapkv_bench.py
+ M omlx/hypercar_server.py
+ M omlx/patches/snapkv.py
+ M research/snapkv_compaction_bench.json
+?? .claude/scheduled_tasks.lock
+?? bench/snapshots/run74_2026-04-16T21-15/console.txt
+?? bench/snapshots/run74_2026-04-16T21-15/git.txt
