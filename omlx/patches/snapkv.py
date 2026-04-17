@@ -1070,6 +1070,71 @@ def count_kept(keep_mask: mx.array) -> int:
     return int(mx.sum(keep_mask).item())
 
 
+def compute_ger(importance: mx.array, keep_mask: mx.array,
+                top_pct: float = 0.1) -> float:
+    """Compute Global Eviction Ratio (GER) — fraction of important tokens
+    evicted from ALL heads simultaneously.
+
+    From "Understanding the Physics of KV Cache Compression" (arXiv:2603.01426):
+    GER spikes sharply near the hallucination cliff (~90% compression).
+    A GER > 0.05 indicates dangerous eviction levels.
+
+    Args:
+        importance: (B, H_kv, T) — per-token importance per head
+        keep_mask: (B, T) — boolean mask of kept tokens
+        top_pct: fraction of tokens considered "important" (default 10%)
+
+    Returns:
+        GER value (0.0 = safe, >0.05 = dangerous, >0.1 = hallucination risk)
+    """
+    B, H_kv, T = importance.shape
+    evicted = ~keep_mask[0]  # (T,) — True for evicted tokens
+
+    # Identify important tokens: top top_pct by max-across-heads importance
+    pooled = mx.max(importance[0], axis=0)  # (T,)
+    n_important = max(1, int(T * top_pct))
+    threshold_idx = mx.argpartition(-pooled, kth=n_important)[:n_important]
+    important_mask = mx.zeros(T, dtype=mx.bool_)
+    for idx in threshold_idx.tolist():
+        important_mask = important_mask.at[idx].add(mx.array(True))
+
+    # GER: fraction of important tokens that are evicted
+    important_evicted = mx.sum(important_mask & evicted)
+    ger = float(important_evicted.item()) / max(n_important, 1)
+    return ger
+
+
+def check_ger_safety(importance: mx.array, keep_mask: mx.array,
+                      threshold: float = 0.05,
+                      widen_pct: float = 0.10) -> tuple[bool, float, int]:
+    """Check GER safety and recommend budget adjustment if needed.
+
+    Args:
+        importance: (B, H_kv, T) — per-token importance
+        keep_mask: (B, T) — boolean keep mask
+        threshold: GER threshold above which to widen budget (default 0.05)
+        widen_pct: fraction to widen keep_count by (default 10%)
+
+    Returns:
+        (safe, ger_value, recommended_keep_count)
+        safe=True means GER is below threshold.
+    """
+    ger = compute_ger(importance, keep_mask)
+    T = importance.shape[2]
+    current_kept = int(mx.sum(keep_mask).item())
+    recommended = current_kept
+
+    if ger > threshold:
+        # Widen budget to bring GER below threshold
+        recommended = min(T, int(current_kept * (1 + widen_pct)))
+        logger.warning(
+            f"GER safety: {ger:.3f} > {threshold} threshold — "
+            f"recommend widening budget from {current_kept} to {recommended}"
+        )
+
+    return ger <= threshold, ger, recommended
+
+
 def compact_cache_pyramidal(
     cache: list,
     importance: mx.array,
@@ -1233,18 +1298,31 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
                                           submodular=use_submodular,
                                           values=sel_values)
                 indices = get_keep_indices(keep_mask)
-                # Merge captured K/V: Q-hooks have (Q,K,V) for scoring layers,
-                # lightweight hooks have (K,V) for quantized layers
+
+                # GER safety check — widen budget if near hallucination cliff
+                safe, ger, rec_keep = check_ger_safety(
+                    importance, keep_mask)
+                if not safe:
+                    # Re-select with wider budget
+                    keep_mask = snapkv_select(importance, rec_keep,
+                                              segment_size=segment_size,
+                                              submodular=use_submodular,
+                                              values=sel_values)
+                    indices = get_keep_indices(keep_mask)
+                    scoring += f"+ger({ger:.2f}→widen)"
+
+                # Merge captured K/V for compaction
                 merged_kv = {}
                 if hasattr(_tls, 'kv_captured') and _tls.kv_captured:
                     merged_kv.update(_tls.kv_captured)
-                merged_kv.update(captured)  # Q-hook data overrides
+                merged_kv.update(captured)
                 compact_cache(cache, indices, model=model,
                               captured_kv=merged_kv if merged_kv else None)
                 new_len = len(indices)
                 seg_info = f", seg={segment_size}" if segment_size > 0 else ""
+                ger_info = f", GER={ger:.3f}" if ger > 0 else ""
                 _logger.info(
-                    f"SnapKV eviction ({scoring}{seg_info}): "
+                    f"SnapKV eviction ({scoring}{seg_info}{ger_info}): "
                     f"{old_offset} -> {new_len} tokens "
                     f"(kept {new_len * 100 // max(old_offset, 1)}%)"
                 )

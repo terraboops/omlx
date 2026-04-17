@@ -510,6 +510,12 @@ _(none)_
 
 ## Completed
 
+- **Task 106: GER safety monitor** — phase-transition guard for eviction (2026-04-17)
+  - `compute_ger()`: measures fraction of important tokens evicted from ALL heads
+  - `check_ger_safety()`: warns and recommends budget widening when GER > 0.05
+  - Integrated into `apply_snapkv_to_generate` — auto-widens budget if near cliff
+  - From arXiv:2603.01426: universal hallucination cliff at ~90% compression
+  - Composes with all eviction components (CAOTE, BUZZ, submodular)
 - **Task 103: Trigonometric pre-RoPE importance scoring** — calibrated + scorer shipped (2026-04-17)
   - `scripts/calibrate_qk_centres.py`: captures pre-RoPE Q/K for all 48 layers (22s GPU)
   - `omlx/patches/trig_score.py`: TrigScorer class with O(d)-per-key scoring

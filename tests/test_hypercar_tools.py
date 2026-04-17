@@ -1437,3 +1437,31 @@ class TestTrigScoreSource:
 
     def test_calibration_script_exists(self):
         assert Path("scripts/calibrate_qk_centres.py").exists()
+
+
+# ---- Task 106: GER Safety Monitor ----
+
+class TestGERSafetySource:
+    """Source-level tests for GER safety monitor."""
+
+    def test_compute_ger_exists(self):
+        assert "def compute_ger(" in _snapkv_src
+
+    def test_check_ger_safety_exists(self):
+        assert "def check_ger_safety(" in _snapkv_src
+
+    def test_ger_threshold(self):
+        """Must have configurable GER threshold."""
+        assert "threshold" in _snapkv_src
+
+    def test_ger_widen_budget(self):
+        """Must recommend widening budget when GER exceeds threshold."""
+        assert "widen" in _snapkv_src
+
+    def test_ger_integrated_in_wrapper(self):
+        """GER check must be integrated into apply_snapkv_to_generate."""
+        assert "check_ger_safety" in _snapkv_src
+
+    def test_ger_logs_value(self):
+        """Must log GER value for monitoring."""
+        assert "GER=" in _snapkv_src

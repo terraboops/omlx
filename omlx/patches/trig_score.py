@@ -164,7 +164,7 @@ class TrigScorer:
         mx.eval(result)
         return result
 
-    def classify_heads(self, freq_threshold: float = 0.3) -> dict[int, list[str]]:
+    def classify_heads(self, freq_threshold: float = 0.85) -> dict[int, list[str]]:
         """Classify heads as streaming vs retrieval by dominant frequency.
 
         Heads with high-frequency dominance → streaming (narrow window).
