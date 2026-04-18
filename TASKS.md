@@ -3362,4 +3362,84 @@ _(none)_
 - **Change**: Add a "Goal 1 cost progression" table to CLAUDE.md or BENCHMARKS.md: 4K → 16K → 64K → 128K showing Metal peak, swap, wall-clock, and whether SnapKV compaction is needed at each scale. Include the practical observation: "64K works but takes 23 min and uses 38 GB; 128K requires chunked prefill; 256K+ requires SnapKV compaction to fit in 48 GB."
 - **Verify**: Table exists and numbers match analyst snapshots.
 - **Effort**: XS (30 min — docs table from existing data)
-- **Risk**: Prompt engineering. The multi-hop and coreference tasks need to be designed so the model CAN answer them at 100% keep but the answer is NON-TRIVIAL (not just pattern matching). If the prompts are too easy, they'll pass at 25% keep regardless of eviction quality. If too hard, they'll fail even at 100% keep. Calibrate against the 100% baseline first.
+
+### 133. KVTC-style PCA decorrelation + adaptive quantization for session save/load compression
+- **Goal**: 1 (1M context — session files currently ~4.2 GB at 1M with TQ3; KVTC could reduce to ~1.1 GB), 3 (decode speed — faster session restore via decompression instead of re-prefill)
+- **Derived from**: KVTC (2511.01815, pass 34). The paper demonstrates that the classical transform coding pipeline (PCA decorrelation + DP-optimised adaptive quantization + DEFLATE entropy coding) achieves 20x KV cache compression with <1 point accuracy loss on Llama 3.1-8B and 100% NIAH on 70B at 20x. KVTC decompression is 8.1x faster than vanilla re-prefill, directly addressing TQ3's 270x prefill slowdown (Task 127). ICLR 2026.
+- **Change**:
+  - Run PCA calibration on 200K tokens of code (using Qwen3-Coder-30B-A3B-Instruct-8bit) to learn the projection matrix V^T. Store V^T alongside the model (2.4% parameter overhead).
+  - Implement the KVTC pipeline for TQ3 session save: after WHT + codebook quantization, apply PCA projection, DP bit allocation, and DEFLATE. For session load: reverse the pipeline (DEFLATE decode -> dequantize -> inverse PCA -> WHT decode).
+  - Critical: remove RoPE before PCA (both KVTC and RotateKV confirm this is essential). Reapply RoPE after decompression.
+  - Add `--compress-sessions` flag to hypercar_server. When enabled, session save uses the full KVTC pipeline. Default: disabled until validated.
+- **Verify**:
+  - Session save at 16K context produces a compressed file ~4x smaller than current TQ3 save.
+  - Session load from compressed file produces identical decode output (token-level agreement) vs uncompressed load.
+  - NIAH 4K passes after session load from compressed file.
+  - Session load time is faster than re-prefill time for the same context length.
+- **Effort**: M (3 days: 1d PCA calibration, 1d pipeline implementation, 1d validation)
+- **Depends on**: TQ3 session save/load (already shipped). Independent of SnapKV eviction.
+- **Risk**: PCA calibration on code-heavy data may not generalise to mixed code/natural-language prompts. Mitigation: calibrate on a mix of code and natural language, or maintain separate V^T matrices for different domains.
+
+### 134. KeyDiff geometric pre-filter for SnapKV eviction scoring
+- **Goal**: 1 (1M context — faster eviction scoring enables more frequent eviction at long context), 3 (decode speed — KeyDiff is O(n) and FlashAttention-compatible)
+- **Derived from**: KeyDiff (2504.15364, pass 34). The paper shows that eviction based on key geometric distinctiveness (cosine distance from the anchor/mean key direction) achieves 0.04% accuracy drop at 23% KV reduction, WITHOUT requiring attention scores. This is complementary to CAOTE (Task 100): KeyDiff pre-filters the obviously redundant keys, then CAOTE fine-tunes the selection on the remaining candidates. NeurIPS 2025.
+- **Change**:
+  - In the SnapKV eviction pipeline (omlx/patches/snapkv.py), add a KeyDiff pre-filter stage before CAOTE scoring. For each head: compute anchor vector mu(K) = mean of normalised keys, score each token S_i = -CosSim(mu(K), k_hat_i), pre-select the top 2N candidates (where N is the final keep budget). Then run CAOTE only on the 2N candidates.
+  - Add `--keydiff-prefilter` flag. When enabled, the two-stage pipeline runs. When disabled, CAOTE runs on all tokens (current behaviour).
+  - The anchor vector is a single vector per head (128 floats) — negligible memory overhead.
+- **Verify**:
+  - SnapKV eviction quality: NIAH 4K and 16K pass rates unchanged with KeyDiff pre-filter enabled (compared to CAOTE-only).
+  - Scoring time: measure wall-clock for eviction scoring at 16K and 64K with and without KeyDiff pre-filter. Prediction: 30-50% scoring time reduction (CAOTE runs on 2N instead of full n tokens).
+  - Edge case: verify that attention sinks (position 0) are always retained by the pre-filter (they should be, since sinks are geometrically distinctive).
+- **Effort**: S (1 day: 0.5d implementation, 0.5d validation)
+- **Depends on**: SnapKV eviction (Task 46, SHIPPED), CAOTE scoring (Task 100, SHIPPED).
+- **Risk**: the anchor vector may be dominated by a few high-norm keys, causing the pre-filter to retain outliers rather than diverse keys. Mitigation: normalise keys before computing the anchor (KeyDiff already prescribes this).
+
+### 135. FAEDKV spectral summary for evicted token reconstruction
+- **Goal**: 1 (1M context — spectral summary preserves information from evicted tokens that is currently lost entirely)
+- **Derived from**: FAEDKV (2507.20030, pass 34). The paper shows that DFT-based KV cache compression achieves 22% improvement over H2O/SnapKV at tight budgets (compression ratio 0.094) and provides position-unbiased retrieval on NIAH. The IWDFT incremental update enables online spectral summary maintenance. Combined with DynFormer's LGM multiplicative mixing (pass 33), this could provide lossy compression with on-demand reconstruction for evicted tokens.
+- **Change**:
+  - In the SnapKV eviction pipeline, when tokens are evicted, instead of discarding them entirely, compute a spectral summary: DFT of the evicted chunk's keys and values. Store the top-C frequency coefficients (where C is configurable, default 4 per chunk of 32 tokens = 8x compression of the evicted chunk).
+  - At decode time, when computing attention, optionally reconstruct the evicted chunk from its spectral summary via sparse IDFT and include it in the attention computation with reduced weight.
+  - Add `--spectral-summary` flag to the eviction pipeline. Default: disabled.
+- **Verify**:
+  - NIAH at 16K with 25% keep + spectral summary vs 25% keep without: the spectral summary should improve retrieval accuracy for needles in the evicted region.
+  - Memory overhead: spectral summary with C=4 per 32-token chunk adds ~12.5% to the compressed KV budget (4 complex coefficients per 32 tokens). Verify this is within memory budget.
+  - No regression: standard benchmarks (coherence, code intelligence) should not degrade with spectral summary enabled.
+- **Effort**: M (3 days: 1d DFT infrastructure, 1d integration with eviction pipeline, 1d validation)
+- **Depends on**: SnapKV eviction (SHIPPED). Benefits from DynFormer's LGM insight (pass 33) for the reconstruction step.
+- **Risk**: DFT of quantised (3-bit) KV entries may have poor spectral properties (quantisation noise appears as broadband noise in the frequency domain). Mitigation: apply DFT before quantisation (on the fp16 values), or use KVTC-style PCA decorrelation before DFT to improve spectral concentration.
+
+### 136. Gradient-based per-layer mixed-precision KV quantization (KVmix-style triage)
+- **Goal**: 2 (intelligence — sensitive layers get more bits, improving quality at same average bit-width), 1 (1M context — lower average bit-width means smaller KV cache at long context)
+- **Derived from**: KVmix (2506.08018, pass 35). The paper demonstrates that gradient-based layer importance scoring enables 2.19-bit key / 2.38-bit value quantization with near-lossless quality (0.006% accuracy loss on LongBench). The gradient distribution follows a Pareto law: 20% of layers carry 80% of the sensitivity. AAAI 2026 oral.
+- **Change**:
+  - Run gradient profiling on Qwen3-Coder-30B-A3B with 200K tokens of code. Compute s_k_i = ||grad_{W_k_i} L||_2 and s_v_i = ||grad_{W_v_i} L||_2 for all 48 layers.
+  - Classify layers into triage categories: top-20% -> 4-bit, middle-60% -> 3-bit, bottom-20% -> 2-bit. Target average ~3 bits overall.
+  - Implement `--mixed-precision-kv` flag for TQ3 mode. When enabled, uses per-layer bit-widths from the gradient profile instead of uniform 3-bit. Store the gradient profile alongside the model (48 * 2 floats = negligible).
+  - If gradient profiling confirms layer 0 is in the top category, this validates the current --fp16-layers 1 decision. If additional layers are identified as sensitive, adjust the default fp16 layer set.
+- **Verify**:
+  - Gradient profile exists for Qwen3-Coder. The profile identifies which layers are most/least sensitive.
+  - With mixed-precision enabled: code intelligence >= 3/5, NIAH 4K PASS, coherence 2/2.
+  - Compare TQ3 mixed-precision (avg ~3 bit) vs TQ3 uniform 3-bit: prediction is mixed-precision wins on quality at same memory budget.
+  - Verify that removing --fp16-layers 1 is safe when the gradient-identified layers get appropriate precision.
+- **Effort**: S (2 days: 0.5d gradient profiling, 0.5d per-layer quantization implementation, 1d validation)
+- **Depends on**: TQ3 mode (TurboQuantKVCache). Independent of SnapKV. Complements Task 125 (smooth scaling) and Task 133 (KVTC decorrelation).
+- **Risk**: gradient profiling requires backward passes through the model, which may be memory-intensive on the 48GB M4 Pro. Mitigation: use gradient checkpointing or profile on a subset of layers. Alternatively, use the gradient profile from a smaller Qwen3 variant and transfer the layer importance ranking.
+
+### 137. SparK channel pruning with mean recovery for KV cache channel-level compression
+- **Goal**: 1 (1M context — channel pruning provides additional 2x compression orthogonal to token eviction and quantization), 6 (machine fit — 50% channel pruning halves KV memory per token)
+- **Derived from**: SparK (2508.15212, pass 35). The paper demonstrates that 80% channel pruning with degenerate (mean-based) recovery achieves <5% accuracy degradation on LongBench and RULER. Composes with SnapKV eviction for multiplicative compression. AAAI 2026.
+- **Change**:
+  - In the SnapKV eviction pipeline, add a channel pruning stage after token eviction but before KV cache storage. For each retained token: compute saliency w_j = ||q_bar^j||_2 * ||k^j||_2 for each channel j, retain top-T channels (T = 0.5 * d_head = 64), store mean saliency mu for pruned channels.
+  - At attention computation time, reconstruct pruned channels using the stored mean: k_tilde^j = mu_j / ||q_bar^j||_2.
+  - Add `--channel-prune` flag with a ratio parameter (default 0.5). When enabled, applies channel pruning after SnapKV eviction.
+  - Store the per-head mean query vector q_bar (one vector per head, updated as exponential moving average during decode) for the saliency computation.
+- **Verify**:
+  - Memory: at 16K context with SnapKV@50% keep + SparK@50% channel: KV should be ~25% of full size. Verify metal_bytes measurement.
+  - Quality: NIAH 4K PASS with channel pruning enabled. Code intelligence >= 3/5.
+  - No catastrophic failure: unlike ThinK (structured pruning), SparK's per-token unstructured pruning should degrade gracefully. Verify on coherence tests.
+  - Latency: channel pruning adds a sort per head per token. Verify decode speed does not regress by more than 5%.
+- **Effort**: M (3 days: 1d saliency scoring + selection, 1d recovery mechanism, 1d integration + validation)
+- **Depends on**: SnapKV eviction (SHIPPED). Independent of TQ3 quantization (operates on a different axis). Composes with KeyDiff pre-filter (Task 134).
+- **Risk**: per-token unstructured channel masks are harder to implement efficiently than structured masks. On MLX/Metal, gather operations for non-contiguous channel subsets may be slower than contiguous slicing. Mitigation: implement as a dense mask multiply (sparse * dense) rather than gather, or sort channels by saliency and slice the top-T (contiguous after sort).

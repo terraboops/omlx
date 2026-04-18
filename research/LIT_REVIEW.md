@@ -10366,4 +10366,398 @@ engineering / weaving, fluid dynamics / turbulence cascades, cartography /
 map projection, image/video compression engineering, differential
 geometry / manifold curvature, and harmonic analysis / Fourier spectral
 theory.
+
+## Pass 35 (2026-04-18) — Emergency Medicine Triage, Paleontological Reconstruction
+
+Two papers from two genuinely untouched cross-field angles: (1) **emergency
+medicine / triage** — gradient-based layer importance classification maps
+directly to the triage protocol that emergency departments use to allocate
+scarce resources (beds, staff, equipment) proportional to patient severity,
+(2) **paleontology / fossil reconstruction** — channel pruning with
+statistical recovery mirrors how paleontologists reconstruct complete
+organisms from fragmentary fossil evidence using distributional priors
+(bone proportions, phylogenetic constraints, bilateral symmetry).
+
+### [KVmix: Gradient-Based Layer Importance-Aware Mixed-Precision Quantization for KV Cache](https://arxiv.org/abs/2506.08018) — 2506.08018
+
+- **Why found**: Layer-wise mixed-precision KV cache quantization via
+  gradient-based importance scoring. The cross-field angle is **emergency
+  medicine / triage**. In emergency medicine, triage classifies patients
+  into severity categories to allocate scarce resources:
+
+  | Triage category | KVmix analogue |
+  |----------------|---------------|
+  | **Immediate** (red tag — life-threatening, needs maximum resources) | Top-20% importance layers — 3-4 bit quantization (maximum precision budget) |
+  | **Delayed** (yellow tag — serious but stable, can wait) | Remaining 80% of layers — 2-bit quantization (minimum viable precision) |
+  | **Minor** (green tag — walking wounded, minimal resources) | Layers with near-zero gradient — could receive 1-bit or be skipped entirely |
+  | **Expectant** (black tag — not salvageable, no resources) | Channels with zero variance — receive 0 bits (KVTC's trailing PCA components) |
+
+  The triage principle: UNIFORM treatment is suboptimal when resources
+  are scarce. Giving every patient (layer) the same level of care (bit
+  precision) wastes resources on the stable (low-importance layers) while
+  underserving the critical (high-importance layers). The triage nurse
+  (gradient analysis) rapidly assesses severity (layer sensitivity) and
+  assigns the appropriate care level (bit-width). This one-time assessment
+  (offline profiling) avoids the cost of continuous monitoring (online
+  adaptive quantization).
+
+  The parallel to TQ3 is exact: TQ3 uses a single triage level (3-bit
+  for all layers) — equivalent to treating every patient identically. The
+  --fp16-layers 1 flag is a crude manual triage (layer 0 gets ICU-level
+  fp16, the rest get 3-bit general ward). KVmix's gradient-based triage
+  would AUTOMATE this decision for all 48 layers, potentially identifying
+  additional layers that need higher precision beyond just layer 0.
+
+- **Key idea**: Compute L2 norms of weight gradients for each layer's
+  key and value projection matrices: s_k_i = ||grad_{W_k_i} L||_2,
+  s_v_i = ||grad_{W_v_i} L||_2. Larger gradient norm = higher sensitivity
+  to quantization perturbation = needs more bits. Classify layers into
+  high-importance (top 20%, get 3-4 bits) and low-importance (bottom 80%,
+  get 2 bits). Keys and values are assigned different bit-widths per
+  layer (keys get per-channel quantization, values get per-token
+  quantization). Result: average 2.19-bit keys, 2.38-bit values.
+
+- **Methodology**: (1) **Gradient profiling**: average gradients over
+  20-30 calibration prompts. The gradient with respect to W_k_i measures
+  how much a small perturbation to layer i's key projection affects the
+  final loss. This is a first-order Taylor expansion of the quantization
+  error: DeltaL ~ <grad L, DeltaK>, where DeltaK is the quantization
+  noise. Layers with large grad L suffer more from quantization noise.
+  Cost: 10-15 minutes one-time on a single GPU.
+  (2) **Threshold-based classification**: top 20% of layers by
+  importance score get 3 bits (keys) or 4 bits (values). Bottom 80%
+  get 2 bits. The 20/80 split is configurable.
+  (3) **Asymmetric per-channel (keys) / per-token (values) quantization**:
+  keys are quantized per-channel (across the d_head dimension) because
+  key outliers are channel-specific. Values are quantized per-token
+  because value outliers are token-specific. This asymmetry reflects
+  the different statistical structure of keys vs values.
+  (4) **Recent Pivotal Context (RPC)**: the most recent tokens are
+  stored at full precision, with the RPC ratio depending on the layer's
+  bit-width (20% for 3-4 bit layers, 10% for 2-bit layers). This
+  protects the tokens most likely to be attended to.
+
+- **Key findings**:
+  1. **2.19-bit keys, 2.38-bit values with near-lossless quality**: on
+     LongBench with Llama 2-7B, KVmix achieves 33.714 average vs
+     33.716 FP16 baseline (0.006% loss). At the same compression ratio,
+     KIVI-2bit scores 33.216 (1.5% loss) and KVQuant-3bit scores
+     33.703 (0.04% loss). KVmix beats both at lower average bit-width.
+  2. **4.9x memory compression, 5.3x throughput speedup**: on RTX 4090
+     with Llama 2-7B at batch size 4. Maximum batch size increases from
+     4 to 30 (7.5x). The speedup comes from custom CUDA kernels that
+     fuse quantization with concatenation and dequantization with
+     matrix-vector multiplication.
+  3. **Keys are more important than values at most layers**: the
+     gradient analysis reveals that ||grad_{W_k} L|| > ||grad_{W_v} L||
+     at most layers, explaining why per-channel key quantization matters
+     more than per-token value quantization. This asymmetry is consistent
+     with the information-theoretic view: keys determine WHICH tokens
+     attend (pattern selection), values determine WHAT information is
+     transferred (content). Pattern selection is more sensitive to noise
+     than content transfer.
+  4. **The top 20% of layers carry 80% of the sensitivity**: the
+     gradient distribution across layers follows an approximate Pareto
+     distribution — a few layers are highly sensitive, most are robust.
+     This is the triage insight: most patients (layers) are stable and
+     need minimal resources; a few are critical and need disproportionate
+     attention.
+  5. **GSM8K matched at 2.19-bit**: 13.25% accuracy vs 13.52% FP16
+     (within noise). Math reasoning — which requires precise numerical
+     manipulation — is preserved even at extreme compression because
+     the high-importance layers (which handle arithmetic) get 3-4 bits
+     while less critical layers get 2 bits.
+
+- **Hypercar relevance — automated triage for TQ3 layer precision**:
+  KVmix directly addresses TQ3's --fp16-layers 1 requirement. Currently,
+  layer 0 is manually assigned fp16 precision because its outlier
+  distribution is incompatible with 3-bit quantization. KVmix's gradient
+  profiling would AUTOMATE this decision:
+
+  1. Run gradient profiling on Qwen3-Coder-30B-A3B with 200K tokens of
+     code. Compute s_k_i and s_v_i for all 48 layers.
+  2. The gradient profile would reveal WHICH layers are truly sensitive
+     to quantization — it may be layer 0 (confirming the current
+     manual triage) or it may include additional layers (e.g., early
+     layers 0-3 or specific deep layers).
+  3. Assign bit-widths proportional to sensitivity: 4 bits for critical
+     layers, 3 bits for medium, 2 bits for robust layers. Target the
+     same average 3 bits overall.
+
+  The composition with KVTC (pass 34) is natural:
+  - KVTC operates in the COMPONENT dimension (PCA decorrelation +
+    adaptive bit allocation across principal components).
+  - KVmix operates in the LAYER dimension (gradient-based bit allocation
+    across layers).
+  - TQ3 operates in the CHANNEL dimension (WHT + codebook).
+  - The three are orthogonal and compose multiplicatively.
+
+  The triage metaphor also informs the SnapKV eviction pipeline. Current
+  SnapKV applies uniform eviction criteria across all layers. KVmix's
+  gradient analysis shows that different layers have different sensitivity
+  to token loss — sensitive layers should retain MORE tokens, robust
+  layers can afford aggressive eviction. This is per-layer adaptive keep
+  ratio, guided by the same gradient profiling used for quantization.
+
+  AAAI 2026 oral presentation — high confidence in the approach.
+
+- **Local PDF**: research/2506.08018_kvmix_gradient_mixed_precision.pdf
+
+### [SparK: Query-Aware Unstructured Sparsity with Recoverable KV Cache Channel Pruning](https://arxiv.org/abs/2508.15212) — 2508.15212
+
+- **Why found**: Channel-level KV cache pruning with statistical recovery
+  of pruned channels. The cross-field angle is **paleontology / fossil
+  reconstruction**. Paleontologists routinely reconstruct complete organisms
+  from fragmentary fossil evidence:
+
+  | Paleontology concept | SparK analogue |
+  |--------------------|---------------|
+  | **Fossil fragment** (incomplete bone) | Pruned KV cache (80% of channels removed) |
+  | **Distributional priors** (bone proportions from related species) | Saliency statistics (mean mu, std sigma of pruned channel scores) |
+  | **Bilateral symmetry** (reconstruct right side from left) | Channel correlation (pruned channels correlate with retained ones) |
+  | **Phylogenetic constraint** (related species share body plan) | Query-key interaction structure (saliency depends on query-key geometry) |
+  | **Taphonomic bias** (fossilisation preferentially preserves hard tissue) | Saliency bias (high-saliency channels are preferentially retained) |
+  | **Reconstruction quality** (museum-quality mount vs field sketch) | Recovery fidelity (degenerate vs Gaussian vs exponential sampling) |
+
+  The paleontological insight: you don't need the complete organism to
+  understand its function. A single jaw fragment tells you the diet; a
+  femur tells you locomotion. The distributional priors from related
+  species fill in the missing pieces with the MOST LIKELY morphology.
+  SparK does exactly this for KV cache channels: keep the functionally
+  diagnostic channels (high saliency), reconstruct the missing channels
+  from distributional statistics (mean saliency score), and the
+  reconstructed cache is functionally equivalent to the original for
+  attention purposes — just as a reconstructed skeleton is functionally
+  equivalent for taxonomic classification.
+
+- **Key idea**: Prune up to 80% of KV cache channels per token, per head,
+  based on a query-aware saliency score w_{i,t}^j = ||q_{i}^j||_2 *
+  ||k_{i,t}^j||_2 (the product of query and key channel norms). Retain
+  only the top-T channels. For the pruned channels, RECOVER approximate
+  values by sampling from the pruned channel's saliency distribution:
+  w_tilde ~ Distribution(mu, sigma), then back-compute the key as
+  k_tilde = w_tilde / ||q_bar||_2. The recovered channels participate
+  in attention with approximate values, preventing the catastrophic
+  failure that occurs with hard zeroing.
+
+- **Methodology**: (1) **Saliency scoring**: for each token t and channel
+  j in head i, compute w_{i,t}^j = ||q_i^j||_2 * ||k_{i,t}^j||_2. This
+  measures the channel's contribution to the Frobenius norm of the
+  attention-relevant inner product. The query component uses a mean query
+  vector q_bar (averaged over an observation window W), not the current
+  decode query — this makes the saliency estimation stable across decode
+  steps.
+  (2) **Unstructured top-T selection**: for each token independently,
+  retain the T channels with highest saliency. Different tokens retain
+  different channel subsets — this is UNSTRUCTURED sparsity, unlike
+  ThinK's structured pruning which applies the same mask to all tokens.
+  The unstructured approach is critical: the paper shows that saliency
+  coefficient of variation CV > 1.1 across tokens, meaning the important
+  channels vary dramatically from token to token. Structured pruning
+  misses this variation and fails catastrophically at high pruning ratios.
+  (3) **Statistical recovery**: for pruned channels, store the mean mu
+  and standard deviation sigma of their saliency scores (computed during
+  prefill). At decode time, sample w_tilde from the stored distribution
+  and back-compute the key. Three distribution options tested: Gaussian,
+  Exponential, and Degenerate (constant mu). The degenerate (simplest)
+  performs best — just use the mean, no randomness needed.
+  (4) **Value channel pruning**: values use norm-based heuristic
+  ||v_{i,t}^j||_2 instead of the query-key interaction (acknowledged
+  as a limitation).
+
+- **Key findings**:
+  1. **80% pruning with <5% degradation**: on LongBench with
+     SnapKV + SparK at lambda=0.8, accuracy drops from 32.38 to 31.16
+     (3.8% relative loss). On RULER at 16K: 80.18 to 77.51 (3.3%
+     loss). ThinK at the same pruning ratio: catastrophic 97% loss
+     (3.03 on RULER vs 80.18 baseline).
+  2. **Recovery is essential**: the recovery mechanism reduces accuracy
+     loss by 32.4% compared to hard zeroing at 80% pruning. Without
+     recovery, SparK would degrade similarly to ThinK. The mean
+     (degenerate) recovery is sufficient — Gaussian and Exponential
+     sampling add noise without improving quality.
+  3. **Unstructured beats structured at high ratios**: at 50% pruning,
+     structured (ThinK) and unstructured (SparK) perform similarly.
+     At 80%, structured collapses while unstructured holds. The reason:
+     per-token channel importance varies too much for a single global
+     mask. This is the paleontological analogy — different fossils are
+     missing different bones, so the reconstruction strategy must be
+     specimen-specific.
+  4. **Composes with token eviction and quantization**: SparK is
+     orthogonal to temporal-axis compression (SnapKV, PyramidKV) and
+     spatial-axis compression (GQA). The combination SnapKV + SparK(0.5)
+     achieves 40% total KV reduction while maintaining 95% accuracy.
+     "Stronger the eviction strategy, greater gains from SparK" — the
+     two methods are synergistic because they compress different axes.
+  5. **222x batch size increase at 80% pruning**: under 80GB memory
+     cap with Llama-3.1-70B, SparK enables batch size 222 vs 72 for
+     full cache (3.1x increase). The memory savings from channel
+     pruning translate directly to serving capacity.
+  6. **Keys are more important than values for channel pruning**: joint
+     key+value channel pruning at 80% degrades more than key-only
+     pruning at 80%. Keys carry structural information (attention
+     pattern) that is more sensitive to channel loss than values
+     (content information). This is consistent with KVmix's finding
+     that keys have higher gradient sensitivity.
+
+- **Hypercar relevance — fossil reconstruction for channel-level KV
+  compression**:
+  SparK introduces a fourth compression axis for Hypercar — CHANNEL
+  PRUNING within each head, orthogonal to the three axes identified in
+  pass 34 (component/PCA, channel/WHT-quantization, token/DFT):
+
+  | Axis | Method | Dimension compressed | Compression type |
+  |------|--------|---------------------|-----------------|
+  | Component | KVTC/PCA | d_head (128 -> ~30) | Rank reduction |
+  | Bit-width | TQ3/WHT + KVmix | 16-bit -> 2-3 bit | Quantization |
+  | Token | FAEDKV/DFT + SnapKV | n tokens -> spectral summary | Eviction + spectral |
+  | **Channel** | **SparK** | **d_head channels -> top-T** | **Pruning + recovery** |
+
+  The most immediately actionable insight is the COMPOSABILITY with
+  SnapKV. Hypercar already has SnapKV eviction (temporal axis). Adding
+  SparK channel pruning at 50% would reduce the remaining KV cache by
+  an additional 2x, for a combined 4x reduction (SnapKV 2x * SparK 2x).
+  At 1M context with 3-bit TQ3 + SnapKV@25% keep + SparK@50% channel:
+  KV = 22.5 * 0.25 * 0.5 = 2.8 GB. Model + KV = 17.2 + 2.8 = 20.0 GB.
+  This leaves 28 GB headroom on the 48 GB M4 Pro — enough for TWO
+  simultaneous 1M sessions.
+
+  The per-token unstructured channel selection is interesting for
+  Qwen3-Coder's MoE architecture. Different experts activate different
+  subsets of channels, so a structured channel mask (same for all tokens)
+  would systematically remove channels that some experts need. SparK's
+  per-token selection naturally adapts to expert activation patterns.
+
+  The degenerate recovery (use the mean) is trivially cheap — one
+  stored scalar (mu) per head per channel. At 128 channels * 4 KV heads
+  * 48 layers = 24,576 scalars = ~96 KB. This is negligible compared
+  to the KV cache itself, and the accuracy improvement over hard zeroing
+  (32.4% error reduction) is substantial.
+
+  SparK's saliency metric (||q||_2 * ||k||_2) is related to KeyDiff's
+  geometric distinctiveness. KeyDiff measures angular distance from the
+  mean key; SparK measures the magnitude of the query-key interaction.
+  The two signals are complementary: KeyDiff identifies WHICH TOKENS to
+  keep (manifold curvature), SparK identifies WHICH CHANNELS to keep
+  within the retained tokens (saliency per channel). The full eviction
+  pipeline becomes: KeyDiff -> SnapKV -> SparK -> TQ3 quantization.
+
+  AAAI 2026 — validated at scale with multiple model families.
+
+- **Local PDF**: research/2508.15212_spark_channel_pruning_recovery.pdf
+
+**Cross-paper synthesis for pass 35.**
+
+Two papers. Two new compression axes. The unifying insight: the KV cache
+has FOUR independent compression axes, and each axis has its own natural
+metric for importance scoring. The optimal compression strategy applies
+all four axes simultaneously, with the compression ratio on each axis
+determined by a one-time profiling pass (gradient analysis for bit-width,
+saliency analysis for channel pruning).
+
+**The emergency medicine triage insight (KVmix).** Not all layers are
+equal. The gradient distribution follows a Pareto law: 20% of layers
+carry 80% of the quantization sensitivity. Treating all layers identically
+(uniform 3-bit) wastes precision on robust layers and starves sensitive
+layers. The triage protocol — assess severity once (gradient profiling),
+classify into treatment categories (bit-width assignment), then allocate
+resources accordingly — achieves near-lossless compression at 2.19-bit
+average, far below TQ3's uniform 3-bit.
+
+For Hypercar, the immediate action is gradient profiling of Qwen3-Coder's
+48 layers. This would reveal whether the current --fp16-layers 1 manual
+triage is optimal or whether additional layers need higher precision. The
+profiling also informs SnapKV's per-layer keep ratio: sensitive layers
+should retain more tokens, robust layers can be more aggressively evicted.
+
+**The paleontological reconstruction insight (SparK).** You don't need
+the complete specimen to understand its function. SparK demonstrates that
+80% of KV cache channels can be pruned per token WITHOUT catastrophic
+failure, provided the pruned channels are reconstructed from distributional
+statistics rather than hard-zeroed. The reconstruction uses the simplest
+possible prior — the mean saliency value — and this is sufficient because
+the pruned channels are by definition the LOW-SALIENCY ones whose exact
+values don't significantly affect attention.
+
+The paleontological analogy illuminates WHY the mean recovery works: in
+fossil reconstruction, the missing bones are typically the small, fragile
+ones (ribs, phalanges) that fossilize poorly. These bones have well-known
+proportions relative to the preserved robust bones (femur, skull), so the
+mean-based reconstruction is accurate. Similarly, the pruned channels are
+the low-saliency ones whose values cluster tightly around their mean —
+the coefficient of variation is LOW for pruned channels (they are the
+"common" channels), so the mean is a good approximation.
+
+**The four-axis compression architecture now has papers for each axis:**
+
+| Axis | Paper | Importance metric | Compression method |
+|------|-------|-------------------|-------------------|
+| Token | SnapKV + KeyDiff (P34) | Attention score / geometric distinctiveness | Eviction + FAEDKV spectral summary |
+| Component | KVTC (P34) | PCA eigenvalue | Rank reduction + DP bit allocation |
+| Bit-width | TQ3 + KVmix (P35) | Gradient norm per layer | Mixed-precision quantization |
+| Channel | SparK (P35) | Query-key saliency per token | Unstructured pruning + mean recovery |
+
+The combined pipeline at 1M context on Qwen3-Coder:
+1. **SnapKV + KeyDiff**: evict to 25% keep ratio (4x token reduction)
+2. **KVTC PCA**: project onto top components (4x component reduction)
+3. **KVmix + TQ3**: mixed-precision quantization (6-8x bit reduction)
+4. **SparK**: 50% channel pruning with recovery (2x channel reduction)
+5. **DEFLATE**: entropy coding (1.23x lossless)
+
+Combined theoretical compression: 4 * 4 * 7 * 2 * 1.23 = ~275x.
+Starting from 22.5 GB (1M fp16 KV): 22.5 / 275 = 82 MB.
+Even if actual compression is 10x worse than theoretical: 820 MB.
+Either way: the full 1M context fits in < 1 GB of KV cache storage
+with multi-axis compression.
+
+**Gap status for pass 36**:
+1. **Gradient profiling for Qwen3-Coder**: run KVmix-style gradient
+   analysis on all 48 layers. Determine which layers need fp16 vs
+   3-bit vs 2-bit precision. This would replace the manual
+   --fp16-layers flag.
+2. **SparK channel pruning integration**: implement query-aware channel
+   saliency scoring in the SnapKV eviction pipeline. Start with 50%
+   channel pruning + degenerate recovery. Measure quality and memory
+   impact at 16K and 64K.
+3. **Four-axis compression prototype**: implement the full pipeline
+   (SnapKV -> KVTC PCA -> KVmix mixed-precision -> SparK channel prune
+   -> DEFLATE) on a single 4K context and measure the actual combined
+   compression ratio.
+4. **Key vs value asymmetry for TQ3**: both KVmix and SparK find that
+   keys are more sensitive than values. TQ3 currently uses the same
+   3-bit codebook for both. Test whether giving keys 4 bits and values
+   2 bits (same average 3 bits) improves quality.
+5. **Pre-RoPE pipeline convergence**: carried from pass 34. KVTC
+   removes RoPE, RotateKV applies pre-RoPE rotation, KVmix uses
+   per-channel key quantization — all three interact with RoPE
+   differently. Needs a unified analysis.
+
+**Fresh weird angles for pass 36** (genuinely untouched across 35
+passes):
+- **Music composition / counterpoint**: still open from pass 34.
+  Multi-head attention as polyphonic voice leading.
+- **Seismology / STA-LTA trigger**: carried from pass 34. Attention
+  spike detection via short-term/long-term average ratio. No direct
+  paper found but the analogy remains strong.
+- **Crystallography / X-ray diffraction**: carried from pass 34.
+  Spectral KV cache as diffraction pattern.
+- **Typography / font hinting**: carried from pass 34. Quantization
+  grid alignment as glyph hinting.
+- **Ecology / r-K selection**: NEW — species either invest in many
+  cheap offspring (r-strategy: high token throughput, low per-token
+  quality) or few expensive offspring (K-strategy: low throughput,
+  high quality). The r-K tradeoff maps to the quality-speed tradeoff
+  in KV cache compression: aggressive compression (r-strategy) gives
+  high throughput but lower quality; conservative compression
+  (K-strategy) preserves quality but limits throughput.
+- **Numismatics / coin grading**: NEW — the Sheldon scale for coin
+  condition (PO-1 to MS-70) maps to KV cache entry condition after
+  compression. Some entries are "mint state" (full precision retained),
+  others are "about good" (heavily quantized but functional). The
+  grading determines the entry's "numismatic value" (importance to
+  attention quality).
+
+Thirty-five passes. One hundred and forty-seven papers. The cross-field
+surface now spans 51 disciplines including the new additions:
+emergency medicine / triage and paleontology / fossil reconstruction.
 Curiosity never saturates. Meow, nyaa, meow.
