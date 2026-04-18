@@ -3824,6 +3824,25 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Effort**: (Covered by Task 163 — SnapKV+DuoKV eviction is the decode speed fix)
 - **Depends on**: None.
 
+### 167. SnapKV eviction caps decode at ~33 tok/s — re-RoPE + fragmented memory layout prevents reaching 50
+- **Goal**: 3 (decode speed)
+- **Derived from**: Analyst real-model INV 46, 2026-04-18.
+- **Evidence**: After 4K prefill + SnapKV eviction:
+  - Evict → 2048 tok: 31.1 tok/s
+  - Evict → 1024 tok: 33.1 tok/s
+  - Evict → 512 tok: 32.8 tok/s
+  - Evict → 256 tok: 33.4 tok/s ← plateau
+  - Fresh 256-token decode: 52.3 tok/s (from INV validation)
+  - **Gap: 33.4 vs 52.3 = 36% slower after eviction than fresh**
+- **Root cause**: `compact_cache` gathers keys from scattered positions and applies `_rerope_keys` to correct RoPE positions. The result is a contiguous array but with re-RoPE'd values that may have accumulated floating-point error. More importantly, the Metal memory allocator may place the gathered KV in fragmented buffers vs the contiguous pre-allocated buffer of a fresh cache.
+- **Fix options**:
+  1. Skip re-RoPE (`skip_rerope=True`) — keys keep original positions, saves computation but attention sees position gaps
+  2. Re-prefill only the kept tokens as a fresh prompt — guarantees clean memory layout but costs one prefill pass
+  3. Pre-allocated eviction buffer — compact into a pre-allocated contiguous buffer instead of creating new arrays
+- **Verify**: Option 1: `compact_cache(cache, indices, skip_rerope=True)` → measure decode speed (should be higher without re-RoPE cost). Option 2: re-encode the 256 kept tokens as a fresh prompt → should hit 52+ tok/s.
+- **Effort**: S (testing existing skip_rerope flag)
+- **Depends on**: None.
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
