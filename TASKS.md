@@ -514,6 +514,8 @@ _(none)_
 
 ## Completed
 
+- **Task 141: Segmented selection vectorized** — mx.argpartition replaces Python sorted()+tolist() (2026-04-18)
+  - GPU-side top-K via argpartition — O(n) vs O(n log n), no CPU roundtrip
 - **Task 148: CAOTE/importance scoring GQA-aware broadcast** — eliminate mx.repeat GQA expansion (2026-04-18)
   - Reshape Q into (B, H_kv, gqa_ratio, obs_len, D) and broadcast with K
   - Saves 1.07 GB per layer at 64K (no full key copy for GQA expansion)

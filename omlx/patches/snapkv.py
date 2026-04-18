@@ -738,7 +738,6 @@ def _select_segmented(pooled: mx.array, k: int, segment_size: int) -> set:
     remainder = k - base_k * n_segments
 
     all_indices = set()
-    pooled_np = pooled[0].tolist()  # B=1 for inference
 
     for seg_idx in range(n_segments):
         seg_start = seg_idx * segment_size
@@ -752,11 +751,11 @@ def _select_segmented(pooled: mx.array, k: int, segment_size: int) -> set:
         if seg_k <= 0:
             continue
 
-        # Select top-K within segment using numpy-style sorting
-        seg_scores = pooled_np[seg_start:seg_end]
-        # Get indices sorted by score (descending)
-        indexed = sorted(range(seg_len), key=lambda i: -seg_scores[i])
-        for i in indexed[:seg_k]:
+        # Top-K via argpartition — stays in MLX, no .tolist() roundtrip
+        seg_scores = pooled[0, seg_start:seg_end]  # (seg_len,)
+        top_k_idx = mx.argpartition(-seg_scores, kth=seg_k)[:seg_k]
+        mx.eval(top_k_idx)
+        for i in top_k_idx.tolist():
             all_indices.add(seg_start + i)
 
     return all_indices
