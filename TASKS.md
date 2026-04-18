@@ -513,9 +513,13 @@ _(none)_
 
 
 
-
 ## Completed
 
+- **Efficiency audit regression tests** — 25 new tests guarding all perf fixes (2026-04-18)
+  - DuoKV: pre-alloc slab (no concat), gather trim (take_along_axis), ring vectorize
+  - TQ3: fused quantize (WHT→dense), fused dequantize, geometric growth helper
+  - SnapKV: no .at[], band mask freshness, argpartition in all selectors, GQA broadcast
+  - skip_rerope=True default, tool-call gate phase
 - **SnapKV final vectorization cleanup** — fair selection, global selection, get_keep_indices (2026-04-18)
   - _select_fair: Python sorted()+tolist() → mx.argpartition (same pattern as other strategies)
   - _select_global: simplified to single argpartition on B=0 slice

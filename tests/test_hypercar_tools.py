@@ -1659,3 +1659,192 @@ class TestFairEvictionSource:
     def test_server_flag(self):
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "--fair-evict" in server_src
+
+
+# ---------------------------------------------------------------------------
+# Efficiency Audit Regression Tests (2026-04-18)
+# ---------------------------------------------------------------------------
+
+_duo_src = Path("omlx/duo_kv_cache.py").read_text()
+_tq_src = Path("omlx/turboquant_kv.py").read_text()
+
+
+class TestDuoKVPreAllocSlab:
+    """Task 149: DuoKV must use pre-allocated slab, not mx.concatenate per token."""
+
+    def test_no_concat_in_update(self):
+        """update_and_fetch must NOT use mx.concatenate for growing the buffer."""
+        # Find the update_and_fetch method body
+        idx = _duo_src.index("def update_and_fetch")
+        # Look for the next method definition
+        next_method = _duo_src.index("\n    def ", idx + 1)
+        method_body = _duo_src[idx:next_method]
+        # Should NOT have mx.concatenate for key/value growth
+        assert "mx.concatenate([self._keys, keys]" not in method_body, \
+            "DuoKV update_and_fetch must use pre-alloc slab, not concat"
+
+    def test_has_kv_len_tracking(self):
+        """Must track actual token count separately from buffer capacity."""
+        assert "_kv_len" in _duo_src
+
+    def test_has_step_prealloc(self):
+        """Must have pre-allocation headroom."""
+        assert "_step" in _duo_src
+
+    def test_slice_assignment_pattern(self):
+        """Must use slice assignment for O(1) token insertion."""
+        assert "self._kv_len:self._kv_len + T_new" in _duo_src
+
+    def test_state_property_slices_to_kv_len(self):
+        """state property must return only valid tokens, not buffer padding."""
+        assert ":self._kv_len" in _duo_src
+
+
+class TestDuoKVGatherTrim:
+    """Task 142: Streaming head trim must use gather, not per-head Python loop."""
+
+    def test_uses_take_along_axis(self):
+        """Must use take_along_axis for vectorized gather."""
+        assert "take_along_axis" in _duo_src
+
+    def test_no_per_head_concat_loop(self):
+        """Must NOT have a per-head concat loop for trim."""
+        idx = _duo_src.index("def update_and_fetch")
+        next_method = _duo_src.index("\n    def ", idx + 1)
+        method_body = _duo_src[idx:next_method]
+        # Old pattern: trimmed_k.append(mx.concatenate([k_sink, k_window]
+        assert "trimmed_k.append" not in method_body
+
+
+class TestStreamingKVRingVectorized:
+    """Task 143: StreamingKVCache ring writes must be vectorized."""
+
+    def test_no_per_token_ring_loop(self):
+        """Ring mode must NOT iterate per-token."""
+        # Find the StreamingKVCache ring mode section
+        idx = _duo_src.index("class StreamingKVCache")
+        next_class = _duo_src.index("\nclass ", idx + 1)
+        class_body = _duo_src[idx:next_class]
+        # Old pattern: for i in range(T_new): pos = ...
+        assert "for i in range(T_new)" not in class_body
+
+    def test_uses_modular_arithmetic(self):
+        """Must compute ring positions with vectorized modular arithmetic."""
+        assert "% ring_len" in _duo_src
+
+
+class TestTQ3FusedQuantize:
+    """Task 152: TQ3 WHT quantize must use fused dense kernel."""
+
+    def test_wht_uses_fused_quantize(self):
+        """WHT path must call _fused_quantize, not _quantize_wht."""
+        # Find the quantize method
+        idx = _tq_src.index("def quantize(self, vectors")
+        end_idx = _tq_src.index("\n    def ", idx + 1)
+        method_body = _tq_src[idx:end_idx]
+        assert "_fused_quantize(" in method_body
+        assert "self._quantize_wht(vectors)" not in method_body
+
+
+class TestTQ3FusedDequantize:
+    """Task 145: All TQ3 dequant hot paths must use dequantize_fused."""
+
+    def test_update_and_fetch_uses_fused(self):
+        """update_and_fetch dequant path must prefer dequantize_fused."""
+        assert "dequantize_fused" in _tq_src
+
+    def test_dequant_fallback_pattern(self):
+        """Must have hasattr fallback for dequantize_fused."""
+        assert "hasattr(self._codec, 'dequantize_fused')" in _tq_src
+
+
+class TestTQ3GeometricGrowth:
+    """Task 144: TQ3 buffer growth must use geometric doubling."""
+
+    def test_ensure_compressed_storage_exists(self):
+        """Must have extracted helper for storage management."""
+        assert "def _ensure_compressed_storage" in _tq_src
+
+    def test_geometric_doubling(self):
+        """Must use cur * 2 for geometric growth."""
+        idx = _tq_src.index("def _ensure_compressed_storage")
+        end_idx = _tq_src.index("\n    def ", idx + 1)
+        method_body = _tq_src[idx:end_idx]
+        assert "cur * 2" in method_body
+
+
+class TestSnapKVVectorized:
+    """Tasks 139-141, 146-147: SnapKV pipeline must be fully vectorized."""
+
+    def test_no_at_add_pattern(self):
+        """Must NOT use .at[].add() for per-element scatter."""
+        assert ".at[" not in _snapkv_src
+
+    def test_freshness_uses_band_mask(self):
+        """Freshness scoring must use vectorized band mask, not inner loop."""
+        idx = _snapkv_src.index("def compute_freshness_scores")
+        end_idx = _snapkv_src.index("\ndef ", idx + 1)
+        body = _snapkv_src[idx:end_idx]
+        # Old pattern: for local_i in range(chunk_len)
+        assert "for local_i in range" not in body
+
+    def test_segmented_uses_argpartition(self):
+        """Segmented selection must use mx.argpartition, not Python sorted."""
+        idx = _snapkv_src.index("def _select_segmented")
+        end_idx = _snapkv_src.index("\ndef ", idx + 1)
+        body = _snapkv_src[idx:end_idx]
+        assert "argpartition" in body
+        assert "sorted(range" not in body
+
+    def test_global_uses_argpartition(self):
+        """Global selection must use mx.argpartition."""
+        idx = _snapkv_src.index("def _select_global")
+        end_idx = _snapkv_src.index("\ndef ", idx + 1)
+        body = _snapkv_src[idx:end_idx]
+        assert "argpartition" in body
+
+    def test_keep_mask_uses_indexed_assignment(self):
+        """keep_mask must use indexed assignment, not per-element loop."""
+        assert "keep_mask[:, idx] = True" in _snapkv_src
+
+    def test_ger_uses_indexed_assignment(self):
+        """GER important_mask must use indexed assignment."""
+        assert "important_mask[threshold_idx] = True" in _snapkv_src
+
+    def test_get_keep_indices_uses_argwhere(self):
+        """get_keep_indices must use mx.argwhere, not .tolist() iteration."""
+        idx = _snapkv_src.index("def get_keep_indices")
+        end_idx = _snapkv_src.index("\ndef ", idx + 1)
+        body = _snapkv_src[idx:end_idx]
+        assert "argwhere" in body
+
+    def test_caote_no_gqa_repeat(self):
+        """CAOTE scoring must NOT use mx.repeat for GQA expansion."""
+        idx = _snapkv_src.index("def compute_caote_importance")
+        end_idx = _snapkv_src.index("\ndef ", idx + 1)
+        body = _snapkv_src[idx:end_idx]
+        assert "mx.repeat" not in body
+
+
+class TestSkipReropeDefault:
+    """Task 168: compact_cache must default to skip_rerope=True."""
+
+    def test_default_true(self):
+        """skip_rerope must default to True for 4.7x faster decode."""
+        idx = _snapkv_src.index("def compact_cache")
+        # Check the signature
+        sig_end = _snapkv_src.index(")", idx)
+        sig = _snapkv_src[idx:sig_end]
+        assert "skip_rerope: bool = True" in sig
+
+
+class TestToolCallGate:
+    """Task 161: Benchmark must have tool-call JSON validity phase."""
+
+    def test_phase3f_exists(self):
+        bench_src = Path("omlx/bench/hypercar_bench.py").read_text()
+        assert "def phase3f_tool_call_json" in bench_src
+
+    def test_phase3f_wired(self):
+        bench_src = Path("omlx/bench/hypercar_bench.py").read_text()
+        assert "phase3f_tool_call_json(" in bench_src
