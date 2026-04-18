@@ -8688,4 +8688,537 @@ eviction, process rewards, conformal prediction, IR retrieval, feedback
 control theory, voting theory / social choice, multi-attribute decision
 making, archaeological stratigraphy, cognitive science / working memory,
 maritime navigation / dead reckoning, and error accumulation theory.
+
+---
+
+## Pass 32 (2026-04-17) — Cognitive load theory, lexicography / dictionary compilation
+
+Cross-field angles: (1) cognitive load theory — Sweller's CLT
+distinguishes intrinsic load (inherent task complexity), extraneous load
+(poor presentation), and germane load (schema formation). The KV cache
+has all three: intrinsic = tokens essential to the task, extraneous =
+tokens from bad prompt engineering, germane = tokens that help the model
+build reusable patterns. (2) Lexicography / dictionary compilation —
+dictionaries organize millions of entries into a compact, indexed
+vocabulary enabling O(1) lookup. Vector quantization codebooks ARE
+dictionaries: each KV vector is "looked up" in a vocabulary of
+representative centroids. The codebook is the Merriam-Webster of the
+latent space.
+
+### [Beyond Accuracy: A Cognitive Load Framework for Mapping the Capability Boundaries of Tool-use Agents](https://arxiv.org/abs/2601.20412) — 2601.20412
+
+- **Why found**: Cognitive load theory (CLT) applied to LLM agents.
+  This paper formalizes Sweller's cognitive load theory — the
+  distinction between intrinsic load (task complexity), extraneous
+  load (presentation noise), and germane load (schema construction)
+  — as a quantitative diagnostic for tool-use agent performance.
+  The KV cache IS the model's working memory substrate where all
+  three load types compete for finite capacity. Pass 31's VPWEM
+  used Miller's 7+/-2 (working memory capacity). This paper adds
+  the WHY behind capacity failures: not just "too many items" but
+  "wrong mix of load types."
+- **Key idea**: Decompose agent task complexity into two measurable
+  cognitive load dimensions and show that accuracy decays
+  exponentially as either dimension increases. (1) Intrinsic
+  cognitive load CL_i: formalized via a Tool Interaction Graph
+  (TIG) — a DAG where nodes are tool calls and edges represent
+  data/execution dependencies. Each edge has weight
+  w(e) = delta(v_i, v_j) * (1 + lambda * I(v_i, v_j)), where
+  delta is the "attentional distance" (conversational turns between
+  dependent operations) and I is the "interference" (count of
+  incorrect entities of the same semantic type in context — the
+  distractors). Total intrinsic load sums edge weights across the
+  TIG. (2) Extraneous cognitive load CL_e: formalized as the
+  parsing difficulty from ambiguous queries and distracting
+  irrelevant tools. Two normalised [0,1] scores per query: query
+  ambiguity and distractor tool potential. (3) Total load:
+  CL_total = CL_i + omega_e * CL_e, where omega_e is an
+  empirically derived scaling factor weighting extraneous relative
+  to intrinsic load.
+- **Methodology**: (1) **ToolLoad-Bench**: 500 instances across 10
+  domains with 106 tools and 4.9 average function calls. Load
+  levels are parametrically adjustable via graph generation (new
+  task graphs with controlled complexity) and edge insertion
+  (systematically adding dependencies). (2) **Performance model**:
+  Accuracy ~ exp(-(k * CL_total + b)), where k is the model's
+  load sensitivity (lower = more graceful degradation) and b is
+  the baseline load (lower = higher baseline accuracy). This
+  exponential decay model is validated via Hosmer-Lemeshow
+  goodness-of-fit tests (all p > 0.05). (3) **Results**: xLAM2-32B
+  (specialized) achieves 78.8% accuracy with k=0.034 (least
+  sensitive). GPT-4o: 68.0%, k=0.067. Claude 3.7: 64.8%.
+  Llama3.3-70B: 17% (catastrophic failure under load). The key
+  finding: "confusing task presentation is as significant a hurdle
+  as inherent task complexity" — extraneous load degrades
+  performance just as much as intrinsic load, but through different
+  failure modes.
+- **Key findings**:
+  1. **Attentional distance is the dominant intrinsic load factor**:
+     the number of conversational turns between dependent operations
+     predicts failure better than the number of operations. This is
+     a direct working memory capacity effect — the model must hold
+     intermediate results across turns, consuming KV cache slots.
+  2. **Interference (distractor density) amplifies load
+     multiplicatively**: w(e) = delta * (1 + lambda * I) means that
+     distractors don't just add load — they multiply the base
+     distance load. A context with 5 distractor entities of the
+     same type as the target effectively doubles the cognitive load
+     of each dependency edge.
+  3. **Load sensitivity k is model-specific and stable**: each
+     model has a characteristic degradation rate that persists
+     across task domains. This means the KV cache's effective
+     capacity is model-intrinsic, not task-dependent.
+  4. **Capability cliffs are load-specific**: at low intrinsic
+     load, most models perform well. At high intrinsic load, only
+     specialized models survive. The cliff location is predicted by
+     the exponential model: accuracy drops below 50% at
+     CL_total = (ln(2) - b) / k.
+- **Hypercar relevance — cognitive load decomposition for KV cache management**:
+  The cognitive load framework provides a principled taxonomy for
+  classifying KV cache tokens by their contribution type:
+
+  | CLT load type | KV cache analog | Cache management strategy |
+  |--------------|----------------|--------------------------|
+  | Intrinsic load | Task-essential tokens (function signatures, branch conditions, API calls) | CORE protection (task 116). These tokens ARE the task — removing them changes the problem. |
+  | Extraneous load | Prompt engineering artifacts (verbose system prompts, redundant instructions, over-specified tool descriptions) | Aggressive eviction target. These tokens consume KV capacity without contributing to task completion. The CASK scratch category partially captures this. |
+  | Germane load | Pattern-building tokens (examples, demonstrations, template structures) | Conditional retention: retain during learning, compress after schema formation. The m-folding consolidation (task 116) is exactly this — once the model has formed a pattern from the examples, the raw example tokens can be replaced by a summary. |
+
+  The **attentional distance** metric maps directly to Hypercar's
+  eviction problem. In a multi-turn agentic session, the distance
+  between a tool call's output and the next tool call that consumes
+  it determines how long the output tokens must survive in the KV
+  cache. Long attentional distances require high retention priority;
+  short distances allow aggressive eviction after consumption. The
+  freshness decay score (task 97) partially captures this, but the
+  cognitive load framework adds the interference dimension: tokens
+  should be penalised not just for age but for how many confusable
+  competitors exist in the cache at the same time.
+
+  The **exponential decay model** Accuracy ~ exp(-(k * CL_total + b))
+  provides a predictive framework for SnapKV keep ratio selection.
+  If the total cognitive load of the cache contents can be estimated
+  (via the TIG structure of the conversation), then the minimum
+  keep ratio needed to maintain target accuracy can be computed
+  analytically. At CL_total = 10 with k=0.067 (GPT-4o-class), the
+  model needs accuracy >= 50%, requiring CL_total <= 9.7. The keep
+  ratio must be high enough to keep attentional distances below this
+  threshold — evicting intermediate results that extend dependency
+  chains pushes CL_total above the cliff.
+
+  The **distractor interference** finding has a direct implication
+  for eviction scoring: tokens of the same semantic type as a
+  retained KEY token (task 119) should receive HIGHER eviction
+  priority, not lower. Currently, CAOTE (task 100) scores tokens
+  by their own importance. The cognitive load framework suggests
+  scoring should also consider how much a token INTERFERES with
+  important tokens — retaining a distractor that looks similar to
+  the target is worse than retaining an unrelated token, because
+  the distractor multiplies the effective cognitive load.
+- **Local PDF**: research/2601.20412_cognitive_load_framework_tool_agents.pdf
+
+### [VecInfer: Efficient LLM Inference with Low-Bit KV Cache via Outlier-Suppressed Vector Quantization](https://arxiv.org/abs/2510.06175) — 2510.06175
+
+- **Why found**: Lexicography / dictionary compilation angle. Vector
+  quantization codebooks are dictionaries — a finite vocabulary of
+  representative patterns that the KV cache indexes into for O(1)
+  lookup. VecInfer addresses the fundamental dictionary compilation
+  problem: how to design a codebook (dictionary) that accurately
+  covers the distribution of KV vectors (words) when the
+  distribution has outliers (rare words with unusual etymologies).
+  The outlier suppression via Hadamard transform is the lexicographic
+  equivalent of normalizing irregular spellings before dictionary
+  entry — making all words follow predictable patterns so the
+  dictionary needs fewer entries. This is also directly relevant to
+  Hypercar's TQ3 mode, which uses the same WHT-based decorrelation
+  for its codebook.
+- **Key idea**: Apply vector quantization to KV caches with two key
+  innovations: (1) outlier suppression via smooth scaling +
+  Hadamard transform to make the key distribution amenable to VQ,
+  and (2) a fused CUDA kernel that combines attention computation
+  with on-the-fly dequantization. The smooth transformation applies
+  channel-wise scaling lambda_i = sqrt(max(|K_i|)) to normalise
+  key channels, then an orthogonal Walsh-Hadamard matrix
+  redistributes outliers across dimensions via the central limit
+  theorem — with random sign patterns, the transformation yields
+  approximately Gaussian distributions. The result is a KV cache
+  compressed to 1.5-2 bits per element with minimal quality loss.
+- **Methodology**: (1) **Codebook construction**: K-Means clustering
+  on calibration data creates codebooks with 2^b centroids of
+  dimension d. Input vectors are partitioned into disjoint
+  sub-vectors; each maps to the nearest centroid via
+  j* = argmin ||x_i - C_j||^2. The codebook is the dictionary; the
+  centroids are the dictionary entries; the index j* is the word's
+  page number. (2) **Outlier suppression**: smooth transformation
+  (channel-wise scaling) + Hadamard rotation. This is applied to
+  keys only (values have fewer outliers). The inverse scaling is
+  applied to queries to preserve attention computation equivalence:
+  q <- q * diag(lambda), K <- K * diag(lambda)^{-1}.
+  (3) **Fused kernel**: fine-grained tiling with (batch_size,
+  num_heads, num_splits) grid, 128-thread blocks, asynchronous
+  pipeline overlapping memory transfers (loading value codes while
+  computing attention scores, prefetching next key codes during
+  output computation). (4) **Results on LongBench (13 tasks)**:
+  2-bit VecInfer has only 2.1% average accuracy drop vs full
+  precision. 14.5% improvement over MILLION (competing VQ method)
+  at 2-bit. Mathematical reasoning (GSM8K, MATH500): VecInfer
+  maintains coherence at 2-bit where KIVI and MILLION collapse.
+  End-to-end: 8.3x latency reduction on single-batch decoding
+  (196K sequence, Llama-3.1-8B). Self-attention: up to 2.7x
+  speedup on H100.
+- **Key findings**:
+  1. **Outlier suppression is the key to low-bit VQ**: without
+     smooth + Hadamard transforms, VQ codebooks waste entries on
+     outlier regions and under-represent the dense core. After
+     suppression, the distribution becomes approximately Gaussian,
+     allowing the codebook to optimally cover the data with far
+     fewer entries. This is the lexicographic insight: a dictionary
+     with irregular entries (outliers) needs more pages than one
+     with regularised entries.
+  2. **Keys are harder to quantize than values**: key cache has
+     larger outliers and higher channel-wise variation than value
+     cache. VecInfer applies outlier suppression to keys only,
+     using standard VQ for values. This asymmetry matches KIVI's
+     finding (pass 1, paper #3) that keys need different treatment
+     than values.
+  3. **Sub-vector dimension matters**: d_n=8 with b_m=12 (8-dim
+     sub-vectors, 12-bit codebook per sub-vector = 2^12 entries)
+     achieves the best accuracy at 1.5 bits. Larger sub-vectors
+     capture more inter-channel correlation but need exponentially
+     larger codebooks. This is the dictionary granularity trade-off:
+     define words at the character level (small sub-vectors, small
+     codebook, poor semantics) or at the phrase level (large
+     sub-vectors, huge codebook, rich semantics).
+  4. **Fused kernel is essential for practical VQ**: without
+     fusion, the dequantization overhead dominates at low bit-widths.
+     The async pipeline hides latency by overlapping codebook
+     lookups with attention computation. On H100: 2.6-3.3x speedup
+     over vanilla full attention at 196K context.
+  5. **2-bit is the practical sweet spot**: 4-bit is lossless
+     (<1% drop), 2-bit has ~2% drop, 1.5-bit has 5-10% drop,
+     1-bit requires mixed precision (separate K/V bit-widths).
+     For Hypercar's quality targets, 2-bit VQ would provide 4x
+     compression (vs 5.3x for 3-bit scalar quantization in native
+     mode) with potentially better quality.
+- **Hypercar relevance — VQ codebooks as dictionary lookup for KV cache**:
+  VecInfer's approach is structurally identical to Hypercar's TQ3
+  mode: both use WHT-based decorrelation before quantization. The
+  key differences are:
+
+  | Aspect | TQ3 (Hypercar) | VecInfer |
+  |--------|---------------|----------|
+  | Quantization type | Scalar (3-bit per channel) | Vector (2-bit per sub-vector group) |
+  | Codebook | Beta distribution codebook (WHT-derived) | K-Means learned codebook |
+  | Outlier handling | WHT decorrelation | Smooth scaling + WHT |
+  | Kernel | MLX Metal (Apple Silicon) | CUDA (NVIDIA) |
+  | Compression | 5.3x | 4-8x (2-bit to 1-bit) |
+
+  The lexicographic insight is actionable: TQ3's codebook is a
+  theoretically-derived dictionary (Beta distribution centroids).
+  VecInfer's codebook is an empirically-compiled dictionary (K-Means
+  centroids from calibration data). Lexicography teaches that the
+  best dictionaries combine both: theoretical structure (etymology,
+  morphology) for systematic coverage + empirical corpus analysis
+  (frequency, usage) for practical coverage. A hybrid TQ3+VecInfer
+  codebook would use the Beta distribution as the initial dictionary
+  structure, then refine entries via K-Means on actual KV vectors.
+
+  The smooth scaling (lambda_i = sqrt(max(|K_i|))) is a
+  technique Hypercar doesn't use. TQ3 relies solely on WHT for
+  decorrelation. Adding smooth scaling before WHT could improve
+  codebook coverage for layers with large key outliers — especially
+  layer 0, which already requires fp16 treatment in TQ3 mode
+  because of outlier-related quality issues.
+
+  The **sub-vector dimension** finding connects to the chunking
+  insight from pass 31 (VPWEM): just as working memory chunks
+  ~7 items into a semantic unit, VQ chunks d=8 channels into a
+  sub-vector and maps the sub-vector to a single codebook entry.
+  The optimal chunk size (d=8) may not be coincidental — it
+  matches the per-head key dimension for models with d_head=128
+  and 16 sub-vectors per head.
+- **Local PDF**: research/2510.06175_vecinfer_vq_kv_cache.pdf
+
+### [Share Your Attention: Transformer Weight Sharing via Matrix-based Dictionary Learning (MASA)](https://arxiv.org/abs/2508.04581) — 2508.04581
+
+- **Why found**: Dictionary learning applied to transformer
+  compression. MASA treats the attention projection matrices across
+  layers as entries in a dictionary and decomposes them into shared
+  "matrix atoms" — reusable dictionary entries that capture common
+  cross-layer patterns. This is the lexicographic principle of
+  identifying root words (atoms) from which all derived words
+  (layer-specific projections) can be reconstructed via
+  composition. Where VecInfer (above) builds a dictionary for KV
+  cache VECTORS, MASA builds a dictionary for attention WEIGHTS —
+  complementary dictionary strategies operating at different levels
+  of the transformer stack.
+- **Key idea**: Decompose attention projection matrices (Q, K, V, O)
+  across all transformer layers into linear combinations of a
+  shared dictionary of matrix atoms: W_hat_l = sum_{s=1}^{S}
+  c_{ls} * D_s, where D_s are S shared matrix atoms (the
+  dictionary), c_{ls} are per-layer scalar mixing coefficients
+  (the lookup indices), and S << L (far fewer atoms than layers).
+  Compression rate is approximately 1 - S/L. At S/L = 1/3, this
+  achieves 66.7% parameter reduction in attention modules.
+- **Methodology**: (1) **Dictionary atoms**: a compact set of
+  matrices D_s in R^{d x h} shared across all transformer blocks.
+  Each layer's attention projections are reconstructed as weighted
+  sums of atoms. (2) **Mixing coefficients**: per-layer scalars
+  c_{ls} determine how each atom contributes to each layer's
+  projection. For training stability, coefficients are generated
+  via a 3-layer MLP that predicts c_{ls} from learned block
+  embeddings; the MLP is discarded post-training. (3) **Training**:
+  end-to-end with AdamW, linear warmup over 10% of steps, cosine
+  decay. No distillation or auxiliary losses. Drop-in replacement
+  for standard attention. (4) **Results at 66.7% compression
+  (Transformer-L, 700M)**: average benchmark accuracy 41.30% vs
+  42.12% baseline (-0.82%). WikiText perplexity 31.34 vs 30.88.
+  LAMBADA perplexity 21.21 vs 20.73. Parameter reduction: 226.5M
+  -> 75M in attention modules. (5) **Scaling**: advantage
+  increases with model size. At 700M, MASA-QKVO exceeds next-best
+  baseline by +0.7% average accuracy. At 50% compression,
+  MASA-QKV achieves 0.05 lower perplexity than the uncompressed
+  baseline on WikiText.
+- **Key findings**:
+  1. **Cross-layer redundancy is massive**: attention projections
+     across layers share enough structure that 66.7% of parameters
+     can be replaced by shared atoms with <1% quality loss. This
+     means most layers are doing "variations on a theme" — the
+     atoms capture the theme, the mixing coefficients capture the
+     variation.
+  2. **Dictionary learning outperforms weight sharing**: naive
+     weight sharing (repeat weights across layers) and GQA (share
+     K/V heads) are special cases of MASA where atoms are fixed to
+     specific layers. The general dictionary decomposition captures
+     richer cross-layer patterns: "6.15 lower perplexity on
+     WikiText and 28.53 on LAMBADA" vs sequential sharing.
+  3. **Atoms are more efficient than low-rank**: low-rank
+     decomposition (W = AB where A, B are thin) compresses within a
+     single layer. MASA compresses ACROSS layers — fundamentally
+     more powerful because it exploits inter-layer correlation.
+     At the same compression rate, MASA significantly outperforms
+     low-rank on both perplexity and downstream accuracy.
+  4. **The MLP coefficient predictor is training-only**: at
+     inference, coefficients are fixed scalars. No additional
+     compute. The MLP exists only to provide smooth gradient flow
+     during training. Post-training, the dictionary lookup is a
+     simple weighted sum — exactly like looking up a word in a
+     dictionary and combining definitions.
+  5. **Extends to vision**: MASA applied to Vision Transformers
+     achieves matching performance on image classification,
+     suggesting the cross-layer dictionary structure is a general
+     property of transformers, not language-specific.
+- **Hypercar relevance — dictionary atoms for KV cache projection weights**:
+  MASA operates on the WEIGHTS that produce KV vectors, while
+  VecInfer operates on the KV vectors themselves. Together, they
+  suggest a two-level dictionary strategy:
+
+  Level 1 (MASA): compress the Q/K/V/O projection weights across
+  layers into shared atoms. For Qwen3-Coder with 48 layers, using
+  S=16 atoms would reduce attention parameters by 66.7%. The atoms
+  are loaded once into Metal shared memory; per-layer coefficients
+  are trivial scalars. This reduces the model's memory footprint
+  from 17.2 GB to potentially ~12 GB (saving ~5 GB in attention
+  parameters alone), which translates directly into more KV cache
+  budget at the same Metal memory ceiling.
+
+  Level 2 (VecInfer): compress the KV vectors produced by the
+  (now atom-based) projections into VQ codebook entries. The
+  outlier suppression (smooth + WHT) normalizes the vectors before
+  codebook lookup.
+
+  The combined effect: smaller model (MASA atoms) + smaller KV
+  cache (VQ codebook) = dramatically more context per GB. At 48 GB:
+  model ~12 GB + KV 2-bit VQ at 1M context ~8.5 GB = ~20.5 GB
+  total, leaving 27 GB headroom for the system. This is far more
+  comfortable than the current 39.7 GB for 1M context.
+
+  The cross-layer redundancy finding also explains WHY TQ3's
+  layer-0-must-be-fp16 rule exists: if layer 0's attention
+  projections are outliers in the cross-layer dictionary (they
+  don't share atoms with deeper layers), then its KV vectors will
+  also be outliers in the VQ codebook — requiring special treatment
+  (fp16) rather than quantization. MASA's dictionary decomposition
+  could identify which layers are "dictionary outliers" (low
+  reconstruction quality from shared atoms) and automatically
+  recommend fp16 treatment for those layers.
+- **Local PDF**: research/2508.04581_masa_dictionary_learning_attention.pdf
+
+**Cross-paper synthesis for pass 32.**
+
+Three papers. Two cross-field angles — cognitive load theory and
+lexicography / dictionary compilation — that have never appeared in
+the previous 31 passes. The unifying insight: effective KV cache
+management requires not just CAPACITY optimization (how many tokens
+fit) but LOAD classification (which tokens consume capacity
+productively) and VOCABULARY design (how to represent tokens
+compactly via shared dictionary structures).
+
+**The cognitive load decomposition (Beyond Accuracy).** The most
+architecturally significant finding. Sweller's CLT provides a
+taxonomy that the current eviction pipeline lacks. The pipeline treats
+all tokens as competing for the same resource (KV cache slots) and
+scores them by a unified importance metric (CAOTE + multi-criteria).
+But CLT shows that tokens impose THREE qualitatively different types
+of load on the model's working memory:
+
+Intrinsic load tokens (function signatures, branch conditions, API
+responses) are the task itself — evicting them changes the problem.
+They map to CASK core tokens (task 116) and KEY tokens (task 119).
+The eviction pipeline already protects these via core protection and
+key token detection.
+
+Extraneous load tokens (verbose system prompts, redundant
+instructions, over-specified tool descriptions) are noise that
+consumes capacity without contributing to task completion. The current
+pipeline has no special treatment for extraneous tokens — they are
+scored by the same CAOTE metric as intrinsic tokens. CLT predicts
+that identifying and aggressively evicting extraneous tokens could
+free significant cache capacity: in typical agentic sessions, the
+system prompt + tool protocol often consumes 30-50% of the context
+budget.
+
+Germane load tokens (examples, demonstrations, template structures)
+are learning scaffolding — essential during initial processing but
+dispensable once the model has formed the relevant pattern (schema).
+These are the natural targets for m-folding consolidation (task 116):
+once the model has "learned" from the examples, the raw example
+tokens can be replaced by summary tokens that preserve the gist. The
+transition from germane to consolidated is the cognitive equivalent of
+studying a textbook (germane load) and then closing it to take the
+exam (consolidated schema).
+
+The **distractor interference** finding is genuinely new to the
+eviction pipeline. The current CAOTE scoring treats each token's
+importance independently. But CLT shows that a token's effective load
+depends on HOW MANY similar-looking tokens exist in the cache. A
+distractor (semantically similar but task-irrelevant token) doesn't
+just waste a slot — it actively degrades the model's ability to
+attend to the correct target, because the attention mechanism must
+discriminate between the distractor and the target. The multiplicative
+interference formula w(e) = delta * (1 + lambda * I) quantifies this:
+each additional distractor multiplies the effective cognitive load of
+the dependency edge. For eviction scoring, this means: when deciding
+whether to evict token j, consider not just j's own importance but
+also how many tokens similar to j exist in the cache. If j is one of
+many similar distractors, evicting ALL of them (not just j) reduces
+load multiplicatively.
+
+**The dictionary compilation insight (VecInfer + MASA).** Two papers
+that operate at different levels of the transformer stack — VecInfer
+compresses KV vectors via VQ codebooks, MASA compresses attention
+weights via shared dictionary atoms — but share the same lexicographic
+principle: compress by identifying a finite vocabulary of reusable
+patterns and representing each instance as a codebook/dictionary
+lookup.
+
+VecInfer's WHT-based outlier suppression confirms Hypercar's TQ3
+design decision (WHT decorrelation before quantization) and suggests
+an enhancement: add smooth channel-wise scaling before WHT to further
+suppress key outliers. The 2-bit sweet spot (2.1% accuracy drop on
+LongBench) is more aggressive than TQ3's 3-bit design but could be
+explored for ultra-long contexts (1M+) where every bit matters.
+
+MASA's cross-layer dictionary reveals that transformers are far more
+redundant across layers than within layers. For Hypercar, this
+suggests a model compression opportunity orthogonal to KV cache
+compression: use shared atoms for the attention projection weights
+to reduce the model's baseline memory footprint, freeing more of the
+48 GB budget for KV cache at long contexts. A 5 GB reduction in model
+size translates directly to 5 GB more KV cache — enough for an
+additional ~220K tokens at 3-bit quantization.
+
+**The two-level dictionary architecture.** Combining VecInfer and
+MASA suggests a layered dictionary strategy that mirrors how real
+dictionaries work:
+
+1. **Etymology layer (MASA atoms)**: shared root structures across
+   layers. Just as "biology," "biography," and "biodegradable" share
+   the root "bio-," attention projections across layers share matrix
+   atoms. The atoms are the roots; the per-layer coefficients are the
+   suffixes that specialise each word.
+
+2. **Spelling layer (VecInfer VQ)**: standardised representation of
+   individual entries. Just as a dictionary normalises spellings
+   ("colour" -> "color" in American English), VQ normalises KV vectors
+   by mapping them to the nearest codebook centroid. The smooth +
+   WHT transformation is the spelling normalisation; the codebook
+   lookup is the page-number reference.
+
+3. **Usage layer (cognitive load classification)**: which entries are
+   essential (intrinsic), noise (extraneous), or scaffolding
+   (germane). Just as a dictionary marks words as "archaic,"
+   "informal," or "technical," the eviction pipeline should classify
+   tokens by their cognitive load type and apply load-appropriate
+   retention policies.
+
+This three-level architecture — shared structure (atoms), standardised
+encoding (VQ), load-aware retention (CLT) — provides a complete
+framework for managing the KV cache as a living dictionary that is
+continuously compiled, indexed, compressed, and curated during
+inference.
+
+**Gap status for pass 33**:
+1. **Extraneous load detector for prompt tokens**: implement CLT-
+   inspired classification that identifies extraneous load tokens
+   (verbose system prompts, redundant instructions) and prioritises
+   them for eviction. The attentional distance + interference metrics
+   from the cognitive load framework provide the scoring signal.
+2. **Distractor interference scoring**: extend CAOTE to penalise
+   tokens based on how many confusable competitors exist in the cache.
+   The multiplicative interference formula w(e) = delta * (1 + lambda
+   * I) provides the mathematical framework.
+3. **Smooth scaling for TQ3 key outliers**: add channel-wise smooth
+   scaling (lambda_i = sqrt(max(|K_i|))) before WHT in TQ3 mode.
+   This could eliminate the fp16 requirement for layer 0 by
+   suppressing key outliers before they reach the codebook.
+4. **Cross-layer atom analysis**: measure the dictionary
+   reconstruction error for each of Qwen3-Coder's 48 layers. Identify
+   "dictionary outlier" layers that may benefit from fp16 treatment
+   or layer-specific codebooks.
+5. **NVMe materialisation economics** (carried from pass 26 — low
+   priority, no paper intersection found across 7 passes. RETIRING
+   after this pass if no leads emerge in pass 33).
+
+**Fresh weird angles for pass 33** (genuinely untouched across 32
+passes):
+- **Forensic chain of custody**: KV cache provenance tracking.
+  Deferred from pass 31 — no papers found at the intersection. Try
+  one more search pass with "data lineage" + "inference" framing.
+- **Computational origami / flat-foldability**: attention matrix
+  compression as folding. Deferred from pass 31 — no direct papers.
+  Consider retiring if no leads emerge.
+- **Astrodynamics / Hohmann transfer orbits**: minimal-cost KV cache
+  state transitions. No direct papers found. Try "minimum-energy
+  state transition" + "neural network" framing.
+- **Mycology / mycelial networks**: distributed resource allocation
+  without central coordination. No direct papers found but the
+  metaphor remains structurally strong.
+- **Textile engineering / weaving**: attention patterns as weave
+  patterns (plain, twill, satin = local, strided, global). No direct
+  papers found. Try "structured sparsity pattern" + "periodic
+  attention" framing.
+- **Cartography / Mercator projection**: distortion-aware codec
+  selection. Deferred from pass 31.
+- **Insurance / actuarial science**: risk pooling across KV cache
+  entries. The law of large numbers applies: pooling many small
+  quantization errors produces predictable aggregate error.
+- **Numismatics / coin grading**: quality grading of KV cache
+  entries (mint, fine, good, poor) based on quantization fidelity.
+  Different grades get different retention policies.
+
+Thirty-two passes. One hundred and thirty-nine papers. The cross-field
+surface now spans: systems, databases, game theory, TDA, streaming
+algorithms, neuroscience, complexity theory, queueing theory, network
+congestion, signal processing, optimal transport, compiler/PL, protein
+folding, audio diffusion, graphics, recommender systems, reservoir
+computing, psycholinguistics, rate-distortion, information theory,
+Huffman coding, radar/CFAR, statistical mechanics, associative memory,
+code analysis, phase transitions, fair division, hierarchical AR,
+cross-head reconstruction, semantic sponsorship, sleep hierarchy, NVMe
+inventory, entropy-TTT, Apple Silicon profiling, softmax gap, RL
+eviction, process rewards, conformal prediction, IR retrieval, feedback
+control theory, voting theory / social choice, multi-attribute decision
+making, archaeological stratigraphy, cognitive science / working memory,
+maritime navigation / dead reckoning, error accumulation theory,
+cognitive load theory, and lexicography / dictionary compilation.
 Curiosity never saturates. Meow, nyaa, meow.
