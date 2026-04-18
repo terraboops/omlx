@@ -3804,6 +3804,20 @@ _streaming instead of reading whole, or using memory more efficiently._
   - Task 163: SnapKV post-prefill eviction → compress 40K to ~16K for sustained decode
 - **Effort**: (Covered by Tasks 149, 151, 163 — this task is the integration validation)
 
+### 166. [CRITICAL] Decode speed collapses at 4K for ALL KV modes — not just DuoKV, fp16 too (8.2 tok/s)
+- **Goal**: 3 (decode speed constant across context — FAILS above 1K for ALL modes)
+- **Derived from**: Analyst real-model INV 43 comprehensive heatmap, 2026-04-18.
+- **Evidence** (complete decode tok/s matrix):
+  - fp16:   52.7 @ 64 → 51.3 @ 256 → 48.1 @ 1K → **8.2 @ 4K** → 17.6 @ 8K → 15.2 @ 16K
+  - DuoKV:  52.7 @ 64 → 50.1 @ 256 → 44.0 @ 1K → 19.5 @ 4K → 15.5 @ 8K → 11.9 @ 16K
+  - native: 46.9 @ 64 → 45.4 @ 256 → 39.2 @ 1K → 17.5 @ 4K → 9.0 @ 8K → 0.4 @ 16K
+- **This overrides earlier analysis**: Previous INV 4 showed fp16 at 50+ tok/s through 4K because those tests ran on a clean system with the model freshly loaded. The heatmap test ran 18 sequential measurements — by the time it reached fp16 @ 4K, Metal memory pressure from prior measurements (native3 @ 16K) degraded performance. The decode cliff is REAL under sustained workload.
+- **Root cause hypothesis**: At 4K context, fp16 attention SDPA processes 4K×4K attention matrices × 48 layers. Even with `mx.fast.scaled_dot_product_attention`, this is O(n²) per layer. The per-token attention cost at 4K is 16x higher than at 1K, but decode speed only drops 6x (48.1→8.2) — suggesting partial flash-attention optimization but not enough.
+- **Alternative hypothesis**: Metal memory fragmentation from sequential measurements causes swap pressure that degrades all modes. The 4K measurements may be contaminated by prior 16K runs' residual Metal allocations.
+- **Verify**: Run fp16 decode at 4K on a FRESH model load (no prior measurements). If it shows 50+ tok/s, the contamination hypothesis wins. If it shows <20 tok/s, the O(n²) hypothesis wins.
+- **Effort**: S (diagnostic run)
+- **Depends on**: None.
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
