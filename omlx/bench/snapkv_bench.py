@@ -173,14 +173,45 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     if kv_mode == "native":
         kv_captured, kv_cleanup = install_kv_capture_hooks(cache)
 
-    # Prefill in chunks
+    # Prefill in chunks with optional progressive eviction
     chunk_size = 4096
+    evict_every = 16384  # evict every 16K tokens during prefill (0 = disabled)
+    tokens_since_evict = 0
     x_ids = input_ids
     for start in range(0, len(x_ids), chunk_size):
         end = min(start + chunk_size, len(x_ids))
         chunk = mx.array([x_ids[start:end]])
         logits = model(chunk, cache=cache)
         mx.eval(logits)
+
+        tokens_since_evict += (end - start)
+
+        # Progressive mid-prefill eviction: evict every N tokens
+        # to keep peak memory bounded and reduce O(n²) attention cost
+        if evict_every > 0 and tokens_since_evict >= evict_every and end < len(x_ids):
+            current_offset = cache[0].offset
+            mid_keep = max(64, current_offset // 2)  # keep 50% during prefill
+            mid_imp = compute_caote_importance(captured, cache) if use_caote else \
+                compute_importance_from_real_q(captured, cache)
+            mx.eval(mid_imp)
+            mid_mask = snapkv_select(mid_imp, mid_keep, segment_size=segment_size)
+            mid_indices = get_keep_indices(mid_mask)
+            merged_mid = {}
+            if kv_captured:
+                merged_mid.update(kv_captured)
+            merged_mid.update(captured)
+            compact_cache(cache, mid_indices, model=model,
+                          captured_kv=merged_mid if merged_mid else None)
+            # Reset KV capture for next segment
+            if kv_captured is not None:
+                kv_cleanup()
+                kv_captured, kv_cleanup = install_kv_capture_hooks(cache)
+            # Clear Q capture for fresh hooks on next segment
+            for lid in list(captured.keys()):
+                del captured[lid]
+            tokens_since_evict = 0
+            logger.info(f"    Progressive eviction: {current_offset} -> {len(mid_indices)} "
+                        f"({len(mid_indices)*100//current_offset}% kept)")
 
     metal_after_prefill = mx.get_active_memory() / 1e9
     kv_offset_before = cache[0].offset

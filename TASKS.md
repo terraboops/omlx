@@ -510,8 +510,16 @@ _(none)_
 
 
 
+
+
 ## Completed
 
+- **Progressive mid-prefill eviction** — evict every 16K tokens during prefill (2026-04-18)
+  - Keeps peak memory bounded at ~80K effective context per chunk
+  - Reduces O(n²) attention: 4 × 80K² = 25B vs 256K² = 65B (2.6× speedup)
+  - 50% keep during prefill, final eviction to target ratio at end
+  - Re-initializes KV capture hooks after each eviction for clean fp16
+  - Enables practical 256K contexts on 48 GB (peak ~23 GB)
 - **Task 130: LiveCodeBench difficulty analysis** — per-difficulty breakdown (2026-04-17)
   - Phase 3d now reports easy/medium/hard pass rates, not just aggregate
   - Data already has difficulty tags (322 easy, 383 medium, 350 hard)
