@@ -3766,6 +3766,29 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Server with `--grammar` produces valid single JSON for tool calls. Benchmark gate passes.
 - **Effort**: S (1 day)
 
+### 162. DuoKV retrieves needle at 32K with only 33.4 GB Metal — streaming heads deliver on memory promise
+- **Goal**: 1 (context window — DuoKV scales to 32K within Metal budget)
+- **Derived from**: Analyst real-model INV 36, 2026-04-18.
+- **Evidence**: DuoKV NIAH PASS at 32K, Metal 33.4 GB (same as 16K). The 59% streaming heads use ring buffers (260 tokens constant), so only 41% retrieval heads grow with context. KV cost: ~0.04 GB per 1K tokens (vs fp16's 0.1 GB/K). Decode: 20.7 tok/s (below Goal 3 but functional — Task 149 fix would improve this).
+- **Implication**: DuoKV can reach ~200K tokens before hitting 41.2 GB Metal limit (vs fp16's ~88K). With Task 149 (pre-alloc slab), decode speed should stay near 50 tok/s. With Task 151 (TQ3 retrieval heads), DuoKV could reach 1M+.
+
+### 163. SnapKV + DuoKV combined: prefill at full context, evict, decode 47% faster
+- **Goal**: 3 (decode speed at long context)
+- **Derived from**: Analyst real-model INV 37, 2026-04-18.
+- **Evidence**: At 8K context, DuoKV alone decodes at 20.5 tok/s. fp16+SnapKV 25% eviction decodes at **30.2 tok/s** (+47%). Needle preserved at all keep ratios (PASS even at 10% keep — INV 34). The workflow: prefill full context → SnapKV attention-guided eviction → decode with compact cache.
+- **Change**: Wire SnapKV eviction into the DuoKV decode path. After prefill, run importance scoring on the retrieval heads and compact them. Streaming heads are already compact (ring buffer). This combines DuoKV's memory efficiency with SnapKV's decode speed optimization.
+- **Verify**: DuoKV+SnapKV at 8K should decode at >= 30 tok/s with NIAH PASS.
+- **Effort**: S (the pieces exist — SnapKV eviction + DuoKV cache. Just need to compose them)
+
+### 164. Native 3-bit prefill collapses to 125 tok/s at 16K — 4x slower than fp16
+- **Goal**: 4 (prefill speed constant across context)
+- **Derived from**: Analyst real-model INV 35, 2026-04-18.
+- **Evidence**: fp16 prefill: 894→516 tok/s (2K→16K, 1.7x drop). Native 3-bit: 714→**125 tok/s** (2K→16K, **5.7x drop**). At 16K, native 3-bit is 4.1x slower than fp16 (130.7s vs 31.7s). The quantize overhead during `update_and_fetch` scales superlinearly with context length.
+- **Root cause**: `QuantizedKVCache.update_and_fetch` quantizes each new chunk AND the attention must dequantize the growing quantized history for the SDPA call. At 16K, the combined quantize+dequantize cost per prefill chunk exceeds the attention compute cost.
+- **Change**: Consider prefilling in fp16 mode and quantizing ONCE at the end (like SnapKV's fp16 capture hooks do). Or use streaming quantization (quantize each chunk, use fused TQ SDPA for history attention — already implemented for TQ3 streaming mode).
+- **Verify**: Native 3-bit prefill at 16K should be within 2x of fp16 (>= 250 tok/s, currently 125).
+- **Effort**: M (need to restructure the native quantize pipeline)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
