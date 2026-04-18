@@ -166,6 +166,13 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
 
     cache = _make_bench_cache(n_layers, kv_mode)
 
+    # For native mode: install lightweight KV capture hooks on ALL
+    # quantized cache entries BEFORE prefill to save fp16 K/V
+    from omlx.patches.snapkv import install_kv_capture_hooks
+    kv_captured, kv_cleanup = None, None
+    if kv_mode == "native":
+        kv_captured, kv_cleanup = install_kv_capture_hooks(cache)
+
     # Prefill in chunks
     chunk_size = 4096
     x_ids = input_ids
@@ -197,7 +204,16 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
     metal_before_compact = mx.get_active_memory() / 1e9
 
     # Compact cache (re-RoPE keys to sequential positions)
-    compact_cache(cache, indices, model=model)
+    # Merge captured K/V for compaction: lightweight hooks (all quantized layers)
+    # + Q hooks (last 4 layers with Q, K, V)
+    merged_kv = {}
+    if kv_captured:
+        merged_kv.update(kv_captured)
+    merged_kv.update(captured)  # Q-hook data overrides for scoring layers
+    compact_cache(cache, indices, model=model,
+                  captured_kv=merged_kv if merged_kv else None)
+    if kv_cleanup:
+        kv_cleanup()
     gc.collect(); mx.clear_cache()
     metal_after_compact = mx.get_active_memory() / 1e9
     kv_offset_after = cache[0].offset

@@ -1125,13 +1125,29 @@ def compact_cache(cache: list, keep_indices: list[int],
         values_raw = c.state[1]
 
         if isinstance(keys_raw, tuple):
-            # QuantizedKVCache — dequantize, gather, rerope, requantize.
-            # NOTE: double quantization adds noise. Quality verified to
-            # 16K native. For 64K+, use fp16 mode (--kv-mode fp16).
-            keys_fp = mx.dequantize(
-                *keys_raw, group_size=c.group_size, bits=c.bits)
-            values_fp = mx.dequantize(
-                *values_raw, group_size=c.group_size, bits=c.bits)
+            # QuantizedKVCache — use captured fp16 K/V when available
+            # to avoid double-quantization noise (which corrupts at 64K+).
+            # Captured K/V are the ORIGINAL fp16 values from before the
+            # cache quantized them during prefill — zero noise.
+            cap_k, cap_v = None, None
+            if captured_kv and layer_i in captured_kv:
+                entry = captured_kv[layer_i]
+                if isinstance(entry, tuple):
+                    if len(entry) == 3:
+                        _, cap_k, cap_v = entry  # (Q, K, V) from Q hooks
+                    elif len(entry) == 2:
+                        cap_k, cap_v = entry  # (K, V) from lightweight hooks
+
+            if cap_k is not None and cap_v is not None:
+                # Clean path: fp16 capture → gather → rerope → single quantize
+                keys_fp = cap_k
+                values_fp = cap_v
+            else:
+                # Fallback: dequantize (adds noise, works at ≤16K)
+                keys_fp = mx.dequantize(
+                    *keys_raw, group_size=c.group_size, bits=c.bits)
+                values_fp = mx.dequantize(
+                    *values_raw, group_size=c.group_size, bits=c.bits)
 
             keys_compact = keys_fp[:, :, idx, :]
             values_compact = values_fp[:, :, idx, :]
