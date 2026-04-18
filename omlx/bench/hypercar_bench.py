@@ -1507,6 +1507,7 @@ def phase3d_livecodebench(model, tokenizer,
                 "id": item.get("question_id", ""),
                 "title": item.get("question_title", ""),
                 "description": item.get("question_content", ""),
+                "difficulty": item.get("difficulty", "unknown"),
                 "inputs": inputs,
                 "outputs": outputs,
                 "starter_code": item.get("starter_code", ""),
@@ -1570,10 +1571,11 @@ def phase3d_livecodebench(model, tokenizer,
                 passed = False
                 break
 
+        diff = prob.get("difficulty", "unknown")
         results.append({"id": prob["id"], "title": prob["title"],
-                        "passed": passed, "code": code[:100]})
+                        "difficulty": diff, "passed": passed, "code": code[:100]})
         status = "PASS" if passed else "FAIL"
-        logger.info(f"    {status}: {prob['title'][:50]}")
+        logger.info(f"    {status}: [{diff}] {prob['title'][:50]}")
 
         del cache; gc.collect(); mx.clear_cache()
 
@@ -1581,15 +1583,30 @@ def phase3d_livecodebench(model, tokenizer,
     pass_rate = pass_count / max(len(results), 1)
     gate_passed = pass_rate >= MIN_LCB_PASS_RATE
 
+    # Per-difficulty breakdown
+    by_diff = {}
+    for r in results:
+        d = r.get("difficulty", "unknown")
+        by_diff.setdefault(d, {"total": 0, "passed": 0})
+        by_diff[d]["total"] += 1
+        if r["passed"]:
+            by_diff[d]["passed"] += 1
+
     logger.info(f"  LiveCodeBench: {pass_count}/{len(results)} "
                 f"({pass_rate*100:.0f}%) — gate {'PASS' if gate_passed else 'FAIL'}")
+    for d in ["easy", "medium", "hard"]:
+        if d in by_diff:
+            info = by_diff[d]
+            pct = info["passed"] * 100 // max(info["total"], 1)
+            logger.info(f"    {d}: {info['passed']}/{info['total']} ({pct}%)")
 
     return PhaseResult(
         name="Phase 3d: LiveCodeBench",
         passed=gate_passed,
         elapsed_s=time.perf_counter() - t0,
         details={"pass_rate": pass_rate, "pass_count": pass_count,
-                 "total": len(results), "results": results},
+                 "total": len(results), "by_difficulty": by_diff,
+                 "results": results},
     )
 
 

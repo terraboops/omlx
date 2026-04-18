@@ -453,6 +453,19 @@ class TestLiveCodeBenchSource:
     def test_lcb_eval_module_exists(self):
         assert Path("omlx/eval/livecodebench.py").exists()
 
+    def test_lcb_difficulty_in_bench(self):
+        """Phase 3d must report per-difficulty breakdown."""
+        assert "by_difficulty" in _bench_src
+        assert "difficulty" in _bench_src
+
+    def test_lcb_data_has_difficulty(self):
+        """LCB data must have difficulty field."""
+        import json
+        line = Path("omlx/eval/data/livecodebench.jsonl").read_text().split("\n")[0]
+        item = json.loads(line)
+        assert "difficulty" in item
+        assert item["difficulty"] in ("easy", "medium", "hard")
+
 
 class TestDuoPolicyDistribution(TestDuoPolicy):
     """DuoPolicy distribution tests (split out to fix class ordering)."""

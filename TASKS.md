@@ -512,6 +512,11 @@ _(none)_
 
 ## Completed
 
+- **Task 130: LiveCodeBench difficulty analysis** — per-difficulty breakdown (2026-04-17)
+  - Phase 3d now reports easy/medium/hard pass rates, not just aggregate
+  - Data already has difficulty tags (322 easy, 383 medium, 350 hard)
+  - Results include `by_difficulty` dict for tracking progression
+  - Analyst baseline: 30% aggregate, likely 50%+ easy, 20% medium, <10% hard
 - **Task 131: JSON encoding fix** — safe control char escaping in SSE (2026-04-17)
   - Patched `json.dumps` in mlx_lm.server to use `ensure_ascii=True`
   - Guarantees all control characters in code responses are \uXXXX escaped
