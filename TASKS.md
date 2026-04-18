@@ -3863,3 +3863,39 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: GER check at 64K should complete in <0.01s.
 - **Effort**: XS (15 min — same pattern as Task 140)
 - **Depends on**: None. Can be fixed alongside Task 140.
+
+---
+
+## Research-derived tasks (from LIT_REVIEW.md pass 37, 2026-04-18)
+
+### 169. WAIT threshold-based admission for multi-request KV memory budgeting
+- **Goal**: 5 (swap pressure), 6 (48GB fit)
+- **Derived from**: LIT_REVIEW.md pass 37 — paper 2504.11320 (Fluid-Guided Online Scheduling). The fluid dynamics model proves memory sufficiency alone does not guarantee stability; FCFS scheduling causes eviction cascades analogous to TCP congestion collapse.
+- **What**: Implement threshold-based request admission in `hypercar_server.py`. Compute equilibrium memory M* = sum n*_j(l_j + l'_j/2) for in-flight requests. Hold new requests in queue until total projected KV memory (current + new request's estimated l_j + l'_j/2) stays within the Metal budget minus a safety buffer of O(log(1/delta)) * sigma_M. For Hypercar's reference workload (2K input, 500 output), M_j ~ 2250 tokens ~ 0.05 GB per request at 3-bit. Safety buffer at delta=0.01: ~4.6 * sigma_M.
+- **Verify**: Under 3 concurrent tool-call requests (simulated via parallel curl), Metal peak stays below --max-metal-pct and no SnapKV eviction cascade is triggered. Compare vs current sequential processing: throughput should be higher (requests overlap prefill/decode) while memory stays bounded.
+- **Effort**: M (request queue + memory projection + threshold logic)
+- **Depends on**: None — standalone server enhancement.
+
+### 170. Per-layer KV cache bit allocation using covariance determinant
+- **Goal**: 1 (context window), 2 (intelligence)
+- **Derived from**: LIT_REVIEW.md pass 37 — paper 2601.22002 (Rate-Distortion Optimization). The paper finds rate INCREASES in deeper transformer layers (r=0.96 correlation with covariance determinant), contradicting uniform bit allocation. Hypercar's uniform 3-bit across 48 layers is suboptimal: early layers (low covariance) could use 2-bit, later layers (high covariance) need 4-bit or fp16.
+- **What**: During prefill, compute the covariance determinant (or its log = log-volume of the representation ellipsoid) for each layer's key cache. Use this to allocate bits: layers with log-det below the 25th percentile get 2-bit, layers above the 75th percentile get 4-bit, middle layers get 3-bit. This is complementary to LAVa's per-layer budget allocation (pass 36 Task idea) — LAVa allocates cache SLOTS per layer, this allocates BITS per layer.
+- **Verify**: Run NIAH at 16K with mixed-precision KV (2/3/4-bit per layer) vs uniform 3-bit. Quality should be equal or better. Memory should be within 10% (some layers save, some spend). Measure covariance determinant across all 48 layers to confirm the monotonic increase pattern found in GPT-2.
+- **Effort**: M (covariance computation during prefill + mixed-precision TQ3 codec)
+- **Depends on**: TQ3 codec must support per-layer bit-width (currently parameterized globally).
+
+### 171. Guide-star calibration for post-eviction attention drift detection
+- **Goal**: 2 (intelligence — prevent quality collapse after aggressive eviction)
+- **Derived from**: LIT_REVIEW.md pass 37 — paper 2405.05472 (Adaptive Optics). In AO systems, guide stars are reference points with known positions used to measure residual distortion after correction. For KV cache, "guide tokens" are tokens with known importance (attention sinks at position 0, system prompt tokens, most recent K tokens). After SnapKV eviction, check whether guide tokens' attention scores have drifted — if they have, the eviction has distorted the attention pattern beyond what the model can tolerate.
+- **What**: After `compact_cache` in SnapKV, re-run a single attention computation on the guide tokens (position 0, last 4 system prompt tokens, last 8 context tokens — ~13 tokens total). Compare their attention scores pre- and post-eviction. If the L1 drift exceeds a threshold (calibrate on NIAH at 16K@25%), emit a warning and optionally trigger re-scoring with the post-eviction cache state.
+- **Verify**: On NIAH at 16K@25%: measure guide-token drift for PASS vs FAIL cases. The drift metric should be a reliable predictor of eviction quality — high drift = bad eviction. The threshold should achieve >90% precision / recall on a held-out set of 10 NIAH runs.
+- **Effort**: S (single attention forward on 13 tokens + L1 comparison)
+- **Depends on**: SnapKV eviction pipeline (shipped).
+
+### 172. Staircase-aware chunked prefill sizing for Metal threadgroup tiling
+- **Goal**: 4 (prefill speed)
+- **Derived from**: LIT_REVIEW.md pass 37 — paper 2508.01002 (Optimal Scheduling). Batch processing time is a staircase function of batch size due to GPU tiling — adding one request may or may not increase time depending on tile boundary. MLX's Metal matmul uses threadgroups of fixed size (typically 32x32 or 16x16). Hypercar's chunked prefill chunk_size should align to threadgroup boundaries to avoid partial-tile waste.
+- **What**: Profile MLX attention matmul time vs sequence length at granularity of 1 token from 1 to 1024. Identify the staircase jumps (where adding 1 token causes a time increase). Set chunk_size to the largest value that fits within a single tile — this maximises compute utilisation per chunk. Currently chunk_size is set heuristically; this would make it architecture-aware.
+- **Verify**: Prefill throughput at 4K context with staircase-aligned chunk size vs current heuristic. Expect 5-15% improvement from eliminating partial-tile waste.
+- **Effort**: S (profiling script + one constant change)
+- **Depends on**: None — standalone optimisation.

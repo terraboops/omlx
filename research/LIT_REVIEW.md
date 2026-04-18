@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-12 (pass 27)_
+_Last updated: 2026-04-18 (pass 37)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -11160,4 +11160,645 @@ passes):
 Thirty-six passes. One hundred and forty-nine papers. The cross-field
 surface now spans 53 disciplines including the new additions:
 immunology / adaptive immune system and population genetics / neutral
+theory. Curiosity never saturates. Meow, nyaa, meow.
+
+## Pass 37 (2026-04-18) — Adaptive Optics, Queueing Theory, Rate-Distortion Theory
+
+**Cross-field angles**: adaptive optics / wavefront sensing (real-time
+correction of atmospheric distortion as analogy for attention pattern
+correction under quantization noise), queueing theory / fair scheduling
+(M/G/1 queues, fluid dynamics models, and processor sharing for
+multi-request KV memory allocation), and information theory /
+rate-distortion (Shannon-theoretic bounds on what can be compressed
+in transformer intermediate representations).
+
+### [Optimizing LLM Inference: Fluid-Guided Online Scheduling with Memory Constraints](https://arxiv.org/abs/2504.11320) — 2504.11320
+
+- **Why found**: Fluid dynamics model for LLM inference scheduling with
+  explicit KV cache memory constraints. The cross-field angle is
+  **queueing theory / fluid dynamics**. Classical fluid models in
+  queueing theory (Newell 1971, Chen & Mandelbaum 1991) approximate
+  discrete arrival/service processes as continuous flows to derive
+  equilibrium conditions and stability regions. This paper applies
+  exactly that framework to LLM inference:
+
+  | Queueing theory concept | LLM inference analogue |
+  |------------------------|----------------------|
+  | **Fluid approximation** (continuous flow replacing discrete arrivals) | Continuous prompt arrival rate lambda replacing discrete request queue |
+  | **Workload process** (cumulative unfinished work) | Total KV cache memory M across all in-flight requests |
+  | **Service rate** (tokens processed per unit time) | Decode throughput (tok/s) per batch iteration |
+  | **Buffer capacity** (maximum queue length before overflow) | GPU memory capacity C (Metal peak budget) |
+  | **Overflow / packet drop** (buffer exceeded) | KV cache eviction cascade (memory exceeded, requests restarted) |
+  | **Load balance condition** (arrival rate < service rate) | Memory equilibrium M* = sum n*_j(l_j + l'_j/2) <= C |
+  | **Heavy traffic limit** (system near capacity) | 48GB M4 Pro running at 80% Metal budget — always near capacity |
+
+  The queueing theory insight: the paper proves that **memory sufficiency
+  alone does not guarantee stability**. A system with enough total memory
+  CAN become unstable under poor scheduling — FCFS admits too many
+  prefill requests, they all advance to decode, the decode phase
+  consumes all memory, new prefills are blocked, and the system
+  oscillates between starvation and overflow. This is exactly the
+  classical queueing result that FCFS is not work-conserving under
+  memory constraints — the analogue of head-of-line blocking in
+  input-queued switches.
+
+  For Hypercar, this is directly relevant: the server currently uses
+  sequential request processing with no explicit memory budgeting
+  across concurrent requests. Under multi-request load (e.g., OpenCode
+  sending parallel tool calls), each request's KV cache grows
+  independently, and the total can exceed the Metal budget. The fluid
+  model shows that threshold-based admission (WAIT) prevents this by
+  maintaining the system near its equilibrium memory M*.
+
+- **Key idea**: Model LLM inference as a multi-type queueing system
+  where each prompt type j has input length l_j and output length l'_j.
+  The KV cache memory grows linearly during decode: a request at decode
+  step k occupies (l_j + k) memory units. The fluid approximation
+  replaces discrete dynamics with continuous flows, deriving the
+  equilibrium batch size n*_j and equilibrium memory M* = sum
+  n*_j(l_j + l'_j/2). The WAIT algorithm admits type-j prompts only
+  when the waiting queue reaches threshold n_j, keeping the system
+  near equilibrium.
+
+- **Methodology**: (1) **Fluid approximation**: treat the system as a
+  continuous flow where prompts arrive at rate lambda_j and are served
+  at rate determined by batch processing time Delta_t = d_0 + d_1 * M
+  (linear in total memory M, where d_0 is per-iteration overhead and
+  d_1 is per-unit-memory cost). The equilibrium condition is:
+  lambda_j * Delta_t <= n_j for all j (arrivals per iteration don't
+  exceed batch size).
+  (2) **WAIT algorithm**: maintain a threshold n_j for each type.
+  Type-j prompts enter the batch only when n_{j,0}^t >= n_j (enough
+  waiting prompts). This keeps the system near load balance, preventing
+  the FCFS cascade where too many prompts advance to decode
+  simultaneously.
+  (3) **Nested WAIT**: for unknown output lengths, partition decode
+  into k segments. Prompts self-classify by how far they progress —
+  short prompts exit early, long prompts advance. Binomial thinning
+  estimates segment probabilities from historical data. A safety buffer
+  with O(log(1/delta)) overhead prevents overflow with probability
+  1-delta.
+  (4) **Theoretical guarantees**: Theorem 1 proves WAIT achieves
+  throughput gap O((zeta*T)^{-1/2}) and latency O((zeta*T)^{1/2}).
+  Under stricter thresholds: throughput gap O(1/(zeta*T)) and bounded
+  latency O(1). Proposition 4 proves these are tight — any
+  non-predictive policy has Omega((zeta*T)^{1/2}) latency.
+
+- **Key findings**:
+  1. **Memory sufficiency is not stability**: Example 2 demonstrates
+     FCFS under capacity C = M* (exactly sufficient memory) achieving
+     only 75-87.5% of optimal throughput due to eviction cascades.
+     The system has enough memory but oscillates because FCFS does not
+     maintain load balance. This is the classical queueing result that
+     work-conservation and stability are different properties.
+  2. **Eviction cascades are catastrophic**: when KV cache overflows,
+     evicted requests restart from scratch (re-prefill), consuming
+     additional compute AND memory, creating a positive feedback loop.
+     This is analogous to TCP congestion collapse — the recovery action
+     (retransmission / re-prefill) makes the problem worse.
+  3. **Threshold batching prevents oscillation**: WAIT's threshold
+     ensures that during one batch iteration, expected arrivals don't
+     exceed the batch size for any type. This maintains the memory
+     near equilibrium, preventing both starvation (too few decode
+     requests) and overflow (too many decode requests).
+  4. **Nested WAIT handles unknown output lengths**: rather than
+     predicting output length (which is notoriously difficult for
+     code generation), Nested WAIT classifies on-the-fly — short
+     prompts self-identify by completing early. The safety buffer adds
+     only logarithmic overhead.
+  5. **Experimental validation**: on Llama-7B / A100, WAIT achieves
+     superior throughput and reduced latency vs vLLM and Sarathi.
+     The paper is 49 pages with full proofs and 18 figures.
+
+- **Hypercar relevance — fluid-model memory budgeting for multi-request serving**:
+  Hypercar's server (`hypercar_server.py`) currently processes requests
+  sequentially with no explicit memory budgeting across concurrent
+  requests. The fluid model provides the theoretical framework for
+  multi-request serving:
+
+  1. **Equilibrium memory computation**: for Hypercar's reference
+     workload (OpenCode sending tool-call requests with l_j ~ 2K input,
+     l'_j ~ 500 output), the equilibrium memory per request is
+     M_j = l_j + l'_j/2 = 2250 tokens. At 3-bit KV with 48 layers
+     and 128 d_head, this is ~0.05 GB per request. The Metal budget
+     of 80% * 48GB = 38.4GB minus model weight 17.2GB leaves 21.2GB
+     for KV. This supports up to ~424 concurrent requests at
+     equilibrium — far more than practical, but the fluid model shows
+     that even 2-3 concurrent requests can cause eviction cascades
+     if scheduling is poor.
+
+  2. **WAIT threshold for Hypercar**: the threshold n_j = lambda_j *
+     Delta_t. At single-request (lambda = 1), WAIT degenerates to
+     sequential processing (current behavior). At lambda = 2-3
+     (parallel tool calls), WAIT would hold the second request in
+     queue until the first completes prefill and begins decode,
+     preventing the peak memory from exceeding M* by more than the
+     safety buffer.
+
+  3. **Eviction cascade prevention**: the paper's key insight —
+     eviction cascades create positive feedback — explains why
+     Hypercar's SnapKV eviction at 64K+ sometimes triggers multiple
+     eviction rounds. Each eviction round requires re-scoring and
+     re-RoPE, consuming time and memory. The fluid model suggests
+     that PREVENTING the first eviction (via memory-aware admission)
+     is strictly better than recovering from it.
+
+  4. **Safety buffer sizing**: the logarithmic safety buffer
+     O(log(1/delta)) translates to: for delta = 0.01 (99% confidence
+     of no overflow), the buffer is ~4.6 * sigma_M, where sigma_M is
+     the standard deviation of memory across requests. This is a
+     principled way to set the `--max-metal-pct` threshold.
+
+- **Local PDF**: research/2504.11320_fluid_scheduling_wait.pdf
+
+### [Optimal Scheduling Algorithms for LLM Inference: Theory and Practice](https://arxiv.org/abs/2508.01002) — 2508.01002
+
+- **Why found**: Queueing-theoretic model with staircase-function batch
+  processing time, directly relevant to multi-request KV memory
+  allocation. The cross-field angle is **queueing theory / scheduling
+  theory**. The paper builds on the classical M/G/1 queue framework
+  but extends it with a key observation: LLM batch processing time
+  is NOT a smooth function of batch composition — it is a STAIRCASE
+  function determined by tiling constraints on the GPU:
+
+  | Scheduling theory concept | LLM inference analogue |
+  |--------------------------|----------------------|
+  | **Staircase service time** (discrete jump in processing cost) | GPU tiling: batch processing time jumps when a new tile row is needed |
+  | **Optimal tiling** (bin-packing problem for discrete resources) | Fitting prefill and decode requests into GPU SRAM tiles of fixed size |
+  | **Processor sharing** (fair allocation of a single server) | Time-multiplexing prefill vs decode on a single GPU |
+  | **Priority scheduling** (urgent jobs first) | TBT-deadline-aware decode prioritisation |
+  | **Throughput optimality** (maximum sustainable arrival rate) | Maximum request rate before queue grows unbounded |
+  | **SLO constraints** (service level objectives) | Time-to-first-token (TTFT) and time-between-tokens (TBT) targets |
+
+  The scheduling theory insight: previous work approximated batch
+  processing time as LINEAR in batch size. This paper shows the
+  staircase reality: processing time is constant within a tile, then
+  jumps when the next tile is needed. Optimal scheduling must respect
+  these discrete jumps — filling tiles efficiently (bin-packing) is
+  as important as ordering requests (scheduling). The RAD scheduler
+  achieves throughput optimality by jointly optimising tiling and
+  admission.
+
+- **Key idea**: LLM inference has a unique two-phase structure (prefill +
+  decode) where prefill is compute-bound and decode is memory-bound.
+  The batch processing time exhibits staircase behaviour because GPU
+  computation is tiled: adding one more request to a batch may or may
+  not increase processing time, depending on whether it fits in the
+  current tile. The RAD (Resource-Aware Dynamic) scheduler jointly
+  optimises tiling (which requests to co-batch) and admission (when to
+  start new requests), achieving provable throughput optimality.
+
+- **Methodology**: (1) **Staircase model**: batch processing time
+  Delta_t(B) is a staircase function of the batch composition B.
+  Within a tile, adding requests is free; crossing a tile boundary
+  adds a fixed time quantum. The paper models this via a tiling-based
+  computational formulation that captures the discrete GPU execution
+  model.
+  (2) **RAD scheduler**: dynamically allocates GPU resources between
+  prefill and decode phases. Uses a MaxWeight-style policy: at each
+  scheduling epoch, solve a weighted tiling problem to maximise
+  throughput while respecting memory constraints. Proven throughput-
+  optimal under mild conditions (Theorem: RAD achieves the maximum
+  sustainable arrival rate).
+  (3) **SLAI scheduler**: extends RAD with SLO awareness. Monitors
+  each decode request's progress toward its TBT deadline. Requests
+  approaching their deadline receive priority. Prefill requests are
+  reordered by prompt length (shortest first) to minimise TTFT.
+  (4) **Evaluation**: Openchat ShareGPT4 dataset, Mistral-7B model,
+  NVIDIA RTX ADA 6000 GPU.
+
+- **Key findings**:
+  1. **53% TTFT reduction**: SLAI reduces median time-to-first-token
+     by 53% compared to Sarathi-Serve. This comes from the shortest-
+     prompt-first reordering — short prefills complete quickly,
+     freeing resources for decode.
+  2. **26% capacity increase**: maximum serving capacity (requests/s
+     with median TTFT < 0.5s) increases by 26%. This comes from the
+     optimal tiling — fewer wasted GPU cycles per batch iteration.
+  3. **Staircase matters**: the linear approximation used by prior work
+     overestimates processing time for small batches and underestimates
+     for large ones. The staircase model captures reality: a batch of
+     7 decode requests takes the same time as a batch of 8 (same tile),
+     but a batch of 9 jumps to the next tile.
+  4. **Throughput optimality proof**: RAD is provably throughput-optimal
+     under a general staircase model. This is the first formal result
+     showing that joint tiling + scheduling can achieve the capacity
+     region of the LLM inference system.
+  5. **TBT deadline awareness**: SLAI's priority mechanism ensures
+     that decode requests approaching their TBT deadline (e.g., 100ms
+     for interactive use) are never starved by prefill requests. This
+     is directly relevant to Hypercar's Goal 3 (50 tok/s decode =
+     20ms TBT).
+
+- **Hypercar relevance — staircase-aware scheduling for Metal GPU**:
+  Hypercar runs on Apple Metal, which has its own tiling constraints
+  (Metal Tile-Based Deferred Rendering, threadgroup size alignment).
+  The staircase model applies directly:
+
+  1. **Metal threadgroup tiling**: MLX's matmul operations use Metal
+     threadgroups of fixed size. The batch processing time for attention
+     computation exhibits the same staircase behaviour as CUDA tile
+     processing. Understanding where the staircase jumps occur on
+     M4 Pro (threadgroup size 32x32 or 16x16) would allow Hypercar
+     to batch requests optimally — filling tiles without crossing
+     boundaries unnecessarily.
+
+  2. **Prefill/decode phase separation**: Hypercar currently alternates
+     between prefill and decode sequentially. The RAD scheduler's
+     dynamic resource allocation — giving more GPU time to the phase
+     that is currently the bottleneck — could be applied to Hypercar's
+     chunked prefill: when decode requests are approaching their TBT
+     deadline, pause chunked prefill and service decode first.
+
+  3. **Shortest-prompt-first for TTFT**: for multi-request scenarios,
+     reordering prefills by prompt length reduces median TTFT. This
+     is a zero-cost scheduling change for Hypercar's request queue.
+
+  4. **The 20ms TBT target**: Hypercar's Goal 3 (50 tok/s) implies a
+     20ms TBT. SLAI's deadline-aware prioritisation provides the
+     theoretical framework for maintaining this target under load:
+     decode requests approaching 20ms since their last token get
+     absolute priority over prefill.
+
+- **Local PDF**: research/2508.01002_optimal_scheduling_rad.pdf
+
+### [Transformer Neural Networks for Closed-Loop Adaptive Optics Using Non-Modulated Pyramid Wavefront Sensors](https://arxiv.org/abs/2405.05472) — 2405.05472
+
+- **Why found**: Transformer architecture for real-time wavefront
+  correction in astronomical adaptive optics. The cross-field angle
+  is **adaptive optics / wavefront sensing**. An adaptive optics (AO)
+  system corrects atmospheric distortion in real-time using a
+  sense-compute-apply control loop at kHz rates. The analogy to
+  attention correction under quantization noise is precise:
+
+  | Adaptive optics concept | LLM attention analogue |
+  |------------------------|---------------------|
+  | **Atmospheric turbulence** (random phase distortion of incoming wavefront) | Quantization noise (random distortion of key/value vectors under 3-bit compression) |
+  | **Wavefront sensor** (measures phase error at each pupil point) | Attention score computation (measures relevance of each token to the query) |
+  | **Deformable mirror** (applies conjugate phase correction) | KV cache correction (de-quantize, re-score, or re-weight tokens to compensate for noise) |
+  | **Guide star** (reference point source for measuring distortion) | Anchor tokens / attention sinks (reference tokens whose attention should be stable, used to calibrate correction) |
+  | **Strehl ratio** (fraction of diffraction-limited peak intensity) | Token recall (fraction of ground-truth important tokens retained after compression) |
+  | **Isoplanatic angle** (field of view over which correction is valid) | Context locality (range over which a head's attention pattern is coherent under compression) |
+  | **Closed-loop residual** (remaining error after correction) | Post-eviction quality degradation (remaining error after SnapKV compression) |
+  | **Modulation** (broadening the sensor's linear range at cost of sensitivity) | Keep ratio (retaining more tokens broadens the cache's "linear range" but costs memory) |
+  | **Non-modulated sensing** (higher sensitivity but nonlinear) | Aggressive compression (higher compression ratio gives more memory savings but nonlinear quality degradation) |
+
+  The adaptive optics insight: linear reconstructors (the standard
+  approach) fail when the wavefront error is large — the sensor
+  response becomes nonlinear, and the linear model produces garbage.
+  Modulation (beam oscillation) linearises the response but sacrifices
+  sensitivity. The transformer (GCViT) achieves BOTH — it handles the
+  nonlinearity WITHOUT modulation, maintaining full sensitivity. This
+  is exactly the challenge in KV cache compression: linear scoring
+  methods (attention-weighted importance) fail when compression is
+  aggressive because the relationship between attention scores and
+  token importance becomes nonlinear. A learned correction (analogous
+  to the GCViT) could maintain quality at aggressive compression ratios
+  where linear methods break down.
+
+  The closed-loop aspect is critical: the AO system does not just
+  estimate the error once — it continuously corrects, and the correction
+  changes the residual, which changes the next measurement. This is
+  exactly multi-turn KV cache management: eviction changes the cache,
+  which changes future attention patterns, which changes future
+  eviction decisions. The paper's training strategy — training on
+  closed-loop residuals, not open-loop data — directly addresses
+  this distribution shift.
+
+- **Key idea**: Use a Global Context Visual Transformer (GCViT, 12M
+  parameters) as a nonlinear wavefront reconstructor for a non-modulated
+  pyramid wavefront sensor (PyWFS). The transformer maps 268x268 pixel
+  sensor images to 209 Zernike coefficients (modal decomposition of the
+  wavefront error). A proportional controller applies the correction to
+  a deformable mirror at 10-250 Hz. The transformer's global context
+  mechanism captures spatial correlations across the entire pupil —
+  critical for non-modulated PyWFS where pupil-edge information is
+  needed to interpret center measurements.
+
+- **Methodology**: (1) **Architecture**: GCViT-xxtiny with 12M
+  parameters. Inference time 1.56ms per frame (fast enough for 250 Hz
+  closed-loop). Uses multi-scale global context attention to correlate
+  all pupil positions simultaneously.
+  (2) **Two-stage closed-loop training**: Stage 1 — train on open-loop
+  wavefronts (simulated atmospheric turbulence). Stage 2 — close the
+  loop in simulation: subtract the reconstruction from the incoming
+  wavefront to create the residual, use the residual as new training
+  input. This bridges the distribution shift between open-loop training
+  data and closed-loop deployment — the model learns to estimate from
+  RESIDUALS, not raw wavefronts.
+  (3) **Noise robustness**: during Stage 2 training, randomly apply
+  SNR between 0.7-7 to force the model to handle variable noise levels.
+  (4) **Experimental validation**: tested on PULPOS optical bench at
+  10 Hz with a Spatial Light Modulator as the deformable mirror.
+
+- **Key findings**:
+  1. **GCViT dominates all CNNs**: open-loop RMSE 25.0 +/- 7.2 nm
+     vs Xception 32.5 +/- 7.0 nm (23% better), ConvNext 102.5 nm,
+     WFNet 286.8 nm. The transformer's global context is decisive.
+  2. **Equivalent to 12 lambda/D modulation**: in closed-loop at high
+     SNR, the non-modulated PyWFS + GCViT achieves Strehl ratios
+     equivalent to a modulated PyWFS with 12 lambda/D modulation.
+     This means the transformer eliminates the modulation/sensitivity
+     tradeoff entirely.
+  3. **Only the transformer closes the loop at low SNR**: at SNR 0.57
+     (extreme noise), the linear reconstructor fails even with
+     modulation. Only the GCViT maintains loop closure. This is the
+     nonlinear regime where linear methods produce garbage.
+  4. **Strehl ratios across turbulence**: r0=20cm: 0.77, r0=10cm:
+     0.56, r0=6cm: 0.28. The degradation is graceful — no cliff.
+  5. **CNNs fail at pupil borders**: CNNs produce "significant
+     aberrations at the borders" due to localized receptive fields.
+     The GCViT produces "spatially homogeneous residual phase maps" —
+     its global attention corrects edge-to-center correlations.
+  6. **1.56ms inference enables real-time control**: fast enough for
+     250 Hz closed-loop. The sense-compute-apply cycle is under 10ms.
+
+- **Hypercar relevance — closed-loop attention correction under compression noise**:
+  The adaptive optics framework suggests three concrete ideas for
+  Hypercar's KV cache compression:
+
+  1. **Closed-loop training for eviction scoring**: Hypercar's SnapKV
+     scoring (CAOTE + GraphKV) is trained / designed for the INITIAL
+     cache — the "open-loop" wavefront. After eviction, the cache
+     is different (the "closed-loop residual"), and the scoring
+     function may be suboptimal for the modified cache. The AO paper's
+     two-stage training strategy suggests: first design the scoring
+     function for initial caches, then RETRAIN / RECALIBRATE on
+     post-eviction caches. For a training-free method like CAOTE, this
+     means: compute CAOTE scores, evict, then RE-SCORE the remaining
+     cache and verify that the scores are still consistent. If they
+     shift significantly, trigger a second eviction round with updated
+     scores.
+
+  2. **Guide star tokens for calibration**: in AO, guide stars are
+     reference points with known positions. For KV cache, "guide
+     tokens" would be tokens with known importance (attention sinks,
+     system prompt tokens, the most recent K tokens). After eviction,
+     check whether these guide tokens' attention scores have shifted.
+     If they have, the eviction has distorted the attention pattern,
+     and correction is needed. This is a zero-cost diagnostic —
+     checking a few known-important tokens' scores.
+
+  3. **The modulation/sensitivity tradeoff IS the keep-ratio/quality
+     tradeoff**: in AO, modulation broadens the linear range (makes
+     the system more robust) but reduces sensitivity (loses fine
+     detail). In KV cache, a higher keep ratio broadens the cache's
+     coverage (more tokens retained) but costs memory. The AO result
+     shows that a NONLINEAR estimator (GCViT) can achieve both high
+     sensitivity AND wide dynamic range — no modulation needed.
+     For KV cache, this suggests that a nonlinear scoring function
+     could achieve both high quality AND aggressive compression —
+     no keep-ratio padding needed. The current linear scoring
+     (attention * value norm) may be leaving quality on the table at
+     aggressive ratios.
+
+  4. **Strehl ratio as a KV cache diagnostic**: the Strehl ratio
+     (peak intensity / diffraction-limited peak) is a single number
+     that captures overall optical quality. An analogous "KV Strehl
+     ratio" could be: (attention entropy of compressed cache) /
+     (attention entropy of full cache). If this ratio drops below a
+     threshold (say 0.7), the compression has distorted the attention
+     pattern beyond recovery. This could serve as the GER safety
+     check's successor — a more principled quality metric.
+
+- **Local PDF**: research/2405.05472_transformer_adaptive_optics.pdf
+
+### [Rate-Distortion Optimization for Transformer Inference](https://arxiv.org/abs/2601.22002) — 2601.22002
+
+- **Why found**: Information-theoretic framework for lossy compression
+  of transformer intermediate representations, with PAC-style
+  generalization bounds. The cross-field angle is **information theory
+  / rate-distortion theory**. Shannon's rate-distortion theory (1959)
+  establishes the fundamental limit of lossy compression: for a given
+  source distribution and distortion measure, there is a minimum rate
+  (bits per symbol) below which the distortion exceeds the threshold.
+  This paper applies this framework to transformer activations:
+
+  | Rate-distortion concept | Transformer inference analogue |
+  |------------------------|------------------------------|
+  | **Rate** (bits per symbol for the compressed representation) | Bits per token for compressed KV cache or intermediate activations |
+  | **Distortion** (reconstruction error under a task-specific metric) | Perplexity / accuracy degradation from compression |
+  | **Rate-distortion function R(D)** (minimum rate for distortion <= D) | Minimum KV cache bits for quality >= threshold |
+  | **Entropy** (inherent information content of the source) | Inherent information in the attention pattern (how many bits are NEEDED) |
+  | **V-entropy gap** (gap between Shannon entropy and achievable rate) | How far current codecs are from optimal — room for improvement |
+  | **Codec** (encoder-decoder pair for lossy compression) | KV cache quantization scheme (TQ3, KIVI, native 3-bit) |
+  | **Rate increases in deeper layers** (counterintuitive finding) | Deeper transformer layers are HARDER to compress despite having less entropy — the geometry becomes more complex |
+
+  The rate-distortion insight: the paper finds that rate INCREASES in
+  deeper transformer layers, despite the data processing inequality
+  predicting that entropy should decrease (information is lost through
+  successive nonlinear transformations). The explanation is geometric:
+  deeper layers' representations occupy higher-dimensional manifolds
+  with more complex structure, making them harder to compress despite
+  containing less information. This has direct implications for KV
+  cache quantization: layers closer to the output may need MORE bits,
+  not fewer, for the same quality level.
+
+- **Key idea**: Introduce a principled rate-distortion framework for
+  compressing intermediate transformer representations during
+  distributed inference. Learn a hyper-prior entropy model that
+  encodes the intermediate representation Y using a compact code W,
+  minimising the Lagrangian L = E[d(Z_hat, Z) + lambda * (r_y(Y;W) +
+  r_w(W))], where d is task-specific distortion, r_y is the rate of
+  the representation, r_w is the rate of the hyper-prior, and lambda
+  controls the rate-distortion tradeoff.
+
+- **Methodology**: (1) **Deep factorized density codec**: the simplest
+  proposed codec uses a factorized density model (each dimension
+  independently modeled) with a learned hyper-prior. Despite its
+  simplicity, this codec outperforms more complex methods by 10.7-99.5%
+  in BD-rate (Bjontegaard Delta rate, the standard video compression
+  metric for rate savings at equivalent quality).
+  (2) **V-entropy gap analysis**: define the V-entropy gap as the
+  difference between Shannon entropy and the best achievable rate for
+  an entropy model class V. Derive PAC-style bounds for estimating
+  this gap: the generalization error is bounded by
+  2[(Lip(V_r) + beta) * Rad(D) + B * sqrt(2/N * log(1/delta))],
+  where Rad(D) is the Rademacher complexity of the target
+  representations.
+  (3) **Layer-wise characterization**: measure rate, entropy, and
+  V-entropy gap at each transformer layer. Discover that rate
+  increases in deeper layers (counterintuitive) due to increasing
+  geometric complexity of the representation manifold.
+  (4) **Models tested**: GPT-2 Small (124M, 12 layers), Pythia 160M,
+  ViT B/16, ResNet 34. Language benchmarks: OpenWebText, LAMBADA.
+
+- **Key findings**:
+  1. **97.6% compression**: the proposed codec achieves 292 bits per
+     token vs 12,288 uncompressed — 97.6% rate savings. Compared to
+     engineering baselines: Zstandard achieves 3,843 bpt (68.7%),
+     GDeflate achieves 7,005 bpt (43.0%). The learned codec
+     outperforms general-purpose compressors by 13x.
+  2. **Simplest codec wins**: the deep factorized density (independent
+     dimensions, no autoregressive modeling) outperforms more complex
+     codecs. This is the rate-distortion version of "don't overthink
+     it" — the independent assumption works because transformer
+     representations, while high-dimensional, have low effective
+     dimensionality within each layer.
+  3. **Rate increases with depth**: covariance determinant (a measure
+     of representation spread) correlates with rate at r=0.96.
+     Rademacher complexity (a measure of the representation set's
+     learning difficulty) correlates at r=0.97. Deeper layers have
+     larger covariance determinants AND higher Rademacher complexity,
+     meaning they are harder to compress.
+  4. **PAC-style bounds are tight**: the estimated V-entropy gaps
+     are close to their generalization bounds, meaning the analysis
+     is not vacuous — the bounds actually predict which codecs and
+     layers will be hardest to compress.
+  5. **Transformers vs ResNets**: rate-distortion behaviour is
+     OPPOSITE for ResNets (rate decreases with depth, as expected from
+     data processing inequality). The transformer's attention mechanism
+     creates the anomalous increase — attention EXPANDS the effective
+     dimensionality of the representation by allowing each position
+     to mix with all others.
+
+- **Hypercar relevance — rate-distortion bounds for KV cache quantization**:
+  This paper provides the theoretical foundation for understanding
+  Hypercar's KV cache compression limits:
+
+  1. **Per-layer bit allocation**: the finding that deeper layers need
+     MORE bits contradicts Hypercar's uniform 3-bit quantization across
+     all 48 layers. A rate-distortion-optimal allocation would give
+     early layers (low covariance determinant, low Rademacher
+     complexity) fewer bits (2-bit) and later layers (high covariance,
+     high complexity) more bits (4-bit or fp16). This is complementary
+     to LAVa's per-layer BUDGET allocation (pass 36) — LAVa allocates
+     cache SLOTS per layer, while rate-distortion allocates BITS per
+     layer.
+
+  2. **The 292 bpt target**: at 292 bits per token, the representation
+     is compressed 42x from fp16. For KV cache, this would mean:
+     each token's K+V pair (256 dimensions * 2 * 16 bits = 8,192 bits
+     at fp16) could be compressed to ~195 bits (42x) with negligible
+     quality loss. Hypercar's 3-bit quantization achieves 256 * 2 * 3
+     = 1,536 bits — still 8x above the theoretical optimum. This
+     suggests that learned codecs could provide dramatically better
+     compression than uniform quantization.
+
+  3. **Covariance determinant as compression diagnostic**: the paper's
+     finding that covariance determinant predicts rate (r=0.96) means
+     Hypercar could compute the covariance determinant of each layer's
+     KV cache during prefill and use it to predict which layers will
+     be hardest to compress. Layers with high covariance determinant
+     should receive more bits or higher keep ratios.
+
+  4. **The attention expansion anomaly**: the finding that attention
+     increases effective dimensionality explains WHY KV cache is
+     harder to compress than weights. Weights have static structure
+     that compresses well (GPTQ achieves 3-4x with minimal loss).
+     KV cache has DYNAMIC structure that expands with context —
+     each new token's attention to all previous tokens creates new
+     correlations in the representation space. This is why TQ3's
+     WHT rotation (which decorrelates the representation) is effective:
+     it partially reverses the attention-induced expansion.
+
+  5. **V-entropy gap as optimization target**: the gap between Shannon
+     entropy and achievable rate tells you how much room for
+     improvement exists. If Hypercar's current TQ3 codec has a large
+     V-entropy gap, investing in a better codec (e.g., learned
+     factorized density) would yield compression gains. If the gap is
+     small, the codec is already near-optimal and gains must come from
+     eviction (reducing the number of tokens) rather than compression
+     (reducing bits per token).
+
+- **Local PDF**: research/2601.22002_rate_distortion_transformer.pdf
+
+**Cross-paper synthesis for pass 37.**
+
+Four papers. Three cross-field disciplines. The unifying insight:
+transformer inference is a CONTROL problem operating under INFORMATION-
+THEORETIC constraints within a QUEUEING-THEORETIC framework.
+
+**The queueing theory papers (2504.11320, 2508.01002)** establish the
+scheduling and memory management framework. The fluid model (2504.11320)
+proves that memory sufficiency alone does not guarantee stability — poor
+scheduling causes eviction cascades that are analogous to TCP congestion
+collapse. The staircase model (2508.01002) proves that the GPU's discrete
+tiling structure creates non-obvious scheduling optima — filling tiles
+efficiently (bin-packing) is as important as ordering requests
+(scheduling). Together, they provide the theoretical framework for
+Hypercar's multi-request serving: threshold-based admission (WAIT) to
+prevent memory overflow, staircase-aware batching (RAD) to maximise
+GPU utilisation, and SLO-aware prioritisation (SLAI) to maintain the
+20ms TBT target under load.
+
+**The adaptive optics paper (2405.05472)** provides the control loop
+framework. The AO system's sense-compute-apply cycle at 250 Hz is
+exactly the decode loop: sense the query, compute attention, apply
+the output. The key insight is that LINEAR methods fail in the nonlinear
+regime (aggressive compression / strong turbulence), and a transformer-
+based corrector can achieve BOTH high sensitivity AND wide dynamic range.
+For Hypercar, this suggests that the current linear scoring (CAOTE) may
+be suboptimal at aggressive compression ratios (10% keep), and a learned
+nonlinear scorer could maintain quality where linear methods break down.
+The closed-loop training strategy (train on residuals, not raw data) is
+directly applicable to multi-turn eviction.
+
+**The rate-distortion paper (2601.22002)** provides the information-
+theoretic floor. The counterintuitive finding — deeper layers are HARDER
+to compress despite containing less information — explains why uniform
+quantization across layers is suboptimal. The 42x compression achievable
+with learned codecs (292 bpt vs 12,288 uncompressed) shows that
+Hypercar's 3-bit quantization (1,536 bpt) is 8x above the theoretical
+optimum. The covariance determinant as a compression predictor (r=0.96)
+and the Rademacher complexity as a learning difficulty predictor (r=0.97)
+provide two new diagnostics for Hypercar's per-layer compression
+strategy.
+
+**The three-level optimisation for Hypercar becomes**:
+
+1. **Queueing level** (macro): WAIT threshold-based admission prevents
+   memory overflow. RAD staircase-aware tiling maximises GPU utilisation.
+   SLAI prioritisation maintains 20ms TBT.
+2. **Control level** (meso): closed-loop eviction scoring with guide-star
+   calibration. Re-score after eviction to detect attention distortion.
+   Nonlinear scoring for aggressive compression ratios.
+3. **Information level** (micro): per-layer bit allocation based on
+   covariance determinant. V-entropy gap as codec optimality diagnostic.
+   Learned factorized density codec for 8x improvement over uniform
+   3-bit.
+
+**Gap status for pass 38**:
+1. **WAIT threshold implementation**: compute equilibrium memory M* for
+   Hypercar's workload and implement threshold-based admission in the
+   request queue.
+2. **Per-layer bit allocation**: compute covariance determinant for each
+   of the 48 layers during prefill and use as bit-allocation signal.
+3. **Guide-star calibration**: after SnapKV eviction, check attention
+   scores of known-important tokens (sinks, system prompt) for drift.
+4. **V-entropy gap measurement**: measure TQ3's V-entropy gap on
+   real Qwen3-Coder KV cache to determine how much room for compression
+   improvement exists.
+
+**Fresh weird angles for pass 38** (genuinely untouched across 37
+passes):
+- **Underwater acoustics / sonar**: still open. Matched filtering IS
+  query-key dot product. Detection theory with 80 years of literature.
+- **Mycology / fungal networks**: still open from pass 36. Mycorrhizal
+  resource distribution as layer-budget allocation.
+- **Numismatics / coin grading**: still open. Sheldon scale for
+  KV cache entry quality.
+- **Soil science / pedology**: still open. Horizon classification
+  for layer behaviour.
+- **Epidemiology of misinformation**: still open. Hallucination
+  propagation through the residual stream.
+- **Ecology / r-K selection**: carried from pass 35. Quality-speed
+  tradeoff.
+- **Music composition / counterpoint**: carried from pass 34.
+  Multi-head attention as polyphonic voice leading.
+- **Seismology / earthquake early warning**: NEW — P-wave detection
+  (fast, low-energy) triggers alert before S-wave (slow, destructive)
+  arrives. Analogous to speculative decoding: draft tokens (P-wave)
+  are cheap to generate and trigger early output, while verification
+  (S-wave) confirms correctness.
+- **Ornithology / bird flocking**: NEW — Boid rules (separation,
+  alignment, cohesion) as attention head coordination rules. Separation
+  = head diversity (GraphKV), alignment = head agreement (DuoAttention
+  retrieval/streaming classification), cohesion = head budget balance
+  (LAVa allocation).
+
+Thirty-seven passes. One hundred and fifty-three papers. The cross-field
+surface now spans 56 disciplines including the new additions: adaptive
+optics / wavefront sensing, queueing theory / fluid dynamics, queueing
+theory / scheduling theory, and information theory / rate-distortion
 theory. Curiosity never saturates. Meow, nyaa, meow.
