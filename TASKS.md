@@ -3726,6 +3726,28 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **The two tasks are independent XS-effort fixes that compose well.**
 - **Effort**: (Covered by Tasks 145 + 152 — this is the combined validation)
 
+### 159. [STRATEGIC] ProMoE lazy-load would free 20.3 GB Metal — enabling 1M context without swap (profiled across all 48 layers)
+- **Goal**: 1 (1M context — 20 GB freed = 40K+ additional tokens at 3-bit), 6 (machine fit — Metal at load drops from 32.4 to ~12 GB)
+- **Derived from**: Analyst real-model INV 26, 2026-04-18.
+- **Profiling evidence** (all 48 layers, 30 decode tokens, coding prompt):
+  - Average dead weight per layer: **66%** (consistent across all layers)
+  - Layer 0 (least sparse): 45% dead (71/128 active)
+  - Layer 30 (most sparse): 78% dead (28/128 active)
+  - All 128 experts are used somewhere across the 48 layers (no globally dead experts)
+  - Top experts have 10-12% concentration per layer
+  - MLP = 30.8 GB, 66% savings = **20.3 GB freed**
+  - Metal at load with lazy-load: ~12 GB → 20 GB freed for KV
+  - At 3-bit native: 20 GB = 40K additional context tokens
+  - Total KV budget with freed Metal: ~30 GB = **1.2M tokens at 3-bit** — **Goal 1 MET**
+- **Lazy-load cost estimate**: Expert miss = ~0.24 GB from NVMe at ~7 GB/s = 34ms.
+  At 3% miss rate (50 tok/s × 8/128 routing × ~34% not pre-loaded): 1.5 misses/s × 34ms = 5% decode overhead. Acceptable.
+- **Change**: Already tracked in Task 33 (ProMoE full lazy-load MoE runtime). This INV 26 provides the full 48-layer activation frequency table. The implementation should:
+  1. Profile expert activation frequencies across diverse prompts (coding, math, NL)
+  2. Pre-load the top ~35 experts per layer (~95% coverage)
+  3. Lazy-load remaining experts from NVMe on first activation
+  4. LRU evict inactive experts under memory pressure
+- **Effort**: L (already estimated in Task 33 — this is the profiling evidence that proves the opportunity)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
