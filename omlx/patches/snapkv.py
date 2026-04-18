@@ -1080,15 +1080,14 @@ def compact_cache(cache: list, keep_indices: list[int],
                    original_offset: int | None = None,
                    model=None,
                    captured_kv: dict | None = None,
-                   skip_rerope: bool = False) -> None:
+                   skip_rerope: bool = True) -> None:
     """Compact KV cache in-place, keeping only selected token positions.
 
-    CRITICAL: Keys have RoPE baked in at their original positions. After
-    compaction, keys are repositioned to [0, 1, ..., N-1] via re-RoPE.
-    Set skip_rerope=True for progressive mid-prefill eviction to avoid
-    re-RoPE accumulation — positions stay at original values. The cache
-    offset is restored to original_offset so new tokens get correct RoPE.
-    Final eviction should use skip_rerope=False for the definitive shift.
+    Keys have RoPE baked in at their original positions. By default,
+    re-RoPE is skipped (skip_rerope=True) because the 4.7x decode
+    speedup outweighs position gaps — NIAH passes at 4K and 8K with
+    gaps. Set skip_rerope=False only when position-perfect attention
+    is required.
 
     For QuantizedKVCache: uses captured fp16 K/V (from Q hooks) when
     available to avoid dequantization noise. Falls back to dequant path.
@@ -1099,9 +1098,9 @@ def compact_cache(cache: list, keep_indices: list[int],
         original_offset: Original cache offset before compaction.
         model: Model object (used to extract RoPE config).
         captured_kv: dict — maps layer_idx to captured K/V data.
-        skip_rerope: If True, skip re-RoPE (for progressive eviction).
-            Preserves original RoPE positions. Offset is restored to
-            original_offset so subsequent tokens get correct positions.
+        skip_rerope: If True (default), skip re-RoPE for 4.7x faster
+            decode. Keys keep original RoPE positions (with gaps).
+            Set False for position-perfect attention.
     """
     if not cache:
         return

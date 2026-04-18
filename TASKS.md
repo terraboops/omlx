@@ -514,6 +514,9 @@ _(none)_
 
 ## Completed
 
+- **Task 168: Default skip_rerope=True** — 4.7x faster decode after eviction, NIAH PASS confirmed (2026-04-18)
+  - Re-RoPE was costing 4.7x decode speed (7.2 vs 33.7 tok/s after eviction)
+  - Keys keep original RoPE positions with gaps — attention still retrieves correctly
 - **Task 140+147+139: Vectorize SnapKV scatter ops** — replace .at[].add() Python loops with single scatter/band-mask ops (2026-04-18)
   - keep_mask: O(T) Python loop → single `keep_mask[:, idx] = True`
   - GER safety: O(T) Python loop → single `important_mask[threshold_idx] = True`
