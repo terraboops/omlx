@@ -3962,3 +3962,16 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Prefill 128K tokens, evict to 25% (32K hot in Metal, 96K cold on SSD). Run NIAH targeting a token in the cold tier. Measure: (1) NIAH PASS with tier-1 fetch, (2) fetch latency < 10ms for a single KV block, (3) total Metal memory stays below 40GB (model + 32K hot KV only). Compare vs current approach of re-prefilling the entire context (~42 min at 128K).
 - **Effort**: L (mmap infrastructure + tier manager + 2Q policy + SnapKV integration)
 - **Depends on**: SnapKV eviction pipeline (shipped). Complementary to Task 105 (NVMe KV materialisation with newsvendor policy).
+
+### 177. [CRITICAL REGRESSION] SnapKV NIAH FAIL at 49% keep — needle lost after perf fixes (Run 84)
+- **Goal**: 2 (intelligence — SnapKV eviction must preserve retrieval quality)
+- **Derived from**: Hypercar benchmark Run 84 (2026-04-18), bench/snapshots/run84_2026-04-18T14-38/
+- **Evidence**: Phase 3e SnapKV Quality gate FAIL. Output is `'SN brown fox jumps over the lazy dog...'` (filler text) instead of needle `SNAPKV-BENCH-9921`. GER=0.000 (safety check thinks eviction is fine, but the needle is gone). All other 10 gates pass — the model is fine, the eviction picks wrong tokens.
+- **Suspect commits** (bisect these):
+  1. `a217e29` — vectorize SnapKV scatter (Tasks 140+147+139): Changed `keep_mask` from per-element `.at[].add()` loop to vectorized scatter. Could produce different boolean mask.
+  2. `eca3aa8` — default `skip_rerope=True` (Task 168): Position gaps from skipping re-RoPE may confuse attention at 2K tokens (49% of 4K).
+  3. `6c87533` — GQA-aware broadcast (Task 148): Changed importance scoring from `mx.repeat(K, gqa)` to SDPA-based. Different importance rankings may fail to identify the needle.
+- **Change**: Bisect the 6 commits between R83 (6b4e06e) and R84 (2fc2ca0). At each commit, run: `.venv/bin/python -m omlx.bench.hypercar_bench --quick` + a manual SnapKV NIAH check. Revert the offending commit and fix.
+- **Verify**: Phase 3e SnapKV Quality gate must PASS: `SNAPKV-BENCH-9921` in output at 49% keep, 4K context.
+- **Effort**: S (bisect + fix — the regression is in one of 3 suspect commits)
+- **Depends on**: None. BLOCKING — this must be fixed before any further perf work.

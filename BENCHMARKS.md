@@ -3340,6 +3340,65 @@ Analysis notes:
   profiling session, not from benchmark observation. The benchmark itself is stable.
 ```
 
+### Run 84: 🔴 SNAPKV QUALITY GATE FAILURE — Needle Lost After 6 Analyst-Originated Perf Fixes
+```
+Date: 2026-04-18
+SHA:  2fc2ca0
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo)
+
+FIRST 11-GATE FAILURE since Run 78. SnapKV NIAH@4K at 49% keep FAILS — needle
+LOST. Output is filler text ("SN brown fox jumps over...") instead of the expected
+"SNAPKV-BENCH-9921". All other 10 gates pass. Quality metrics unchanged: MMLU-Pro
+62%, HumanEval 95%, RULER 100%, Code Intel 5/5. Decode 54.1 tok/s.
+
+Commits since Run 83 (6b4e06e) — 6 perf fixes from analyst efficiency audit:
+  - 2fc2ca0 perf: segmented selection uses mx.argpartition (Task 141)
+  - 6c87533 perf: GQA-aware broadcast in CAOTE/importance scoring (Task 148)
+  - cdd9972 perf: DuoKV pre-allocated slab — 248x faster decode (Tasks 149+143)
+  - eca3aa8 perf: default skip_rerope=True — 4.7x decode (Task 168)
+  - a217e29 perf: vectorize SnapKV scatter ops (Tasks 140+147+139)
+  - b870fb4 feat: TQ3 fused quantize+dequantize — 15x prefill (Tasks 152+145)
+
+Phase Results:
+  Phase 0: Smoke              PASS   0.3s   Prefill 75 tok/s, Decode 54.1 tok/s
+  Phase 1: Coherence          PASS   1.4s   2/2 checks
+  Phase 2: Code Intelligence  PASS   4.1s   5/5 (100%)
+  Phase 3: NIAH               PASS  47.1s   4K + 16K PASS
+  Phase 3b: RULER             PASS 228.4s   11/11 at 4K/16K
+  Phase 3c: MMLU-Pro          PASS 870.5s   62/100 (62%)
+  Phase 3e: SnapKV Quality    FAIL   2.0s   49% kept, GER=0.000, NEEDLE LOST
+  Phase 3d: LiveCodeBench     PASS 149.0s   6/20 (30%)
+  Phase 4: HumanEval          PASS  19.2s   19/20 (95%)
+  Phase 5: Memory             PASS
+  TOTAL: 1333.7s (22.2 min)
+
+Analysis notes:
+- **REGRESSION: SnapKV eviction loses the needle.** The output starts with "SN"
+  (truncated filler) instead of the needle code. The eviction kept 49% of tokens
+  with GER=0.000, but the needle was evicted. Three suspect commits:
+  1. **a217e29 (vectorize SnapKV scatter)**: Changed keep_mask construction from
+     per-element `.at[].add()` to vectorized scatter. May produce different boolean
+     mask — index ordering or type semantics could differ from the original loop.
+  2. **eca3aa8 (skip_rerope=True default)**: Changed the default from re-RoPE to
+     skip. The analyst validated this at 512 tokens in INV 47, but the bench tests
+     at ~2000 tokens (49% of 4096). Position gaps from skip_rerope may confuse
+     attention at this scale.
+  3. **6c87533 (GQA-aware broadcast)**: Changed importance scoring from
+     `mx.repeat(K, gqa)` to native SDPA. Could produce different importance
+     rankings that fail to identify the needle as important.
+- **All other quality metrics byte-identical.** MMLU-Pro 62%, HumanEval 19/20,
+  RULER 100%, Code Intel 5/5, LiveCodeBench 6/20. The regression is ISOLATED to
+  SnapKV eviction — the model itself is fine, the eviction just picks wrong tokens.
+- **Total time improved 40s** (1333.7 vs R83's 1373.3) — the perf fixes ARE working
+  for speed (NIAH 47.1s vs 49.9s, MMLU 870.5 vs 897.3), just not for SnapKV quality.
+- **Decode 54.1 tok/s** — same as R83 (54.2), confirming the perf fixes don't
+  regress decode at short context.
+- **IMMEDIATE ACTION NEEDED**: bisect the 6 commits to isolate the SnapKV regression.
+  The most likely cause is a217e29 (scatter vectorization) or eca3aa8 (skip_rerope).
+  Run `python -m omlx.bench.hypercar_bench --quick` at each commit to find the culprit.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

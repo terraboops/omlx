@@ -1,0 +1,201 @@
+14:37:52 omlx.bench.hypercar INFO KV mode: duo, bits: 3
+14:37:52 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+14:37:52 omlx.bench.hypercar INFO System memory: 51.5 GB
+14:37:52 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+14:37:52 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+14:37:52 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+14:37:52 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+14:37:52 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 14019.96it/s]
+14:38:00 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+14:38:00 omlx.bench.hypercar INFO Model loaded in 8.4s (lazy — first forward will materialize)
+14:38:00 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+14:38:04 omlx.bench.hypercar INFO   Warmup done in 3.3s (Metal cache primed, memory cleared)
+14:38:04 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+14:38:04 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+14:38:04 omlx.duo_kv_cache INFO DuoAttention policy: 59% streaming, window=256, sink=4
+14:38:04 omlx.bench.hypercar INFO   Smoke output: ' This is my first post on this blog. I'
+14:38:04 omlx.bench.hypercar INFO   Prefill: 75 tok/s  Decode: 54.1 tok/s
+14:38:04 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+14:38:05 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+14:38:06 omlx.bench.hypercar INFO   Code check: PASS — '\nprint("Hello, World!")\n\nprint("Hello, World!")<|endoftext|>'
+14:38:06 omlx.bench.hypercar INFO 
+=== Phase 2: Code Intelligence ===
+14:38:06 omlx.bench.hypercar INFO   PASS: factorial
+14:38:07 omlx.bench.hypercar INFO   PASS: reverse_string
+14:38:07 omlx.bench.hypercar INFO   PASS: is_palindrome
+14:38:09 omlx.bench.hypercar INFO   PASS: fibonacci
+14:38:10 omlx.bench.hypercar INFO   PASS: flatten_list
+14:38:10 omlx.bench.hypercar INFO   Code intelligence: 5/5 (100%) — gate PASS
+14:38:10 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+14:38:10 omlx.bench.hypercar INFO   NIAH @ 4K context...
+14:38:19 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Here is some code:\n'
+14:38:19 omlx.bench.hypercar INFO   NIAH @ 16K context...
+14:38:57 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+14:38:57 omlx.bench.hypercar INFO 
+=== Phase 3b: RULER ===
+14:38:57 omlx.bench.hypercar INFO   Running full RULER suite (15 tasks)...
+14:38:57 omlx.bench.hypercar INFO   [1/15] multi_key_niah@4K keys=2
+14:39:04 omlx.bench.hypercar INFO     PASS: 2/2 (acc=100%) — 'Looking through the code for references to `key_1` and `key_'
+14:39:04 omlx.bench.hypercar INFO   [2/15] multi_key_niah@4K keys=4
+14:39:11 omlx.bench.hypercar INFO     PASS: 4/4 (acc=100%) — 'key_1: DQES-6365\nkey_2: ZLST-2061\nkey_3: YWTF-3780\nkey_4: WJ'
+14:39:11 omlx.bench.hypercar INFO   [3/15] multi_key_niah@16K keys=3
+14:39:47 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'Looking through the code for references to the keys, I can f'
+14:39:47 omlx.bench.hypercar INFO   [4/15] multi_key_niah@16K keys=5
+14:40:21 omlx.bench.hypercar INFO     PASS: 5/5 (acc=100%) — 'key_1: ZLST-2061\nkey_2: YWTF-3780\nkey_3: WJUY-3731\nkey_4: SX'
+14:40:21 omlx.bench.hypercar INFO   [5/15] multi_key_niah@64K keys=3 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+14:40:21 omlx.bench.hypercar INFO   [6/15] variable_tracking@4K chain=3
+14:40:27 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'PIAJ-8451<|im_end|>'
+14:40:27 omlx.bench.hypercar INFO   [7/15] variable_tracking@4K chain=4
+14:40:32 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'DLWL-2635<|im_end|>'
+14:40:32 omlx.bench.hypercar INFO   [8/15] variable_tracking@16K chain=4
+14:41:05 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'KUML-2629<|im_end|>'
+14:41:05 omlx.bench.hypercar INFO   [9/15] variable_tracking@16K chain=8
+14:41:37 omlx.bench.hypercar INFO     PASS: 1/1 (acc=100%) — 'LNET-2736<|im_end|>'
+14:41:37 omlx.bench.hypercar INFO   [10/15] variable_tracking@64K chain=4 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+14:41:37 omlx.bench.hypercar INFO   [11/15] variable_tracking@64K chain=8 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+14:41:37 omlx.bench.hypercar INFO   [12/15] frequent_word@4K words=4
+14:41:42 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'AXIOM<|im_end|>'
+14:41:42 omlx.bench.hypercar INFO   [13/15] frequent_word@16K words=5
+14:42:14 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'ZENITH<|im_end|>'
+14:42:14 omlx.bench.hypercar INFO   [14/15] frequent_word@16K words=7
+14:42:45 omlx.bench.hypercar INFO     PASS: 3/3 (acc=100%) — 'VORTEX<|im_end|>'
+14:42:45 omlx.bench.hypercar INFO   [15/15] frequent_word@64K words=5 — SKIP: projected 30.6GB > 7.8GB headroom (Metal 32.4GB + limit 41.2GB)
+14:42:45 omlx.bench.hypercar INFO   Skipped 4 tasks due to memory headroom
+14:42:45 omlx.bench.hypercar INFO   RULER summary: {'multi_key_niah@4K': 1.0, 'multi_key_niah@16K': 1.0, 'variable_tracking@4K': 1.0, 'variable_tracking@16K': 1.0, 'frequent_word@4K': 1.0, 'frequent_word@16K': 1.0}
+14:42:45 omlx.bench.hypercar INFO   Gate (multi_key@16K): 100% (need 80%) — PASS
+14:42:45 omlx.bench.hypercar INFO   Gate (ruler_vt@4K):   100% (need 70%) — PASS
+14:42:45 omlx.bench.hypercar INFO 
+=== Phase 3c: MMLU-Pro ===
+14:42:46 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+14:42:46 httpx INFO HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/TIGER-Lab/MMLU-Pro/54611cde22c74cca43dd78732198de6abe971398/README.md "HTTP/1.1 200 OK"
+14:42:46 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/MMLU-Pro.py "HTTP/1.1 404 Not Found"
+14:42:47 httpx INFO HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/TIGER-Lab/MMLU-Pro/TIGER-Lab/MMLU-Pro.py "HTTP/1.1 404 Not Found"
+14:42:47 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/revision/54611cde22c74cca43dd78732198de6abe971398 "HTTP/1.1 200 OK"
+14:42:47 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/.huggingface.yaml "HTTP/1.1 404 Not Found"
+14:42:47 httpx INFO HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=TIGER-Lab/MMLU-Pro "HTTP/1.1 200 OK"
+14:42:48 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/tree/54611cde22c74cca43dd78732198de6abe971398/data?recursive=true&expand=false "HTTP/1.1 200 OK"
+14:42:48 httpx INFO HTTP Request: GET https://huggingface.co/api/datasets/TIGER-Lab/MMLU-Pro/tree/54611cde22c74cca43dd78732198de6abe971398?recursive=false&expand=false "HTTP/1.1 200 OK"
+14:42:48 httpx INFO HTTP Request: HEAD https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro/resolve/54611cde22c74cca43dd78732198de6abe971398/dataset_infos.json "HTTP/1.1 404 Not Found"
+14:42:48 omlx.eval.mmlu_pro.tasks INFO MMLU-Pro: loaded 100 questions from 14 categories
+14:42:48 omlx.bench.hypercar INFO   Running MMLU-Pro (100 questions)...
+14:43:37 omlx.bench.hypercar INFO   [5/100] 3/5 correct (60%)
+14:44:22 omlx.bench.hypercar INFO   [10/100] 5/10 correct (50%)
+14:45:03 omlx.bench.hypercar INFO   [15/100] 10/15 correct (67%)
+14:45:41 omlx.bench.hypercar INFO   [20/100] 14/20 correct (70%)
+14:46:14 omlx.bench.hypercar INFO   [25/100] 16/25 correct (64%)
+14:47:02 omlx.bench.hypercar INFO   [30/100] 18/30 correct (60%)
+14:47:46 omlx.bench.hypercar INFO   [35/100] 20/35 correct (57%)
+14:48:26 omlx.bench.hypercar INFO   [40/100] 23/40 correct (57%)
+14:49:12 omlx.bench.hypercar INFO   [45/100] 26/45 correct (58%)
+14:49:45 omlx.bench.hypercar INFO   [50/100] 30/50 correct (60%)
+14:50:30 omlx.bench.hypercar INFO   [55/100] 34/55 correct (62%)
+14:51:15 omlx.bench.hypercar INFO   [60/100] 36/60 correct (60%)
+14:52:04 omlx.bench.hypercar INFO   [65/100] 38/65 correct (58%)
+14:52:56 omlx.bench.hypercar INFO   [70/100] 41/70 correct (59%)
+14:53:38 omlx.bench.hypercar INFO   [75/100] 44/75 correct (59%)
+14:54:27 omlx.bench.hypercar INFO   [80/100] 49/80 correct (61%)
+14:55:10 omlx.bench.hypercar INFO   [85/100] 53/85 correct (62%)
+14:55:49 omlx.bench.hypercar INFO   [90/100] 57/90 correct (63%)
+14:56:32 omlx.bench.hypercar INFO   [95/100] 59/95 correct (62%)
+14:57:16 omlx.bench.hypercar INFO   [100/100] 62/100 correct (62%)
+14:57:16 omlx.bench.hypercar INFO   MMLU-Pro: 62/100 (62%) — gate PASS
+14:57:16 omlx.bench.hypercar INFO     biology: 2/3 (67%)
+14:57:16 omlx.bench.hypercar INFO     business: 5/7 (71%)
+14:57:16 omlx.bench.hypercar INFO     chemistry: 8/15 (53%)
+14:57:16 omlx.bench.hypercar INFO     economics: 4/5 (80%)
+14:57:16 omlx.bench.hypercar INFO     engineering: 4/10 (40%)
+14:57:16 omlx.bench.hypercar INFO     health: 6/8 (75%)
+14:57:16 omlx.bench.hypercar INFO     history: 2/5 (40%)
+14:57:16 omlx.bench.hypercar INFO     law: 7/12 (58%)
+14:57:16 omlx.bench.hypercar INFO     math: 3/5 (60%)
+14:57:16 omlx.bench.hypercar INFO     other: 4/5 (80%)
+14:57:16 omlx.bench.hypercar INFO     philosophy: 3/7 (43%)
+14:57:16 omlx.bench.hypercar INFO     physics: 8/12 (67%)
+14:57:16 omlx.bench.hypercar INFO     psychology: 6/6 (100%)
+14:57:16 omlx.bench.hypercar INFO 
+=== Phase 3e: SnapKV Quality ===
+14:57:18 omlx.bench.hypercar INFO   SnapKV NIAH@4K (49% kept, GER=0.000): FAIL
+14:57:18 omlx.bench.hypercar INFO     FAIL output: 'SN brown fox jumps over the lazy dog. The quick brown fox ju'
+14:57:18 omlx.bench.hypercar WARNING Phase 3e FAILED (SnapKV NIAH gate) — continuing
+14:57:18 omlx.bench.hypercar INFO 
+=== Phase 3d: LiveCodeBench ===
+14:57:18 omlx.bench.hypercar INFO   LiveCodeBench: 20 problems sampled
+14:57:21 omlx.bench.hypercar INFO     FAIL: [easy] Default Price
+14:57:25 omlx.bench.hypercar INFO     PASS: [easy] total-distance-traveled
+14:57:27 omlx.bench.hypercar INFO     PASS: [easy] minimum-number-of-chairs-in-a-waiting-room
+14:57:36 omlx.bench.hypercar INFO     FAIL: [medium] sum-of-digit-differences-of-all-pairs
+14:57:39 omlx.bench.hypercar INFO     FAIL: [medium] maximize-happiness-of-selected-children
+14:57:44 omlx.bench.hypercar INFO     PASS: [easy] Cutoff
+14:57:49 omlx.bench.hypercar INFO     PASS: [medium] Virus
+14:58:01 omlx.bench.hypercar INFO     FAIL: [hard] maximize-consecutive-elements-in-an-array-after-mo
+14:58:06 omlx.bench.hypercar INFO     FAIL: [hard] smallest-substring-with-identical-characters-i
+14:58:14 omlx.bench.hypercar INFO     FAIL: [medium] partition-string-into-minimum-beautiful-substrings
+14:58:24 omlx.bench.hypercar INFO     FAIL: [medium] apply-operations-to-make-all-array-elements-equal-
+14:58:30 omlx.bench.hypercar INFO     PASS: [easy] Fill the Gaps
+14:58:39 omlx.bench.hypercar INFO     FAIL: [easy] Exponential Plant
+14:58:50 omlx.bench.hypercar INFO     FAIL: [hard] kth-smallest-amount-with-single-denomination-combi
+14:58:56 omlx.bench.hypercar INFO     FAIL: [easy] minimum-pair-removal-to-sort-array-i
+14:59:07 omlx.bench.hypercar INFO     FAIL: [medium] continuous-subarrays
+14:59:19 omlx.bench.hypercar INFO     FAIL: [medium] Gomamayo Sequence
+14:59:31 omlx.bench.hypercar INFO     FAIL: [medium] maximize-amount-after-two-days-of-conversions
+14:59:43 omlx.bench.hypercar INFO     FAIL: [hard] Guess the Sum
+14:59:46 omlx.bench.hypercar INFO     PASS: [easy] A..B..C
+14:59:47 omlx.bench.hypercar INFO   LiveCodeBench: 6/20 (30%) — gate PASS
+14:59:47 omlx.bench.hypercar INFO     easy: 5/8 (62%)
+14:59:47 omlx.bench.hypercar INFO     medium: 1/8 (12%)
+14:59:47 omlx.bench.hypercar INFO     hard: 0/4 (0%)
+14:59:47 omlx.bench.hypercar INFO 
+=== Phase 4: HumanEval Lite ===
+14:59:47 omlx.bench.hypercar INFO   PASS: HE/0 (has_close_elements)
+14:59:48 omlx.bench.hypercar INFO   FAIL: HE/1 (separate_paren_groups)
+14:59:48 omlx.bench.hypercar INFO   PASS: HE/2 (truncate_number)
+14:59:49 omlx.bench.hypercar INFO   PASS: HE/3 (below_zero)
+14:59:50 omlx.bench.hypercar INFO   PASS: HE/4 (mean_absolute_deviation)
+14:59:51 omlx.bench.hypercar INFO   PASS: HE/5 (intersperse)
+14:59:52 omlx.bench.hypercar INFO   PASS: HE/6 (parse_nested_parens)
+14:59:53 omlx.bench.hypercar INFO   PASS: HE/7 (filter_by_substring)
+14:59:54 omlx.bench.hypercar INFO   PASS: HE/8 (sum_product)
+14:59:55 omlx.bench.hypercar INFO   PASS: HE/9 (rolling_max)
+14:59:56 omlx.bench.hypercar INFO   PASS: HE/10 (is_palindrome)
+14:59:57 omlx.bench.hypercar INFO   PASS: HE/11 (string_xor)
+14:59:58 omlx.bench.hypercar INFO   PASS: HE/12 (longest)
+14:59:58 omlx.bench.hypercar INFO   PASS: HE/13 (greatest_common_divisor)
+14:59:59 omlx.bench.hypercar INFO   PASS: HE/14 (all_prefixes)
+15:00:00 omlx.bench.hypercar INFO   PASS: HE/15 (string_sequence)
+15:00:00 omlx.bench.hypercar INFO   PASS: HE/16 (count_distinct_characters)
+15:00:01 omlx.bench.hypercar INFO   PASS: HE/17 (parse_music)
+15:00:03 omlx.bench.hypercar INFO   PASS: HE/18 (how_many_times)
+15:00:06 omlx.bench.hypercar INFO   PASS: HE/19 (sort_numbers)
+15:00:06 omlx.bench.hypercar INFO   HumanEval Lite: 19/20 (95%) — gate PASS
+15:00:06 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+15:00:06 omlx.bench.hypercar INFO   Metal peak: 35.1 GB (limit 41.2GB) PASS
+15:00:06 omlx.bench.hypercar INFO   Swap peak:  0.0 GB (limit 12.9GB) PASS
+15:00:06 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+15:00:06 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+15:00:06 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (0.3s)
+     [PASS] Phase 1: Coherence                       (1.4s)
+     [PASS] Phase 2: Code Intelligence               (4.1s)
+     [PASS] Phase 3: Needle in Haystack              (47.1s)
+     [PASS] Phase 3b: RULER                          (228.4s)
+     [PASS] Phase 3c: MMLU-Pro                       (870.5s)
+  >> [FAIL] Phase 3e: SnapKV Quality                 (2.0s)
+     [PASS] Phase 3d: LiveCodeBench                  (149.0s)
+     [PASS] Phase 4: HumanEval Lite                  (19.2s)
+     [PASS] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+  >> [GATE FAILURE]  Total: 1333.7s
+============================================================
+
