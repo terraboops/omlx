@@ -514,6 +514,9 @@ _(none)_
 
 ## Completed
 
+- **Task 160: TQ3 session save during fp16 warmup** — quantize buffer before save check (2026-04-18)
+  - save_to_disk now calls _quantize_fp16_buffer() if cache hasn't crossed min_quant_tokens
+  - Fixes: prefill < 512 tokens → save_to_disk → "Cannot save empty cache" error
 - **Task 146: Submodular selection vectorized** — greedy loop stays Python, inner D-dim dotprod → MLX matmul (2026-04-18)
   - Eliminated .tolist() for scores and value vectors — everything stays in MLX
   - Score-only fallback also uses mx.argpartition instead of Python sorted()

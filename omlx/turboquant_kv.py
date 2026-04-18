@@ -1672,6 +1672,10 @@ class TurboQuantKVCache(_BaseCache):
         """
         import numpy as np
 
+        # If cache is still in fp16 warmup, quantize before saving
+        if not self._quantized and self._fp16_keys is not None:
+            self._quantize_fp16_buffer()
+
         if self._k_norms is None or self.offset == 0:
             raise ValueError("Cannot save empty cache")
 

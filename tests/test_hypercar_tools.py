@@ -1399,6 +1399,24 @@ class TestSessionSaveLoad:
         assert "offset" in server_src
 
 
+class TestTQ3SaveDuringWarmup:
+    """Task 160: TQ3 session save must work when cache is in fp16 warmup."""
+
+    def test_save_quantizes_fp16_buffer(self):
+        """save_to_disk must quantize fp16 warmup buffer before saving."""
+        tq_src = Path("omlx/turboquant_kv.py").read_text()
+        # save_to_disk must call _quantize_fp16_buffer before the empty check
+        save_idx = tq_src.index("def save_to_disk")
+        empty_check_idx = tq_src.index("Cannot save empty cache")
+        # Find _quantize_fp16_buffer between save_to_disk and the error
+        quantize_call = "_quantize_fp16_buffer"
+        between = tq_src[save_idx:empty_check_idx]
+        assert quantize_call in between, (
+            "save_to_disk must call _quantize_fp16_buffer before raising "
+            "'Cannot save empty cache' — handles fp16 warmup case"
+        )
+
+
 class TestXGrammarLogic:
     """Functional tests for schema extraction (no GPU needed)."""
 
