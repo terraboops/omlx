@@ -60,32 +60,40 @@ Progressive eviction with single midpoint cut being validated (avoids re-RoPE ac
 Server: `--snapkv-keep K --caote --segmented-evict 512` enables the full eviction stack.
 Per-phase headroom checks (Task 86) now gracefully skip memory-hungry phases under co-tenancy.
 
-### Goal 1 Path (KV compression — SHIPPED, 2026-04-16)
+### Goal 1 Path (KV compression — SHIPPED + VALIDATED, 2026-04-18)
 
-Full SnapKV eviction stack shipped and GPU-validated to 64K:
+SnapKV eviction stack: 9 composable layers, GPU-validated to 96K (fp16) and 64K (TQ3).
 
 | Component | Status | What it does |
 |-----------|--------|-------------|
 | **SnapKV + real Q capture** (Task 46) | **SHIPPED** | Attention-guided token selection using real query projections |
-| **CAOTE scoring** (Task 100) | **SHIPPED** | Value-aware eviction: `(α/(1-α)) × \|\|V_mean - v_j\|\|` — fixes 16K@25% NIAH |
+| **CAOTE scoring** (Task 100) | **SHIPPED** | Value-aware eviction: `(α/(1-α)) × ||V_mean - v_j||` |
 | **BUZZ segmented** (Task 98) | **SHIPPED** | Per-segment top-K preserving local structure |
 | **Re-RoPE compaction** (Task 46) | **SHIPPED** | Physical token removal with RoPE position correction |
 | **Freshness decay** (Task 97) | **SHIPPED** | Cosine-similarity conflict detection for multi-turn |
-| **Adaptive prefill** (Task 94) | **SHIPPED** | Memory-aware chunk sizing for long-context prefill |
+| **Adaptive prefill** (Task 94) | **SHIPPED** | Memory-aware chunk sizing |
+| **GER safety** (Task 106) | **SHIPPED** | Hallucination cliff guard |
+| **Fair eviction** (Task 107) | **SHIPPED** | Proportional partition budgets |
+| **Head rebalancing** (Task 111) | **SHIPPED** | Retrieval 2×, streaming 0.5× |
 
-**64K GPU validation** (2026-04-16): NIAH PASS at 25% and 50% keep, 100% token agreement,
-4.5 GB Metal saved. Server flags: `--snapkv-keep K --caote --segmented-evict 512`.
+**Validated context ladder (NIAH PASS at 25% keep):**
 
-**Memory projections with SnapKV@25% keep:**
+| Context | Mode | Metal Peak | Metal After | Saved | Time |
+|---------|------|-----------|-------------|-------|------|
+| 64K | TQ3 native | 42.1 GB | 41.2 GB | 0.9 GB | 18 min |
+| 96K | fp16 | 44.6 GB | 38.6 GB | 6.0 GB | 18 min |
+| 128K | fp16 | 44.6 GB | 35.6 GB | 9.0 GB | 42 min |
 
-| Context | KV (full) | KV (25% keep) | Model+KV | Fits 48GB? |
-|--------:|----------:|--------------:|---------:|:-----------|
-| 64K | 6.2 GB | 1.6 GB | 18.8 GB | **YES** |
-| 128K | 12.4 GB | 3.1 GB | 20.3 GB | **YES** |
-| 256K | 24.8 GB | 6.2 GB | 23.4 GB | **YES** |
-| 1M (3-bit) | 22.5 GB | 5.6 GB | 22.8 GB | **YES** |
+**TQ3+SnapKV**: fp16 KV capture hooks (`install_kv_capture_hooks`) save pre-quantization
+K/V during prefill. `compact_cache` uses clean fp16 for gather+re-RoPE, then does SINGLE
+quantization back to 3-bit. Eliminates double-quantization noise that corrupted at 64K.
 
-**Next step**: Run 128K NIAH with `--snapkv-keep --caote` to close Goal 1.
+**Progressive eviction (120K+)**: BLOCKED by MLX KVCache position model. Re-RoPE
+accumulates across multiple eviction rounds. Scatter-back causes Metal OOM. Needs
+SparseKVCache class (L effort). Workaround: single-pass prefill + session save/load.
+
+**256K workflow**: prefill once (~3h) → SnapKV compact → `/v1/sessions/save` → reload in 2s.
+Server flags: `--snapkv-keep K --caote --segmented-evict 512`.
 
 ## Before Every Commit
 
