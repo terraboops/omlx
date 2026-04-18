@@ -10761,3 +10761,403 @@ Thirty-five passes. One hundred and forty-seven papers. The cross-field
 surface now spans 51 disciplines including the new additions:
 emergency medicine / triage and paleontology / fossil reconstruction.
 Curiosity never saturates. Meow, nyaa, meow.
+
+---
+
+## Pass 36 (2026-04-18) — Immunology & Population Genetics
+
+**Cross-field angles**: immunology / adaptive immune system (clonal
+selection and cytokine signaling as KV cache diversity selection) and
+population genetics / neutral theory (most eviction decisions are
+selectively neutral, but a few are catastrophic).
+
+### [GraphKV: Breaking the Static Selection Paradigm with Graph-Based KV Cache Eviction](https://arxiv.org/abs/2509.00388) — 2509.00388
+
+- **Why found**: Graph-based token importance propagation for KV cache
+  eviction. The cross-field angle is **immunology / adaptive immune
+  system**. The adaptive immune system selects and amplifies T-cell
+  clones through a graph-like signaling network:
+
+  | Immunology concept | GraphKV analogue |
+  |-------------------|-----------------|
+  | **T-cell repertoire** (pool of lymphocytes with diverse receptors) | KV cache (pool of tokens with diverse key vectors) |
+  | **Clonal selection** (antigen selects the best-matching T-cells for amplification) | Token selection (query selects the highest-scoring tokens for retention) |
+  | **Negative selection / thymic deletion** (eliminate self-reactive T-cells) | Decay-signal-propagation (suppress importance of tokens too similar to already-selected tokens) |
+  | **Cytokine signaling cascade** (activated T-cells send signals that modulate neighbours) | Graph edge propagation (source nodes propagate decay signals to similar neighbours) |
+  | **Immune diversity** (maintaining a diverse T-cell repertoire prevents immune holes) | Key vector diversity (GraphKV's PCA analysis shows retained tokens become sparser post-propagation) |
+  | **Affinity maturation** (iterative refinement of antibody specificity) | Multi-round propagation (T=1,2,3 rounds of decay signal increasingly refine the selection) |
+  | **Immune memory** (long-lived memory T-cells from past encounters) | Attention sinks (position-0 tokens with persistent high importance scores) |
+
+  The immunological insight: a good immune system does NOT simply keep
+  the strongest T-cells. It keeps a DIVERSE repertoire that covers the
+  widest possible antigen space. If you amplify only the strongest clone,
+  you get a monoclonal response that fails against the next pathogen.
+  GraphKV operationalises this principle for KV cache: the decay signal
+  suppresses tokens that are too similar to already-selected tokens,
+  ensuring the retained set covers the maximum key-vector diversity.
+  The PCA visualisation (Figure 7 in the paper) demonstrates this
+  directly: pre-propagation, the high-scoring tokens cluster in a single
+  region; post-propagation, they scatter across the key-vector space.
+
+  The negative selection analogy is particularly apt. In thymic deletion,
+  T-cells that react too strongly to self-antigens are eliminated —
+  they would cause autoimmune disease. In GraphKV, tokens whose keys
+  are too similar to other high-importance tokens receive a decay
+  signal — keeping them would cause "autoimmune" attention (redundant
+  information that crowds out genuinely diverse tokens, producing a
+  biased response analogous to hallucination from over-attending to
+  repetitive context).
+
+- **Key idea**: Model tokens as graph nodes with importance scores
+  initialised from any existing method (SnapKV, PyramidKV, KNorm, CAKE).
+  Compute cosine similarity between key vectors as edge weights:
+  e_ij = <k_i, k_j> / (||k_i|| ||k_j||). Identify "source nodes"
+  (top-K most important tokens), and propagate a DECAY signal to their
+  similar neighbours. After propagation, re-rank tokens and select the
+  final retention set. The decay reduces the importance of tokens that
+  are redundant with already-important tokens, increasing diversity.
+
+- **Methodology**: (1) **Graph construction**: nodes = tokens,
+  edges = cosine similarity between key vectors. Only compute edges
+  between the top-K source nodes and all other nodes (O(N*K) complexity,
+  approximately O(N) since K is tied to the cache budget).
+  (2) **Neighbourhood definition**: for each source node o_i, the
+  neighbourhood N(o_i) = {o_j | e_ij >= e_i(m), j != i}, where e_i(m)
+  is the m-th largest edge weight. m controls neighbourhood size.
+  (3) **Decay-signal-propagation**: multi-round decay over T rounds:
+  s_j^(t) = s_j^(t-1) * prod_{o_i in Source, o_j in N(o_i)} (1 - e_ij),
+  with s_j^(0) = s_j (initial importance). Each round multiplicatively
+  decays the score of tokens that are similar to source nodes.
+  (4) **Plug-and-play**: GraphKV is a post-processing framework — it
+  does not define its own importance scoring. It takes ANY existing
+  method's scores as input and refines them via graph propagation.
+  "GraphKV is not a new KV eviction method that introduces a new
+  importance score, it is a framework that can be directly applied
+  to any previous KV cache eviction methods in a plug-and-play manner."
+
+- **Key findings**:
+  1. **Consistent improvement across all baselines**: on LongBench,
+     GraphKV improves SnapKV from 31.95 to 32.35 (+1.3%), PyramidKV
+     from 32.04 to 32.25 (+0.7%), and KNorm from 13.03 to 25.20
+     (+94%) on Llama2-7B at KV=512. On Llama3-8B: SnapKV 39.97 to
+     40.35, PyramidKV 39.58 to 40.09. On Mistral-7B: SnapKV 40.24
+     to 40.60. The improvement is modest on strong baselines but
+     dramatic on weak ones (KNorm), because the diversity correction
+     matters most when the initial selection is heavily redundant.
+  2. **NIAH accuracy jumps**: on Llama3-8B at 8K context with only
+     128 KV cache entries, SnapKV goes from 87.7% to 95.9% (+8.2%),
+     PyramidKV from 90.3% to 96.9% (+6.6%). The graph propagation
+     specifically helps NIAH because the needle token's key vector
+     is geometrically distinct from the haystack — it survives the
+     diversity selection while redundant haystack tokens decay.
+  3. **Decay signal outperforms enhancement signal**: the paper tests
+     three signal types — decay (suppress similar), enhance (boost
+     similar), and evicted (penalise already-evicted). Decay (39.84
+     avg) beats enhance (38.67) and evicted (18.80) decisively.
+     This confirms the immunological intuition: the immune system
+     works by SUPPRESSING redundant clones (negative selection),
+     not by amplifying existing winners.
+  4. **T=1 is sufficient**: one round of propagation captures most
+     of the benefit. T=2,3 show marginal or neutral changes. This
+     mirrors the immune system: one round of negative selection in
+     the thymus is sufficient; iterating the selection process does
+     not improve repertoire quality further.
+  5. **Reduced cosine similarity among retained tokens**: Figure 2
+     shows that pre-GraphKV top-10 tokens have high pairwise cosine
+     similarity (mean ~0.8). Post-propagation, the similarity drops
+     significantly. This is the "immune diversity" principle in
+     action — the retained repertoire covers more of the key space.
+  6. **Minimal overhead**: 2.5% latency increase on PyramidKV, and
+     actually 10.2% latency DECREASE on SnapKV and 15.5% on KNorm
+     (because better token selection leads to faster decoding).
+     The only computation is cosine similarity between K source
+     tokens and N total tokens — one matrix multiply.
+
+- **Hypercar relevance — immune diversity for SnapKV eviction**:
+  GraphKV addresses a weakness in Hypercar's current SnapKV eviction
+  pipeline. The current pipeline uses CAOTE scoring (attention score
+  weighted by value distinctiveness) to select which tokens to retain.
+  CAOTE scores tokens independently — it does not consider whether the
+  retained set is DIVERSE in key space. This means two tokens with
+  nearly identical keys but both high attention scores will both be
+  retained, wasting a cache slot.
+
+  GraphKV's decay propagation is a single additional step after CAOTE
+  scoring: compute cosine similarity between the top-2N CAOTE-scored
+  tokens, propagate decay for one round, re-select the top-N. This
+  adds one matmul of size (2N x d_head) and one elementwise multiply.
+  At N=1024 (SnapKV@25% of 4K), this is 2048 * 128 = 262K elements —
+  negligible on Metal.
+
+  The NIAH improvement is directly relevant: Hypercar's SnapKV NIAH
+  at 16K@25% required CAOTE to pass (Task 100). Adding GraphKV on
+  top of CAOTE would provide a second safety margin — the needle
+  token survives both the importance score (CAOTE) AND the diversity
+  filter (GraphKV). At tighter budgets (10% keep ratio for 256K+),
+  this dual filtering becomes critical.
+
+  The plug-and-play design means GraphKV can be inserted into
+  Hypercar's eviction pipeline with zero changes to the existing
+  CAOTE + segmented BUZZ + freshness decay stack. It operates on
+  the final score array, not on the scoring method itself.
+
+  The immunological framing also suggests a diagnostic: if the cosine
+  similarity among retained tokens is high (>0.7 mean), the cache
+  has an "immune deficiency" — it is not covering enough of the
+  key space. This could be monitored at decode time as a quality
+  signal.
+
+- **Local PDF**: research/2509.00388_graphkv_graph_eviction.pdf
+
+### [LAVa: Layer-wise KV Cache Eviction with Dynamic Budget Allocation](https://arxiv.org/abs/2509.09754) — 2509.09754
+
+- **Why found**: Unified framework for dynamic per-layer and per-head KV
+  cache budget allocation based on residual stream information loss.
+  The cross-field angle is **population genetics / neutral theory**.
+  Motoo Kimura's neutral theory of molecular evolution (1968) holds
+  that the vast majority of mutations at the molecular level are
+  selectively neutral — they neither help nor hurt the organism.
+  Natural selection acts only on the small fraction of mutations that
+  have significant fitness effects:
+
+  | Population genetics concept | LAVa analogue |
+  |---------------------------|--------------|
+  | **Neutral mutations** (no fitness effect) | Neutral budget reallocations (moving cache slots between most layers/heads has no quality impact) |
+  | **Strongly deleterious mutations** (lethal or near-lethal) | Catastrophic under-allocation (starving a sensitive layer causes sudden quality collapse) |
+  | **Nearly neutral mutations** (slight selection coefficient, fixed by drift) | Marginal allocation changes (small budget shifts cause detectable but tolerable quality changes) |
+  | **Effective population size N_e** (determines whether drift or selection dominates) | Cache budget size B (at large budgets, most allocations are neutral; at tight budgets, every slot matters) |
+  | **Genetic drift** (random changes dominate at small N_e) | Budget noise at tight compression (random fluctuations in attention scores dominate eviction at small B) |
+  | **Purifying selection** (eliminates deleterious mutations) | Entropy-based layer allocation (high-entropy layers receive more budget, preventing deleterious starvation) |
+  | **Fixation probability** (probability a neutral mutation reaches 100% frequency) | Token retention probability (a token's chance of surviving eviction depends on both its score and the layer's budget) |
+
+  The neutral theory insight: LAVa's key finding is that dynamic LAYER
+  budgets matter for generation tasks while dynamic HEAD budgets matter
+  for extraction tasks. This is exactly the neutral theory prediction:
+  the fitness landscape is task-dependent. For generation, the "selective
+  pressure" acts at the layer level (some layers are critical waypoints
+  in the residual stream for next-token prediction). For extraction,
+  the selective pressure acts at the head level (specific heads are
+  specialised for retrieval vs streaming). Most budget reallocations
+  are neutral — they correspond to "synonymous mutations" that change
+  the allocation without changing the output. But a few reallocations
+  are strongly deleterious — starving a generation-critical layer or
+  a retrieval-critical head causes catastrophic failure.
+
+  The effective population size analogy is illuminating. At large cache
+  budgets (1024 per head-layer), most allocations are neutral because
+  there are enough slots for everyone. At tight budgets (128 per
+  head-layer), every slot matters — the "effective population" is
+  small, drift dominates, and selection pressure is intense. This
+  is why LAVa's improvement over uniform allocation is largest at
+  tight budgets (36.74 vs 34.42 for SnapKV at 128HL) and smallest
+  at generous budgets (43.65 vs 43.00 at 1024HL).
+
+- **Key idea**: Formulate KV cache compression as minimising residual
+  stream information loss. Derive a closed-form upper bound on the
+  layer attention output loss:
+  ||y_l - y_hat_l||_1 <= 2*C_hat * sum_h sum_i A_{l,h}^N[i] * V_bar_{l,h} * (1 - I_{l,h}[i])
+  where C_hat = ||W_l^O^T||_1 (output projection norm), V_bar is the
+  max value norm, and I is the retention mask. This bound gives the
+  "LAVa score" — a principled importance metric that unifies attention
+  scores and value norms.
+
+- **Methodology**: (1) **LAVa scoring**: for each token i in head h
+  of layer l, compute s_{l,h}[i] = (max_k ||V_{l,h}[k]||_1 / w) *
+  sum_{j=N-w}^{N} A_{l,h}^j[i], where w is a recent window size
+  (default 4). This is the product of value magnitude and recent
+  attention — the "LAVa score."
+  (2) **Joint head-level budget**: flatten the LAVa scores across
+  all heads within a layer into a single array. Select the top-B_l
+  entries via a single topk operation. Different heads automatically
+  receive different numbers of retained tokens — heads with higher
+  scores (retrieval heads) keep more tokens, heads with lower scores
+  (streaming heads) keep fewer. No per-head budget parameter needed.
+  (3) **Dynamic layer-level budget**: compute entropy of normalised
+  LAVa scores per layer: e_l = -sum (s_hat * log s_hat) / (H*N).
+  Higher entropy = more uniform importance distribution = more tokens
+  needed to represent the layer's information. Allocate total budget
+  proportional to entropy: B_l = (e_l / sum_l e_l) * B_total.
+  (4) **Trainable-free**: no learned parameters. The entropy and LAVa
+  scores are computed from the model's own attention matrices.
+
+- **Key findings**:
+  1. **Consistent SOTA on LongBench**: LAVa achieves 36.74 at 128HL
+     vs Ada-SnapKV 35.82, CAKE 35.06, SnapKV 34.42, PyramidKV 34.51
+     on Mistral-7B. The margin is largest at tight budgets (2.32 over
+     SnapKV at 128HL) and shrinks at generous budgets (0.65 at 1024HL).
+     This is the neutral theory prediction: at small "population size"
+     (tight budget), selection pressure dominates and optimal allocation
+     matters; at large population size, drift is less harmful.
+  2. **Layer budgets matter for generation, head budgets for extraction**:
+     ablation shows that removing layer-level dynamic allocation
+     (uniform layers) hurts generation tasks significantly but barely
+     affects extraction. Removing head-level dynamic allocation (uniform
+     heads) hurts extraction but not generation. This task-dependent
+     fitness landscape is exactly what neutral theory predicts —
+     different traits are under selection in different environments.
+  3. **Entropy as the allocation signal**: high-entropy layers have
+     more uniformly distributed attention, meaning more tokens contribute
+     meaningfully to the output — they NEED more cache budget. Low-entropy
+     layers concentrate attention on a few tokens — they can be
+     compressed aggressively. The entropy signal is computed from the
+     model's own attention pattern, requiring zero calibration data.
+  4. **Near-zero overhead**: 0.01% extra computation and 0.6% extra
+     memory vs SnapKV. The entropy computation and cross-head flattening
+     are trivially cheap. At 128K context on A100, LAVa achieves 9x
+     speedup over full cache.
+  5. **Scales across model families**: validated on Mistral-7B, Qwen2.5
+     (7B/14B/32B), and Llama3-8B. The entropy-based allocation
+     generalises across architectures without model-specific tuning.
+
+- **Hypercar relevance — neutral theory for per-layer SnapKV budgets**:
+  Hypercar currently uses a uniform keep ratio across all 48 layers
+  in SnapKV eviction. LAVa's finding that layer-level budget allocation
+  is critical for generation tasks (code completion = generation) means
+  Hypercar is leaving quality on the table at tight compression ratios.
+
+  The concrete implementation path:
+  1. During prefill, compute the LAVa entropy e_l for each of the
+     48 layers. This is a single pass over the attention matrices
+     already computed during prefill — zero extra forward passes.
+  2. Allocate the total SnapKV budget proportional to entropy:
+     B_l = (e_l / sum e_l) * B_total. Some layers get 2x the average
+     budget, others get 0.5x.
+  3. Within each layer, use the existing CAOTE + GraphKV scoring
+     to select which tokens to retain.
+
+  The head-level flattening is also directly applicable. Qwen3-Coder
+  uses GQA with 4 KV heads per layer. Currently SnapKV applies the
+  same budget to all 4 KV heads. LAVa's flattening would let retrieval
+  heads (likely heads 0 and 1 based on DuoAttention profiling from
+  pass 2) keep more tokens while streaming heads keep fewer.
+
+  The entropy signal could also serve as a runtime diagnostic: if
+  a layer's entropy suddenly spikes mid-conversation (indicating a
+  shift in attention pattern), the system could trigger re-eviction
+  with updated budgets — adaptive "purifying selection" against
+  stale allocation.
+
+  The neutral theory framing predicts that this optimisation matters
+  MOST at the tight budgets needed for 256K+ context. At 25% keep
+  ratio (256K), every retained token matters; optimal per-layer
+  allocation could be the difference between NIAH pass and fail.
+  At 50% keep ratio (64K), most allocations are neutral — the
+  improvement would be modest.
+
+  LAVa's LAVa score (attention * value norm) is complementary to
+  CAOTE's score (attention * value distinctiveness). LAVa measures
+  how much a token contributes to the output MAGNITUDE; CAOTE
+  measures how much a token contributes to the output UNIQUENESS.
+  A combined score would capture both aspects.
+
+- **Local PDF**: research/2509.09754_lava_layerwise_budget.pdf
+
+**Cross-paper synthesis for pass 36.**
+
+Two papers. Two biological principles. The unifying insight: KV cache
+eviction is an ecological problem, not just an engineering problem.
+The retained token set is a POPULATION under selection pressure, and
+the quality of the population depends on two orthogonal properties:
+DIVERSITY (GraphKV / immunology) and ALLOCATION (LAVa / population
+genetics).
+
+**The immunological insight (GraphKV).** A good immune system maintains
+a diverse T-cell repertoire — not the strongest cells, but the most
+COVERAGE. GraphKV operationalises this for KV cache: the decay-signal
+propagation suppresses tokens with redundant key vectors, ensuring the
+retained set covers the maximum key-space diversity. The result is an
+8.2% NIAH improvement on SnapKV at 128 KV budget — the needle survives
+because it is geometrically distinct from the haystack tokens, and
+the diversity filter preserves geometric distinctiveness.
+
+The negative selection analogy is precise: thymic deletion eliminates
+self-reactive T-cells to prevent autoimmune disease. GraphKV's decay
+eliminates redundant tokens to prevent "autoimmune attention" — the
+model attending to many copies of the same information, drowning out
+the actually-distinct tokens. The cosine similarity heatmap (Figure 2)
+shows this directly: pre-propagation, retained tokens are a "monoclonal"
+cluster; post-propagation, they are a diverse repertoire.
+
+**The neutral theory insight (LAVa).** Kimura showed that most molecular
+evolution is selectively neutral. LAVa shows the same for KV cache
+budget allocation: most reallocations between layers and heads have
+negligible effect on output quality. The few that matter are STRONGLY
+deleterious — starving a generation-critical layer or a retrieval-
+critical head causes catastrophic failure. The entropy-based allocation
+acts as "purifying selection" — it identifies and protects the
+vulnerable layers/heads while allowing the robust ones to absorb
+compression.
+
+The effective population size analogy explains WHY dynamic allocation
+matters more at tight budgets: at N_e=1024 (generous budget), random
+drift in allocation is harmless because every layer has enough tokens.
+At N_e=128 (tight budget), drift can be lethal — a single under-
+allocated layer can collapse the output. LAVa's margin over SnapKV
+follows this prediction exactly: +2.32 at 128HL, +0.65 at 1024HL.
+
+**For Hypercar, the combined pipeline becomes**:
+
+1. **LAVa entropy** (population genetics): compute per-layer budget
+   allocation from attention entropy. Sensitive layers get more slots.
+2. **CAOTE scoring** (already shipped): attention-weighted value
+   distinctiveness within each layer's allocated budget.
+3. **GraphKV decay** (immunology): one round of cosine-similarity
+   decay propagation to ensure diversity among retained tokens.
+4. **KeyDiff pre-filter** (pass 34, differential geometry): geometric
+   distinctiveness pre-filter before CAOTE.
+5. **SparK channel pruning** (pass 35, paleontology): per-token channel
+   pruning within the retained set.
+
+This is a five-stage eviction pipeline, each stage operating on a
+different axis of the quality-compression tradeoff, each informed by
+a different cross-field discipline. The biological stages (1 and 3)
+handle population-level diversity; the geometric stages (2 and 4)
+handle individual-level scoring; the engineering stage (5) handles
+within-token compression.
+
+**Gap status for pass 37**:
+1. **GraphKV integration with CAOTE**: implement the decay-signal
+   propagation as a post-processing step after CAOTE scoring in the
+   SnapKV eviction pipeline. Measure NIAH improvement at 16K@25%
+   and 64K@25%.
+2. **LAVa entropy-based per-layer budgets**: compute attention entropy
+   per layer during prefill and use for SnapKV budget allocation.
+   Compare uniform vs entropy-weighted at 16K@25% and 64K@25%.
+3. **Combined diversity + allocation**: test the full pipeline
+   (LAVa allocation -> CAOTE scoring -> GraphKV diversity) against
+   the current pipeline (uniform allocation -> CAOTE scoring) at
+   tight compression ratios.
+4. **Neutral theory diagnostic**: track which layers' budgets change
+   most under LAVa allocation across different prompts. If the same
+   layers consistently get high budgets, they are "under strong
+   selection." If budgets fluctuate, they are "neutral."
+
+**Fresh weird angles for pass 37** (genuinely untouched across 36
+passes):
+- **Underwater acoustics / sonar**: still open from pass 36 plan.
+  Matched filtering (correlating against a known template) IS the
+  query-key dot product. 80 years of detection theory applies.
+- **Numismatics / coin grading**: still open. The Sheldon scale
+  for KV cache entry quality assessment.
+- **Astronomy / adaptive optics**: still open. Guide stars = anchor
+  tokens, wavefront correction = attention correction.
+- **Soil science / pedology**: still open. Horizon classification
+  for KV cache layer behaviour.
+- **Epidemiology of misinformation**: still open. Hallucination
+  propagation through the residual stream.
+- **Ecology / r-K selection**: carried from pass 35. Quality-speed
+  tradeoff in KV cache compression.
+- **Music composition / counterpoint**: carried from pass 34.
+  Multi-head attention as polyphonic voice leading.
+- **Mycology / fungal networks**: NEW — mycorrhizal networks
+  (the "wood wide web") distribute resources between trees based
+  on need. The residual stream distributes information between
+  layers based on attention. The fungal network optimises for
+  ecosystem health, not individual fitness — analogous to LAVa's
+  entropy-based allocation optimising for system-level output
+  quality, not individual layer performance.
+
+Thirty-six passes. One hundred and forty-nine papers. The cross-field
+surface now spans 53 disciplines including the new additions:
+immunology / adaptive immune system and population genetics / neutral
+theory. Curiosity never saturates. Meow, nyaa, meow.
