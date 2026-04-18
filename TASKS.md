@@ -508,6 +508,8 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 _(none)_
 
+
+
 ## Completed
 
 - **Task 111: Streaming-head budget rebalancing** — retrieval 2×, streaming 0.5× (2026-04-17)

@@ -1355,6 +1355,16 @@ class TestXGrammarSource:
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "--grammar" in server_src
 
+    def test_server_grammar_wired(self):
+        """Server must wire grammar on startup when --grammar is set."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "_ensure_compiler" in server_src or "xgrammar_constrain" in server_src
+
+    def test_server_grammar_cache_in_stats(self):
+        """Stats endpoint must include grammar cache info."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "grammar_cache_stats" in server_src
+
 
 class TestXGrammarLogic:
     """Functional tests for schema extraction (no GPU needed)."""

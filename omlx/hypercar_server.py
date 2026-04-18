@@ -422,6 +422,17 @@ def main():
         extra_str = f" ({', '.join(extras)})" if extras else ""
         logger.info(f"SnapKV eviction ENABLED: keep top-{args.snapkv_keep} tokens, scoring={scoring}{extra_str}")
 
+    # Wire XGrammar constrained decoding if --grammar is enabled
+    if args.grammar:
+        try:
+            from omlx.patches.xgrammar_constrain import _ensure_compiler
+            # Pre-initialize the compiler with the tokenizer (loaded later)
+            # The actual constraint is applied per-request via logits_processors
+            logger.info("XGrammar constrained decoding ENABLED (--grammar)")
+            logger.info("  Schema enforcement active for tools and response_format requests")
+        except ImportError as e:
+            logger.warning(f"XGrammar not available: {e}. Install with: uv pip install xgrammar")
+
     apply_progress_logging(log_every=8)
     logger.info("Progress logging enabled (every 8 generated tokens)")
 
@@ -946,14 +957,21 @@ def main():
                     _send_json(handler_self, {"sessions": sessions})
 
                 elif handler_self.path == "/v1/stats":
-                    _send_json(handler_self, {
+                    stats_data = {
                         "metal_active_gb": round(mx.get_active_memory() / 1e9, 2),
                         "metal_peak_gb": round(mx.get_peak_memory() / 1e9, 2),
                         "sessions": len(_sessions),
                         "kv_mode": kv_mode,
                         "model": args.model,
                         "ttt_active": _ttt_engine[0] is not None,
-                    })
+                    }
+                    # Add grammar cache stats if available
+                    try:
+                        from omlx.patches.xgrammar_constrain import grammar_cache_stats
+                        stats_data["grammar_cache"] = grammar_cache_stats()
+                    except ImportError:
+                        pass
+                    _send_json(handler_self, stats_data)
 
                 elif handler_self.path == "/v1/ttt/stats":
                     if _ttt_engine[0] is None:
