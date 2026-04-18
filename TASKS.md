@@ -3639,7 +3639,14 @@ _streaming instead of reading whole, or using memory more efficiently._
   - Speed: **3.5x** (4.41ms → 1.25ms at 4K)
   - The math is correct: `H.T = H` (Hadamard symmetric), so `codec.rotation.T @ v = H @ diag(signs) @ v = WHT(signs * v)` — exactly the forward WHT rotation
 - **Verify**: (1) This experiment validated quality and speed. (2) Run NIAH 4K and Code Intel 5/5 with fused quantize to confirm no regression in real generation. (3) Test at 64K context to verify scaling.
-- **Effort**: XS (1 hour — literally one line: replace `self._quantize_wht(vectors)` with `_fused_quantize(vectors, self.rotation, self._boundaries, self.bits, self.dim)`)
+- **REAL-MODEL VALIDATION** (INV 22, 2026-04-18 10:50):
+  - Short prefill (8 tok): **15.5x faster** (6 → 91 tok/s)
+  - 4K prefill: 1.03x (753 → 772 tok/s — marginal at scale, WHT no longer dominates)
+  - Decode: identical (52.6 → 53.3 tok/s)
+  - **Output text: IDENTICAL** — exact same tokens generated
+  - KV memory: identical (80 MB)
+  - **ZERO RISK. ONE LINE CHANGE. 15x SHORT-CONTEXT PREFILL SPEEDUP.**
+- **Effort**: XS (literally one line: replace `self._quantize_wht(vectors)` with `_fused_quantize(vectors, self.rotation, self._boundaries, self.bits, self.dim)`)
 - **Depends on**: None. This fully resolves the core of Task 138 without writing any new Metal kernel.
 
 ### 153. [TOP PRIORITY] Goal 1 + Goal 3 tension: decode drops to 11-15 tok/s at 8-16K — need pre-alloc DuoKV + fused native decode
