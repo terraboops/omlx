@@ -190,7 +190,7 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
         # to keep peak memory bounded and reduce O(n²) attention cost
         if evict_every > 0 and tokens_since_evict >= evict_every and end < len(x_ids):
             current_offset = cache[0].offset
-            mid_keep = max(64, current_offset // 2)  # keep 50% during prefill
+            mid_keep = max(64, current_offset * 3 // 4)  # keep 75% during prefill (conservative)
             mid_imp = compute_caote_importance(captured, cache) if use_caote else \
                 compute_importance_from_real_q(captured, cache)
             mx.eval(mid_imp)
