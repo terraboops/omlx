@@ -514,6 +514,9 @@ _(none)_
 
 ## Completed
 
+- **Task 146: Submodular selection vectorized** — greedy loop stays Python, inner D-dim dotprod → MLX matmul (2026-04-18)
+  - Eliminated .tolist() for scores and value vectors — everything stays in MLX
+  - Score-only fallback also uses mx.argpartition instead of Python sorted()
 - **Task 142: DuoKV streaming trim gather** — per-head Python loop → single take_along_axis (2026-04-18)
   - Build (H_kv, T) gather index: streaming→[sink+window+pad], retrieval→[0..T-1]
   - One take_along_axis + mask replaces 12 intermediate tensors per head

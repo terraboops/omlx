@@ -789,16 +789,13 @@ def _select_submodular(pooled: mx.array, k: int, segment_size: int,
     remainder = k - base_k * n_segments
 
     all_indices = set()
-    scores_np = pooled[0].tolist()
 
-    # Get per-token value norms for diversity (pool across heads → mean)
-    val_np = None
+    # Pre-compute normalized value vectors for diversity penalty
+    val_normed = None
     if values is not None and values.shape[2] >= S:
-        # Mean across heads: (S, D)
         v_mean_heads = mx.mean(values[0, :, :S, :], axis=0)  # (S, D)
-        # Normalize for cosine similarity
         norms = mx.sqrt(mx.sum(v_mean_heads * v_mean_heads, axis=-1, keepdims=True) + 1e-8)
-        val_np = (v_mean_heads / norms).tolist()  # list of D-dim vectors
+        val_normed = v_mean_heads / norms  # (S, D) — stays in MLX
 
     for seg_idx in range(n_segments):
         seg_start = seg_idx * seg_size
@@ -810,38 +807,38 @@ def _select_submodular(pooled: mx.array, k: int, segment_size: int,
         if seg_k <= 0:
             continue
 
-        if val_np is None:
+        if val_normed is None:
             # No value vectors — fall back to score-only top-K
-            seg_scores = scores_np[seg_start:seg_end]
-            indexed = sorted(range(seg_len), key=lambda i: -seg_scores[i])
-            for i in indexed[:seg_k]:
+            seg_scores = pooled[0, seg_start:seg_end]
+            top_k_idx = mx.argpartition(-seg_scores, kth=seg_k)[:seg_k]
+            mx.eval(top_k_idx)
+            for i in top_k_idx.tolist():
                 all_indices.add(seg_start + i)
             continue
 
-        # Greedy submodular selection within segment
-        seg_scores = list(scores_np[seg_start:seg_end])  # mutable copy
-        retained_in_seg = []
+        # Greedy submodular: vectorized score updates in MLX
+        seg_scores = pooled[0, seg_start:seg_end].astype(mx.float32)  # (seg_len,) mutable via copy
+        seg_vals = val_normed[seg_start:seg_end]  # (seg_len, D)
+        selected_mask = mx.zeros(seg_len, dtype=mx.bool_)
 
         for _ in range(seg_k):
-            if not seg_scores:
+            # Mask already-selected tokens
+            masked_scores = mx.where(selected_mask, mx.array(-1e30), seg_scores)
+            best_local = int(mx.argmax(masked_scores).item())
+            if float(masked_scores[best_local].item()) <= -1e30:
                 break
-            # Pick highest-scoring token
-            best_local = max(range(seg_len), key=lambda i: seg_scores[i]
-                             if i not in set(retained_in_seg) else -1e30)
-            if seg_scores[best_local] <= -1e30:
-                break
-            retained_in_seg.append(best_local)
+
+            selected_mask[best_local] = True
             all_indices.add(seg_start + best_local)
 
-            # Penalize tokens similar to the selected token (diversity)
-            best_val = val_np[seg_start + best_local]
-            for j in range(seg_len):
-                if j in set(retained_in_seg):
-                    continue
-                # Cosine similarity (vectors are pre-normalized)
-                sim = sum(a * b for a, b in zip(val_np[seg_start + j], best_val))
-                if sim > 0.8:  # high similarity → penalize
-                    seg_scores[j] *= max(0.1, 1.0 - 0.5 * sim)
+            # Vectorized diversity penalty: cosine sim with selected token
+            sims = seg_vals @ seg_vals[best_local]  # (seg_len,) dot products
+            # Penalize high-similarity tokens (sim > 0.8)
+            penalty = mx.maximum(mx.array(0.1), 1.0 - 0.5 * sims)
+            should_penalize = (sims > 0.8) & ~selected_mask
+            seg_scores = mx.where(should_penalize, seg_scores * penalty, seg_scores)
+
+        mx.eval(seg_scores)  # ensure lazy graph doesn't grow
 
     return all_indices
 
