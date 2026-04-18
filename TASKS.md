@@ -512,6 +512,14 @@ _(none)_
 
 ## Completed
 
+- **Task 131: JSON encoding fix** — safe control char escaping in SSE (2026-04-17)
+  - Patched `json.dumps` in mlx_lm.server to use `ensure_ascii=True`
+  - Guarantees all control characters in code responses are \uXXXX escaped
+  - Prevents `json.decoder.JSONDecodeError` in OpenCode/API clients
+- **Task 127+132: TQ3 prefill + Goal 1 cost docs** — honest documentation (2026-04-17)
+  - TQ3 prefill: 3 tok/s (270× slower than duo) — documented in CLAUDE.md
+  - Goal 1 cost table: 4K→128K Metal/swap/wall-clock progression
+  - TQ3 recommendation: use for single-turn + session save/load only
 - **Task 126: [CRITICAL FIX] SnapKV server crash** — importlib fix (2026-04-17)
   - `mlx_lm.generate` is a function (from `__init__`), not a module
   - Fix: `importlib.import_module("mlx_lm.generate")` in snapkv.py + adaptive_prefill.py

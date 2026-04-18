@@ -574,29 +574,24 @@ def main():
         logger.warning(f"Could not patch LRUPromptCache: {e}")
 
     # Fix JSON control character encoding in streaming responses (Task 131).
-    # mlx_lm's SSE handler can emit raw control chars in code responses.
+    # Patch mlx_lm's json module to always use ensure_ascii=True, which
+    # guarantees all control characters are \uXXXX escaped in SSE output.
     try:
         import mlx_lm.server as _srv_mod
-        if hasattr(_srv_mod, 'APIHandler'):
-            _orig_handle = _srv_mod.APIHandler.handle_completion
-            import json as _j
+        import json as _json_mod
 
-            def _safe_handle_completion(self, request, stop_words):
-                """Wrap handle_completion to sanitize control chars in SSE."""
-                # The underlying handler writes SSE events. We can't easily
-                # intercept those, but we can ensure json.dumps is used.
-                # The actual fix: monkey-patch the response generation to
-                # escape control characters. For now, just log.
-                return _orig_handle(self, request, stop_words)
+        # Wrap json.dumps used by the server to force ensure_ascii=True
+        _orig_json_dumps = _json_mod.dumps
 
-            # Actually, the simpler fix: ensure json.dumps with
-            # ensure_ascii=False is used consistently. The bug is likely
-            # in a manual string format. Let's patch json.encoder to
-            # always escape control characters.
-            pass  # The real fix needs tracing the exact SSE path
-        logger.info("JSON control character safety check applied")
-    except Exception:
-        pass
+        def _safe_json_dumps(*args, **kwargs):
+            kwargs.setdefault("ensure_ascii", True)
+            return _orig_json_dumps(*args, **kwargs)
+
+        # Patch json.dumps in the server's module namespace
+        _srv_mod.json.dumps = _safe_json_dumps
+        logger.info("Patched JSON encoding for safe control character escaping")
+    except Exception as e:
+        logger.debug(f"JSON encoding patch skipped: {e}")
 
     # -----------------------------------------------------------------------
     # Agentic endpoints: fork, rewind, save, load, stats
