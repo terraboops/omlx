@@ -3814,8 +3814,14 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **This overrides earlier analysis**: Previous INV 4 showed fp16 at 50+ tok/s through 4K because those tests ran on a clean system with the model freshly loaded. The heatmap test ran 18 sequential measurements — by the time it reached fp16 @ 4K, Metal memory pressure from prior measurements (native3 @ 16K) degraded performance. The decode cliff is REAL under sustained workload.
 - **Root cause hypothesis**: At 4K context, fp16 attention SDPA processes 4K×4K attention matrices × 48 layers. Even with `mx.fast.scaled_dot_product_attention`, this is O(n²) per layer. The per-token attention cost at 4K is 16x higher than at 1K, but decode speed only drops 6x (48.1→8.2) — suggesting partial flash-attention optimization but not enough.
 - **Alternative hypothesis**: Metal memory fragmentation from sequential measurements causes swap pressure that degrades all modes. The 4K measurements may be contaminated by prior 16K runs' residual Metal allocations.
-- **Verify**: Run fp16 decode at 4K on a FRESH model load (no prior measurements). If it shows 50+ tok/s, the contamination hypothesis wins. If it shows <20 tok/s, the O(n²) hypothesis wins.
-- **Effort**: S (diagnostic run)
+- **VALIDATED** (fresh-load test, 2026-04-18 12:04):
+  - fp16 @ 256 FRESH: 52.3 tok/s
+  - fp16 @ 1024 FRESH: 48.9 tok/s
+  - fp16 @ 4096 FRESH: **14.1 tok/s** (73% drop from short context)
+  - Heatmap showed 8.2 (contamination accounts for ~40% of pessimism, but cliff is REAL)
+  - **O(n²) attention is the bottleneck at 4K+, not cache update speed**
+  - Goal 3 at 4K+ requires SnapKV eviction to reduce effective KV size (Task 163)
+- **Effort**: (Covered by Task 163 — SnapKV+DuoKV eviction is the decode speed fix)
 - **Depends on**: None.
 
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
