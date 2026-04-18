@@ -514,6 +514,8 @@ _(none)_
 
 ## Completed
 
+- **Task 155: SnapKV default 50% keep** — 25% hurts decode 14%, 50% is 7% faster (2026-04-18)
+  - Updated snapkv_bench default ratios and CLAUDE.md documentation
 - **Task 144: TQ3 KV buffer geometric growth** — 2x doubling replaces linear step=256 concat (2026-04-18)
   - Extracted _ensure_compressed_storage() helper, used by both prefill and decode paths
   - At 64K: ~7 allocs instead of ~250 (log2(64K/256) = 8)

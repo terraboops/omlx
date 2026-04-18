@@ -44,9 +44,9 @@ any of these — even to improve another — needs explicit justification.
 | 16K | 33.9 GB | 0 GB | 50s | No |
 | 64K | 38.4 GB | 4.9 GB | 23 min | Recommended |
 | 128K | 44.6 GB | 6+ GB | 42 min | Required (chunked prefill) |
-| 256K | ~30 GB* | 0 GB* | ~3 hr | Required (fp16 + SnapKV@25%) |
+| 256K | ~30 GB* | 0 GB* | ~3 hr | Required (fp16 + SnapKV@50%) |
 
-*256K with SnapKV@25% keep: model 17.2 + KV 3.1 = 20.3 GB after eviction.
+*256K with SnapKV@50% keep: model 17.2 + KV 6.2 = 23.4 GB after eviction.
 
 **Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 62%, HumanEval 95%), zero swap,
 53.6 tok/s decode. For long context (64K+): use fp16 mode with `--snapkv-keep` for eviction.
@@ -76,7 +76,7 @@ SnapKV eviction stack: 9 composable layers, GPU-validated to 96K (fp16) and 64K 
 | **Fair eviction** (Task 107) | **SHIPPED** | Proportional partition budgets |
 | **Head rebalancing** (Task 111) | **SHIPPED** | Retrieval 2×, streaming 0.5× |
 
-**Validated context ladder (NIAH PASS at 25% keep):**
+**Validated context ladder (NIAH PASS at 50% keep recommended — 25% hurts decode 14%):**
 
 | Context | Mode | Metal Peak | Metal After | Saved | Time |
 |---------|------|-----------|-------------|-------|------|

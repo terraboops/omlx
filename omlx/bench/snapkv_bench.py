@@ -324,8 +324,9 @@ def main():
     parser = argparse.ArgumentParser(description="SnapKV compaction benchmark")
     parser.add_argument("--context", type=int, default=4096,
                         help="Context length in tokens (default: 4096)")
-    parser.add_argument("--keep-ratios", type=str, default="0.25,0.50,0.75",
-                        help="Comma-separated keep ratios to test")
+    parser.add_argument("--keep-ratios", type=str, default="0.50,0.75",
+                        help="Comma-separated keep ratios to test (50%+ recommended, "
+                             "25% hurts decode speed — see Task 155)")
     parser.add_argument("--caote", action="store_true", default=False,
                         help="Use CAOTE scoring (attention × value distinctiveness)")
     parser.add_argument("--segment-size", type=int, default=0,
