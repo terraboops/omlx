@@ -3748,6 +3748,24 @@ _streaming instead of reading whole, or using memory more efficiently._
   4. LRU evict inactive experts under memory pressure
 - **Effort**: L (already estimated in Task 33 — this is the profiling evidence that proves the opportunity)
 
+### 160. [BUG] TQ3 session save fails at 2048 tokens — cache stays in fp16 warmup, never quantizes
+- **Goal**: 1 (context window — session save/load is critical for long-context agentic workflows)
+- **Derived from**: Analyst real-model INV 30, 2026-04-18.
+- **Evidence**: Prefill 2048 tokens into TQ3 cache with `min_quant_tokens=512` → `cache.offset=511`, `cache.nbytes=0`, `save_to_disk()` raises `ValueError("Cannot save empty cache")`. The cache accumulated fp16 tokens but never crossed the quantization threshold.
+- **Root cause hypothesis**: When `prefill_last_logit` patch slices the hidden states to `hidden[:, -1:, :]`, the cache only sees 1 token per forward call during chunked prefill. With `min_quant_tokens=512`, the cache accumulates fp16 tokens in chunks but the offset tracking misaligns — it shows 511 instead of 2048. The `vertical_eval` patch's `mx.eval(h)` every 8 layers may also affect the chunking.
+- **Change**: In `TurboQuantKVCache.update_and_fetch`, verify that `self.offset` correctly tracks the total token count across all prefill chunks, regardless of chunking strategy. Add a test: `prefill 2048 tokens → assert cache.offset == 2048 → save_to_disk() succeeds`.
+- **Verify**: `TurboQuantKVCache` with `min_quant_tokens=512`, prefill 2048 tokens, `save_to_disk()` succeeds, `load_from_disk()` restores correct offset.
+- **Effort**: S (1 day — debugging offset tracking in the prefill path)
+
+### 161. Tool-call generation produces duplicate JSON — XGrammar constrained decoding is critical for agentic reliability
+- **Goal**: 2 (intelligence — tool calls must be valid JSON for agentic use)
+- **Derived from**: Analyst real-model INV 27, 2026-04-18.
+- **Evidence**: Model generates `{"tool": "read_file", "path": "/tmp/test.py"}` (correct) but then repeats the JSON object, producing invalid output. `json.loads` fails with "Extra data" at char 46.
+- **The fix**: XGrammar constrained decoding (Task 45, `--grammar` flag on server) already exists and would enforce single JSON object output. The issue is that it's OFF by default and not tested in the benchmark harness.
+- **Change**: (1) Add a tool-call quality gate to the benchmark (Phase 2b or similar) that tests JSON output validity. (2) Consider enabling `--grammar` by default for tool_choice=required requests.
+- **Verify**: Server with `--grammar` produces valid single JSON for tool calls. Benchmark gate passes.
+- **Effort**: S (1 day)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
