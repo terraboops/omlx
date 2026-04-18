@@ -3700,6 +3700,32 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Analysis**: M4 Pro bandwidth: 273 GB/s. Active model reads per token: 3.55 GB (MoE 8/128). At 51.6 tok/s: 183 GB/s used = 67% utilization. **91 GB/s bandwidth idle.** Speculative decoding (EAGLE-2, Task 29) verifies K candidate tokens in one forward pass — reading the same 3.55 GB weights but amortizing over K tokens. At K=3 acceptance rate, effective decode = 3 × 51.6 ÷ 2 ≈ 77 tok/s. This would exceed Goal 3 by 54%.
 - **Effort**: (Already tracked in Task 29 — this task is the bandwidth analysis that proves the opportunity)
 
+### 157. 65% of MoE experts are dead weight — profiled at layer 24, only 45/128 fire on coding tasks
+- **Goal**: 6 (machine fit — 20 GB of unused expert weights in Metal), 1 (context window — freed Metal = more KV budget)
+- **Derived from**: Analyst real-model INV 24, 2026-04-18.
+- **Profiling evidence** (layer 24, 50 decode tokens, coding prompt):
+  - Active experts: 45/128 (35%)
+  - Never activated: **83 experts (65%)**
+  - Top expert (ID 85) fires on 74% of tokens — heavy concentration
+  - Bottom 5 experts each fire once — rare but not zero
+  - MLP is 30.8 GB of the 32.4 GB model — 65% dead weight = **~20 GB in Metal doing nothing**
+- **Impact**: Loading only active experts would reduce Metal at load from 32.4 GB to ~22 GB, freeing ~10 GB for KV cache. At 3-bit native, 10 GB = ~20K additional context tokens (from current 4K ceiling to 24K before swap pressure).
+- **Change**: Already tracked in Task 33 (ProMoE full lazy-load MoE runtime). This finding provides the real-model activation frequency data to inform which experts to pre-load vs lazy-load. The top ~50 experts cover 99%+ of activations.
+- **Verify**: Profile expert activation across ALL 48 layers (not just layer 24) and across diverse prompts (coding, math, natural language) to build the full activation frequency table.
+- **Effort**: (Covered by Task 33 — this is the profiling evidence)
+
+### 158. Tasks 152+145 combined give 1.33x TQ3 prefill speedup at 8K (validated on real model)
+- **Goal**: 4 (prefill speed)
+- **Derived from**: Analyst real-model INV 23, 2026-04-18.
+- **Profiling evidence** (TQ3 mode, 8K context, real model):
+  - Original: 507 tok/s (16.1s)
+  - Task 152 alone: 661 tok/s (12.4s) — 1.30x
+  - Task 145 alone: 647 tok/s (12.7s) — 1.28x
+  - Both: **672 tok/s (12.2s) — 1.33x, saves 3.9s per 8K prefill**
+  - Decode also improves: 7.3 → 11.0 tok/s (1.5x)
+- **The two tasks are independent XS-effort fixes that compose well.**
+- **Effort**: (Covered by Tasks 145 + 152 — this is the combined validation)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
