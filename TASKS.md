@@ -514,6 +514,10 @@ _(none)_
 
 ## Completed
 
+- **Task 161: Tool-call JSON validity gate** — Phase 3f in benchmark (2026-04-18)
+  - Prompts model for JSON tool call, validates single parseable JSON object
+  - Informational gate (doesn't block) — tracks regression for --grammar flag
+  - Extracts first JSON object from duplicate output to diagnose the issue
 - **Task 160: TQ3 session save during fp16 warmup** — quantize buffer before save check (2026-04-18)
   - save_to_disk now calls _quantize_fp16_buffer() if cache hasn't crossed min_quant_tokens
   - Fixes: prefill < 512 tokens → save_to_disk → "Cannot save empty cache" error

@@ -1703,6 +1703,84 @@ def phase3e_snapkv_quality(model, tokenizer,
 
 
 # ---------------------------------------------------------------------------
+# Phase 3f: Tool-Call JSON Validity
+# ---------------------------------------------------------------------------
+
+def phase3f_tool_call_json(model, tokenizer,
+                            watchdog: MemoryWatchdog) -> PhaseResult:
+    """Verify model produces valid single JSON for tool calls.
+
+    Tests that the model generates parseable JSON when asked for structured
+    tool output. Duplicate/malformed JSON blocks agentic workflows.
+    """
+    t0 = time.perf_counter()
+
+    if not watchdog.check_phase_headroom("Phase 3f: Tool-Call JSON"):
+        return PhaseResult(name="Phase 3f: Tool-Call JSON", passed=True,
+                           elapsed_s=0, details={"skipped": "memory"})
+
+    # Prompt the model to return a JSON tool call
+    prompt = (
+        "<|im_start|>system\nYou are a coding assistant. When asked to use a tool, "
+        "respond with ONLY a single JSON object, nothing else.<|im_end|>\n"
+        "<|im_start|>user\nUse the read_file tool to read /tmp/test.py. "
+        "Respond with only the JSON tool call.<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+
+    output, _, _ = _generate(model, tokenizer, prompt, max_tokens=128)
+    elapsed = time.perf_counter() - t0
+
+    # Try to parse as JSON
+    import json as json_mod
+    text = output.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines).strip()
+
+    valid_json = False
+    parsed = None
+    error_msg = ""
+    try:
+        parsed = json_mod.loads(text)
+        valid_json = isinstance(parsed, dict)
+    except json_mod.JSONDecodeError as e:
+        error_msg = str(e)
+        # Try to extract first JSON object if there are duplicates
+        try:
+            # Find first { ... } block
+            start = text.index("{")
+            depth = 0
+            for i, ch in enumerate(text[start:], start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        first_obj = text[start:i + 1]
+                        parsed = json_mod.loads(first_obj)
+                        error_msg = f"duplicate JSON (extracted first object), original error: {error_msg}"
+                        break
+        except (ValueError, json_mod.JSONDecodeError):
+            pass
+
+    logger.info(f"  Tool-call JSON: {'VALID' if valid_json else 'INVALID'}")
+    logger.info(f"    Output: {output[:80]!r}")
+    if error_msg:
+        logger.info(f"    Error: {error_msg}")
+
+    return PhaseResult(
+        name="Phase 3f: Tool-Call JSON",
+        passed=True,  # informational gate — doesn't block (grammar flag needed)
+        elapsed_s=elapsed,
+        details={"valid_json": valid_json, "output": output[:200],
+                 "error": error_msg, "parsed": str(parsed)[:100] if parsed else None},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 5: Memory Profile (summary of watchdog)
 # ---------------------------------------------------------------------------
 
@@ -2196,6 +2274,16 @@ Examples:
         else:
             phases.append(PhaseResult(
                 name="Phase 3e: SnapKV Quality", passed=True,
+                details={"skipped": True, "reason": "insufficient headroom"},
+            ))
+
+        logger.info("\n=== Phase 3f: Tool-Call JSON ===")
+        if _check_phase_headroom("Phase 3f: Tool-Call JSON", limits["metal_peak_gb"]):
+            p3f = phase3f_tool_call_json(model, tokenizer, watchdog)
+            phases.append(p3f)
+        else:
+            phases.append(PhaseResult(
+                name="Phase 3f: Tool-Call JSON", passed=True,
                 details={"skipped": True, "reason": "insufficient headroom"},
             ))
 
