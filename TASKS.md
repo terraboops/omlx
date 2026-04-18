@@ -3789,6 +3789,21 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Native 3-bit prefill at 16K should be within 2x of fp16 (>= 250 tok/s, currently 125).
 - **Effort**: M (need to restructure the native quantize pipeline)
 
+### 165. DuoKV NIAH PASS at 64K but Metal peak 42.5 GB BREACHES limit + decode 3.3 tok/s
+- **Goal**: 1 (context window), 3 (decode speed), 6 (machine fit)
+- **Derived from**: Analyst real-model INV 39, 2026-04-18.
+- **Evidence**: 40K-token prompt with needle at position 32K. DuoKV retrieves the needle correctly (PASS). But:
+  - Metal peak: **42.5 GB** (breaches 41.2 GB limit by 1.3 GB)
+  - Decode: **3.3 tok/s** (15x below Goal 3 target of 50 tok/s)
+  - Prefill: 302 tok/s (below Goal 4's 500 tok/s)
+  - Active Metal: 36.4 GB (within limits — the breach is TRANSIENT during prefill)
+- **Root causes**: (1) DuoKV concat per token at 40K context = ~150ms/token × 48 layers. (2) fp16 KV for retrieval heads at 40K = ~4 GB, pushes past limit during prefill intermediates. (3) Prefill attention at 40K is O(n²) with no chunking strategy.
+- **Required fixes for Goal 1 at 64K** (all three needed):
+  - Task 149: DuoKV pre-alloc slab → decode from 3.3 to ~40+ tok/s
+  - Task 151: TQ3 retrieval heads → Metal peak from 42.5 to ~35 GB
+  - Task 163: SnapKV post-prefill eviction → compress 40K to ~16K for sustained decode
+- **Effort**: (Covered by Tasks 149, 151, 163 — this task is the integration validation)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
