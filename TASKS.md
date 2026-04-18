@@ -3660,6 +3660,39 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Effort**: L (Tasks 149 + 151 combined — 4-6 days)
 - **Depends on**: Task 149 (pre-alloc slab), Task 151 (TQ3 retrieval heads)
 
+### 154. DuoKV decode drops 54% at 4K context — fp16 KVCache stays constant (real-model validation of Task 149)
+- **Goal**: 3 (decode speed constant across context)
+- **Derived from**: Analyst real-model INV 4, 2026-04-18.
+- **Profiling evidence** (real model, DuoKV vs fp16 vs native 3-bit):
+  - fp16: 50.5→50.7→50.1 tok/s at 256→1024→4096 context — **FLAT, meets Goal 3**
+  - DuoKV: 48.4→46.9→46.7 tok/s — **drops, but still close to 50 at 4K**
+  - DuoKV at 8K: **14.9 tok/s**, at 16K: **11.4 tok/s** — catastrophic
+  - Native 3-bit at 16K: **0.4 tok/s** — essentially broken
+  - DuoKV cache update_and_fetch: 56% of the 21ms decode token budget at 1K context
+- **Root cause**: `mx.concatenate` copies full KV buffer per token (confirmed by Task 149 microbench: 248x slower than slab). At 48 layers × 4K context, concat alone costs 52.6ms per token.
+- **What fp16 does right**: MLX's internal `KVCache` class pre-allocates buffers and uses in-place assignment. It achieves 50+ tok/s constant because cache update is O(1), not O(context).
+- **Verify**: After Task 149 fix, DuoKV at 4K should match fp16 (50+ tok/s). At 16K should exceed 40 tok/s.
+- **Effort**: (Covered by Task 149 — this task is the real-model validation evidence)
+
+### 155. SnapKV at 25% keep ratio HURTS decode speed — optimal keep ratio is 40-60%
+- **Goal**: 3 (decode speed)
+- **Derived from**: Analyst real-model INV 12, 2026-04-18.
+- **Profiling evidence** (fp16 @ 4K, post-eviction decode):
+  - No eviction: 28.2 tok/s
+  - SnapKV 50% keep (2048 tokens): **30.1 tok/s** — 7% FASTER (smaller attention)
+  - SnapKV 25% keep (1024 tokens): **24.3 tok/s** — 14% SLOWER (re-RoPE cost dominates)
+- **Root cause**: `compact_cache` applies `_rerope_keys` to every kept token (cos/sin computation per token). At 25% keep of 4K = 1024 re-RoPE computations. The attention savings (fewer KV tokens) are outweighed by the re-RoPE + gather + memory layout disruption cost.
+- **Change**: Default SnapKV keep ratio should be 50%, not 25%. Add heuristic: if `keep_count / total < 0.4`, warn that aggressive eviction may degrade decode speed. Consider lazy re-RoPE (skip re-RoPE if context is short enough that position errors are tolerable).
+- **Verify**: SnapKV at 50% keep should be >= full-cache decode speed at 4K. Profile at 16K and 64K to find the crossover where eviction becomes net positive.
+- **Effort**: XS (change default + add warning)
+- **Depends on**: None.
+
+### 156. Bandwidth headroom: 35% unused — speculative decoding could exploit this for decode speedup
+- **Goal**: 3 (decode speed above 50 tok/s)
+- **Derived from**: Analyst bandwidth analysis INV 15, 2026-04-18.
+- **Analysis**: M4 Pro bandwidth: 273 GB/s. Active model reads per token: 3.55 GB (MoE 8/128). At 51.6 tok/s: 183 GB/s used = 67% utilization. **91 GB/s bandwidth idle.** Speculative decoding (EAGLE-2, Task 29) verifies K candidate tokens in one forward pass — reading the same 3.55 GB weights but amortizing over K tokens. At K=3 acceptance rate, effective decode = 3 × 51.6 ÷ 2 ≈ 77 tok/s. This would exceed Goal 3 by 54%.
+- **Effort**: (Already tracked in Task 29 — this task is the bandwidth analysis that proves the opportunity)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
