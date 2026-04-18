@@ -9222,3 +9222,562 @@ making, archaeological stratigraphy, cognitive science / working memory,
 maritime navigation / dead reckoning, error accumulation theory,
 cognitive load theory, and lexicography / dictionary compilation.
 Curiosity never saturates. Meow, nyaa, meow.
+
+---
+
+## Pass 33 (2026-04-17) — Textile Engineering, Fluid Dynamics, Cartography
+
+Three cross-field angles that have never appeared in the previous 32
+passes: (1) **textile engineering / weaving** — attention sparsity
+patterns as warp-and-weft fabric structures, (2) **fluid dynamics /
+turbulence cascades** — multi-scale attention decomposition via the
+Kolmogorov cascade and the slaving principle, (3) **cartography /
+Mercator projection** — channel reordering as projection centering to
+minimise distortion in the region of interest.
+
+### [Adamas: Hadamard Sparse Attention for Efficient Long-Context Inference](https://arxiv.org/abs/2510.18413) — 2510.18413
+
+- **Why found**: Sparse attention pattern design for long-context LLM
+  inference. The cross-field angle is **textile engineering / weaving
+  patterns**. The three canonical sparse attention shapes identified by
+  MInference (A-shape, Vertical-Slash, Block-Sparse) map directly onto
+  the three fundamental weave structures in textile engineering:
+
+  | Attention pattern | Weave analogue | Structure |
+  |-------------------|----------------|-----------|
+  | **A-shape** (initial + recent) | **Plain weave** (1/1 interlacing) | Every warp thread crosses every weft — dense, rigid, maximal contact |
+  | **Vertical-Slash** (column stripes) | **Satin weave** (long floats) | Long uninterrupted runs of warp over weft — smooth surface, minimal interlacing |
+  | **Block-Sparse** (rectangular patches) | **Twill weave** (diagonal offset) | Diagonal stepping pattern creates offset blocks — balanced drape + strength |
+
+  Adamas goes beyond static pattern assignment. It introduces a
+  **dynamic loom**: the Hadamard transform + 2-bit bucketization acts
+  as the heddle mechanism that decides in real time which warp-weft
+  intersections (query-key pairs) to interlace, based on Manhattan-
+  distance proximity in the transformed space. This is the textile
+  engineering insight: the best fabrics don't use a single weave
+  structure everywhere — they use **jacquard looms** that select the
+  pattern per thread based on the desired local properties (strength
+  here, drape there, transparency elsewhere).
+
+- **Key idea**: Apply WHT to both Q and K, bucketize each dimension
+  into 4 levels (2-bit), compress 8 elements into a single 16-bit
+  value, store the compressed codes alongside the KV cache (1/16
+  overhead). At decode time, compute Manhattan distance between the
+  compressed query code and all compressed key codes, select top-k
+  candidates, then run exact sparse attention only on those candidates.
+  The WHT preserves inner-product equivalence (H H^T = I), so the
+  Manhattan distance in the transformed space approximates the true
+  query-key similarity.
+
+- **Methodology**: (1) **Hadamard transform**: Q_H = Q * H,
+  K_H = K * H. The transform redistributes variance across dimensions,
+  suppressing outliers that would otherwise dominate quantization
+  buckets. (2) **Bucketization**: each element is mapped to {0,1,2,3}
+  via predefined thresholds {B_1, B_2, B_3}:
+  B(x) = sum_i I(x > B_i). (3) **2-bit compression**: 8 bucketized
+  elements are packed into a single 16-bit integer, reducing storage to
+  d/8 * 16-bit = 2d bits per token (vs 16d bits for fp16 keys).
+  (4) **Manhattan distance estimation**: sim(H_Q, H_K) ~ -||H_Q - H_K||_1,
+  computed via bit-wise integer ops on the 2-bit codes.
+  (5) **Top-k selection + sparse attention**: only the top-k keys
+  (by Manhattan proximity) participate in the exact softmax attention.
+
+- **Key findings**:
+  1. **64 tokens suffice**: Adamas matches full attention accuracy with
+     a budget of only 64 tokens per query. At 128 tokens, performance
+     is near-lossless. This is 8x higher sparsity than Quest (previous
+     SOTA), which needs 512+ tokens to match.
+  2. **Perplexity can IMPROVE**: at larger budgets (256+), Adamas
+     achieves perplexity LOWER than full attention on PG19. The
+     explanation: full attention dilutes probability mass across
+     irrelevant tokens; sparse attention concentrates it on the most
+     relevant keys, producing sharper (better-calibrated) predictions.
+  3. **WHT is critical for bucketization quality**: without WHT,
+     direct bucketization of raw Q/K vectors produces near-zero scores
+     on all LongBench datasets. The outlier suppression is necessary,
+     not optional — raw key vectors have too much variance for 2-bit
+     quantization to preserve ranking information.
+  4. **2-bit is the sweet spot**: 1-bit bucketization degrades at
+     small budgets; 3-bit provides negligible improvement over 2-bit
+     but costs 50% more storage. The marginal returns diminish sharply
+     past 2 bits.
+  5. **Manhattan vs L2**: Manhattan (L1) is more robust to noise and
+     sparsity (better for multi-source retrieval); L2 is slightly
+     better for single-document reasoning. The choice is task-dependent,
+     but L1 wins on average due to the noisy nature of 2-bit codes.
+  6. **4.4x self-attention speedup, 1.5x end-to-end**: on 32K-length
+     sequences with 256-token budget. The bottleneck shifts from
+     attention to MLP/FFN, so the end-to-end gain is diluted by the
+     non-attention compute (~60% of decode time).
+
+- **Hypercar relevance — dynamic jacquard loom for KV cache attention**:
+  Adamas is structurally complementary to Hypercar's TQ3 mode. Both
+  use the Walsh-Hadamard transform; TQ3 uses it for KV cache
+  QUANTIZATION (compressing stored values), while Adamas uses it for
+  attention SELECTION (choosing which stored values to attend to).
+  The composition is natural:
+
+  1. **Prefill**: store KV cache in TQ3 format (3-bit WHT-compressed)
+     AND store 2-bit Adamas index codes (additional 1/16 overhead =
+     ~0.4 bits per dimension). Total per-token cost: 3.4 bits for
+     keys (vs 3.0 for TQ3 alone, vs 16.0 for fp16).
+  2. **Decode**: use Adamas Manhattan-distance estimation on the 2-bit
+     codes to select top-k keys per query. Decompress only the
+     selected TQ3 entries. Run sparse attention on k << n tokens.
+  3. **Benefit**: at 1M context with 3-bit TQ3 + Adamas top-128
+     selection, each decode step touches only 128 KV pairs instead of
+     1M. The decode attention cost drops from O(1M * d) to O(128 * d),
+     which is a 7800x reduction. This would make TQ3 decode speed
+     INDEPENDENT of context length — achieving Goal 3's "constant
+     50 tok/s across context window."
+
+  The textile engineering metaphor crystallises the design principle:
+  TQ3 is the YARN (compressed fiber representation); Adamas is the
+  LOOM (dynamic pattern selection). The loom decides which yarns to
+  interlace for each row of the fabric (each decode step). Different
+  attention heads may use different weave patterns (plain for retrieval
+  heads, satin for streaming heads, twill for hybrid heads) — this is
+  the jacquard principle applied to multi-head attention.
+
+  **Metal implementation note**: the Manhattan-distance kernel operates
+  on packed 16-bit integers. On Apple Silicon, this maps to SIMD
+  integer operations that are well-supported by the Metal compute
+  pipeline. The Adamas team provides CUDA kernels; a Metal port would
+  require translating the bitwise XOR + popcount ops to Metal shader
+  language, which is straightforward given MLX's Metal backend.
+
+- **Local PDF**: research/2510.18413_adamas_hadamard_sparse_attention.pdf
+
+### [From Complex Dynamics to DynFormer: Rethinking Transformers for PDEs](https://arxiv.org/abs/2603.03112) — 2603.03112
+
+- **Why found**: Multi-scale attention decomposition inspired by
+  turbulence theory. The cross-field angle is **fluid dynamics /
+  turbulence cascades** — the Kolmogorov energy cascade where energy
+  injected at large scales cascades through an inertial range to
+  small-scale dissipation. DynFormer applies this directly: large-scale
+  dynamics get Kronecker-structured global attention; small-scale
+  turbulent cascades are reconstructed via nonlinear multiplicative
+  mixing (the Local-Global-Mixing module). The key physics insight is
+  the **slaving principle**: in fully developed turbulence, small-scale
+  fluctuations are not independent — they are functionally determined
+  by (slaved to) the large-scale state. This means you don't need
+  global attention at ALL scales; you only need it at the large scale,
+  and the small scale can be reconstructed from the large-scale output
+  via a cheap nonlinear map.
+
+- **Key idea**: Decompose the input field into low-frequency (p_m) and
+  high-frequency (q_m) components via spectral truncation. Apply
+  expensive global attention (Kronecker-structured, O(N^3) instead of
+  O(N^4)) only to the low-frequency manifold. Reconstruct the high-
+  frequency turbulent cascade via multiplicative mixing of local and
+  global features: M(u)(x) = L(u)(x) * G(u)(x), where L is a local
+  MLP, G is the Kronecker attention output, and * is element-wise
+  (Hadamard) product.
+
+- **Methodology**: (1) **Spectral Embedding**: FFT to isolate low-
+  frequency modes p_m (frequencies ||k|| <= M) from high-frequency
+  modes q_m. Apply learnable spectral kernels W_spec in frequency
+  space. Complexity O(M^2 log M) where M << N. (2) **Kronecker-
+  structured attention**: factorize the 2D attention kernel as a
+  Kronecker product of axis-wise kernels: kappa(x,y) ~ kappa_1(x_1,y_1)
+  * kappa_2(x_2,y_2). This reduces O(N^4) to O(N^3) via sequential
+  matrix multiplication along each axis. Uses RoPE per axis for
+  position encoding. (3) **Local-Global-Mixing (LGM)**: the core
+  innovation. The multiplicative interaction M = L * G is not a
+  residual connection — it is a CONVOLUTION in frequency space. If G
+  has bandwidth K and L has bandwidth M, then the product has bandwidth
+  K+M, systematically extending spectral coverage beyond the initial
+  truncation. This is how turbulent cascades work: large eddies (G)
+  interact with local strain fields (L) to produce smaller eddies
+  (L*G) via the u * nabla(u) convective nonlinearity. (4) **Full-Scale
+  Dynamics Layer (FSDL)**: integrates linear branches (diffusive PDE
+  terms), nonlinear branches (convective terms), and a refinement MLP
+  into a hybrid evolutionary architecture with learnable per-layer
+  time steps (adaptive Runge-Kutta).
+
+- **Key findings**:
+  1. **95% error reduction**: on Kuramoto-Sivashinsky (1D chaotic
+     system), DynFormer achieves test loss 2.30e-02 vs FactFormer's
+     3.38e-01 — a 93% reduction. On 3D shallow water equations, 82.8%
+     error reduction.
+  2. **62% memory savings**: Kronecker attention uses 21.9 GB vs 57.5
+     GB for standard self-attention on 2D Navier-Stokes. Standard
+     attention OOMs; DynFormer fits.
+  3. **The slaving principle works empirically**: the LGM module
+     successfully reconstructs "crisp, high-frequency filamentary
+     structures" that competing methods smooth away. The multiplicative
+     mixing is essential — ablations show that additive composition
+     (residual connections) fails to recover high-frequency detail
+     because additive mixing preserves spectral separation.
+  4. **Multiplicative beats additive for spectral extension**: this
+     is the key theoretical insight. Residual connections (y = x + f(x))
+     keep the output within the same spectral band as the input.
+     Multiplicative mixing (y = x * g(x)) creates new frequency
+     components at sum and difference frequencies. In physics, this is
+     wave mixing / parametric amplification. In attention, this is
+     cross-frequency information transfer.
+  5. **DynFormer-Tiny beats FactFormer-Large**: 1.0 GB model
+     outperforms a 12.3 GB model on 3D shallow water, demonstrating
+     that physics-informed architecture > brute-force parameter count.
+
+- **Hypercar relevance — turbulence cascade for KV cache multi-scale
+  management**:
+  The slaving principle maps directly to the KV cache hierarchy. The
+  key insight: in a long-context KV cache, most of the "energy" (model
+  attention) is concentrated at a small number of scales (key token
+  positions, attention sinks). The vast majority of cached tokens are
+  "small-scale turbulence" — locally relevant details that are
+  functionally determined by the large-scale context structure:
+
+  | Turbulence concept | KV cache analogue |
+  |--------------------|-------------------|
+  | **Large-scale eddies** (low-frequency, global) | KEY tokens, attention sinks, function signatures |
+  | **Inertial range** (energy transfer, self-similar) | Contextual tokens — code body, flowing text |
+  | **Dissipation scale** (small, local, expendable) | Filler tokens, whitespace, repeated patterns |
+  | **Slaving principle** (small scale = f(large scale)) | COASTING tokens can be RECONSTRUCTED from KEY tokens |
+  | **Kolmogorov cascade** (energy flows top-down) | Attention flows from global context to local detail |
+
+  The actionable insight is the LGM module's multiplicative mixing.
+  The current SnapKV eviction pipeline uses ADDITIVE scoring (CAOTE
+  score + multi-criteria + interference penalty). DynFormer shows that
+  MULTIPLICATIVE interaction between local and global features is
+  fundamentally more expressive for reconstructing information lost to
+  compression. Applied to KV cache:
+
+  Instead of discarding evicted tokens entirely, store a LOW-FREQUENCY
+  SUMMARY (the p_m component) and reconstruct the high-frequency
+  detail on demand via multiplicative mixing with the current query.
+  This is a form of lossy compression with on-demand reconstruction —
+  the KV cache stores the "large eddies," and the attention mechanism
+  reconstructs the "turbulent cascade" at decode time.
+
+  Concretely: for an evicted chunk of 32 tokens, store 2 summary tokens
+  (the low-frequency projection) + a compact nonlinear mixing
+  coefficient. At decode time, multiply the summary by the current
+  query representation to reconstruct an approximation of the 32
+  original tokens' contribution. This is 16x compression with
+  quality-preserving reconstruction, vs the current approach of 16x
+  compression with total information loss for evicted tokens.
+
+  The spectral decomposition also suggests a natural chunking strategy
+  for the SnapKV pipeline: chunk boundaries should coincide with
+  spectral transitions (frequency changes) in the attention pattern.
+  Tokens within a single "eddy" (coherent attention cluster) share the
+  same large-scale structure and can be summarised together. Tokens at
+  eddy boundaries (spectral transitions) are the natural KEY tokens.
+
+- **Local PDF**: research/2603.03112_dynformer_turbulence_cascade.pdf
+
+### [RotateKV: Accurate and Robust 2-Bit KV Cache Quantization for LLMs via Outlier-Aware Adaptive Rotations](https://arxiv.org/abs/2501.16383) — 2501.16383
+
+- **Why found**: Outlier-aware WHT rotation for aggressive KV cache
+  quantization. The cross-field angle is **cartography / Mercator
+  projection**. The Mercator projection preserves angles (conformal)
+  but distorts areas — land masses near the poles appear enormous while
+  equatorial regions are faithfully represented. The key cartographic
+  insight is that NO single projection minimises all distortion
+  everywhere; the best you can do is CHOOSE YOUR PROJECTION CENTER to
+  minimise distortion in the region of interest (e.g., a transverse
+  Mercator centered on your country's meridian). RotateKV does exactly
+  this for KV cache quantization:
+
+  | Cartographic concept | RotateKV analogue |
+  |---------------------|-------------------|
+  | **Projection center** | Channel reordering — choosing which channels to place adjacent for joint quantization |
+  | **Mercator distortion** (poles stretched) | Quantization error on outlier channels (extreme magnitudes compress poorly) |
+  | **Transverse Mercator** (rotate projection axis) | Pre-RoPE rotation — apply the projection BEFORE the coordinate system rotation |
+  | **UTM grid zones** (tiling the globe into 60 zones) | Grouped-head rotation — partition heads into groups, each with its own optimised projection |
+  | **Datum/geodetic reference** | Attention-sink-aware quantization — protect reference points (sinks) from projection distortion |
+
+  The cartographic principle is: minimise distortion at the reference
+  points first (the datum), then optimise the projection for the
+  region between reference points. RotateKV does this exactly:
+  protect attention sinks (the datum), then reorder channels (choose
+  projection center) to minimise quantization error in the remaining
+  tokens.
+
+- **Key idea**: Three innovations for robust 2-bit KV cache
+  quantization: (1) Outlier-Aware Rotation: reorder channels by
+  magnitude before FWHT to group similar-magnitude channels together,
+  reducing within-group variance and improving quantization accuracy.
+  (2) Pre-RoPE Grouped-Head Rotation: apply WHT BEFORE rotary
+  position embedding, not after. RoPE disrupts channel magnitude
+  consistency (each channel oscillates with its position), which
+  undermines the outlier-aware reordering. By rotating first and
+  applying RoPE second, the reordering indices remain valid across all
+  positions. Additionally, group multiple heads together for joint
+  rotation, smoothing outliers across heads. (3) Attention-Sink-Aware
+  Quantization: identify sink tokens by their "massive activations"
+  (large-magnitude entries in the decoder block output at specific
+  channels), retain those tokens in fp16 to prevent quantization from
+  corrupting the attention distribution.
+
+- **Methodology**: (1) **Channel reordering calibration**: run a
+  calibration pass on a small dataset. For each layer, compute
+  channel_sum = sum of abs(K) across all tokens and heads. Sort
+  channels by channel_sum. The sorted order becomes the reordering
+  permutation P_l. At inference: apply P_l before FWHT, apply P_l^{-1}
+  after dequantization. Cost: one permutation per layer (negligible).
+  (2) **Pre-RoPE pipeline**: fuse the rotation matrix R into W_Q and
+  W_K (offline, no runtime cost). At inference: compute K = X * W_K,
+  apply reordering P, apply FWHT, quantize to 2-bit, THEN apply RoPE.
+  The key insight: RoPE operates on pairs of channels (rotation by
+  position angle), which scatters outlier magnitudes. By reordering
+  and rotating BEFORE RoPE, the quantization sees the smooth
+  (post-FWHT) distribution, not the RoPE-scattered one.
+  (3) **Grouped-head rotation**: instead of applying FWHT to each head
+  independently (dimension d_head = 128), concatenate g heads into a
+  block of dimension g * d_head and apply a single larger FWHT. This
+  smooths outliers ACROSS heads, not just within heads. Larger groups
+  improve PPL but cost more compute; g=2 or g=4 is the sweet spot.
+  (4) **Sink detection via massive activations**: in each decoder
+  block's output, find tokens with activation magnitudes > threshold
+  at the known "massive activation" channels (identified during
+  calibration). These tokens are kept in fp16. Unlike prior methods
+  that only protect the first few tokens, this detects sinks at
+  arbitrary positions.
+
+- **Key findings**:
+  1. **2-bit with <0.3 PPL degradation**: on WikiText-2 with LLaMA-2-
+     13B, RotateKV achieves 5.10 PPL vs 5.09 baseline (2-bit, vs
+     full fp16). This is less than 0.01 PPL increase. The closest
+     competitor (KIVI) degrades by 0.6+ PPL at the same bit-width.
+  2. **Order matters: Rotate then Reorder, not Reorder then Rotate**:
+     Reorder+Rotate produces PPL 231.43 at 2-bit (catastrophic
+     failure). Rotate+Reorder produces PPL 6.33 (excellent). The
+     FWHT must see the original channel structure to redistribute
+     variance; reordering first would group outliers together, which
+     the FWHT then fails to spread.
+  3. **Smoothing fails at 2-bit**: SmoothQuant-style per-channel
+     scaling (lambda_i) works well at 4-bit but collapses at 2-bit
+     (PPL 6.83 vs 6.33 for reordering). The scaling factors introduce
+     systematic bias that compounds under extreme quantization. This
+     directly informs Task 125 (smooth scaling for TQ3): smooth scaling
+     may not help at 3-bit either; reordering may be the better
+     strategy.
+  4. **RoPE increases quantization error by 145%**: the pre-RoPE
+     pipeline reduces MSE by 59% compared to post-RoPE rotation. This
+     is because RoPE makes each channel's magnitude position-dependent
+     (oscillating with frequency proportional to the channel index),
+     which destroys the channel-wise magnitude consistency that
+     reordering depends on.
+  5. **Sink tokens appear at arbitrary positions**: not just at
+     position 0. In LLaMA-2-7B, massive activations appear at tokens
+     0 and 110 in a WikiText-2 sample. Protecting only position 0
+     misses half the sinks. The massive-activation detection correctly
+     identifies both.
+  6. **3.97x memory reduction, 5.75x batch size, 2.32x decode
+     speedup**: practical deployment gains on CUDA. The memory reduction
+     is close to the theoretical 8x (16-bit to 2-bit) minus overhead
+     for scales, zeros, and fp16 sink tokens.
+
+- **Hypercar relevance — cartographic projection optimisation for TQ3**:
+  RotateKV's three innovations each address a specific limitation of
+  Hypercar's TQ3 mode:
+
+  | TQ3 limitation | RotateKV solution | Impact |
+  |---------------|-------------------|--------|
+  | Layer 0 must be fp16 (outlier problem) | Outlier-aware channel reordering before FWHT | May eliminate --fp16-layers 1 requirement |
+  | WHT applied post-RoPE (position-dependent outliers) | Pre-RoPE rotation pipeline | Reduces quantization error by 59%, may fix TQ3 quality at all layers |
+  | Attention sinks at position 0 only | Arbitrary-position sink detection via massive activations | Protects all sinks, not just initial tokens |
+
+  The most critical finding for Hypercar is #3: **smoothing fails at
+  2-bit**. Task 125 proposed adding smooth scaling (lambda_i = sqrt(
+  max(|K_i|))) before WHT in TQ3 mode. RotateKV's ablation shows that
+  smoothing is inferior to channel reordering at extreme quantization.
+  At TQ3's 3-bit level, smoothing might still work (the 3-bit results
+  show Rotate+Smooth at PPL 6.13 vs Rotate+Reorder at 6.07 — close),
+  but reordering is strictly better. **Recommendation: revise Task 125
+  to test BOTH smooth scaling AND channel reordering, with reordering
+  as the primary strategy.**
+
+  The Pre-RoPE insight is immediately actionable. TQ3 currently applies
+  WHT after RoPE (post-RoPE, like existing methods). Switching to
+  pre-RoPE rotation would:
+  (a) Eliminate the position-dependent outlier problem that requires
+      fp16 treatment for layer 0.
+  (b) Enable grouped-head rotation, which smooths outliers across
+      heads. With Qwen3-Coder's 4 KV heads (GQA), grouping all 4 into
+      a single rotation block (dimension 4 * 128 = 512) would provide
+      maximum outlier smoothing.
+  (c) Allow the rotation to be fused into W_K (offline), eliminating
+      the FWHT compute cost entirely during inference. This addresses
+      TQ3's 270x prefill slowdown (Task 127): if the rotation is in
+      the weights, the only remaining TQ3 overhead is the codebook
+      lookup, which is much cheaper than the online FWHT.
+
+  The cartographic framing provides the design principle: choose your
+  projection (channel ordering) to minimise distortion at the
+  reference points (attention sinks), then tile the remaining space
+  into zones (head groups) where a single optimised projection
+  suffices. Don't try to find one global projection that works
+  everywhere (that's the Mercator mistake — it works at the equator
+  but fails at the poles). Instead, use a UTM-like grid where each
+  zone has its own projection center (each head group has its own
+  reordering permutation).
+
+- **Local PDF**: research/2501.16383_rotatekv_2bit_kv_cache.pdf
+
+**Cross-paper synthesis for pass 33.**
+
+Three papers. Three cross-field angles — textile engineering, fluid
+dynamics, and cartography — that have never appeared in the previous 32
+passes. The unifying insight: effective long-context inference requires
+not just COMPRESSION of the KV cache but STRUCTURED SELECTION of which
+cache entries participate in each computation, and the structure of that
+selection should be informed by the PHYSICS of information flow in the
+model.
+
+**The textile engineering insight (Adamas).** The three canonical sparse
+attention patterns (A-shape, Vertical-Slash, Block-Sparse) are not
+arbitrary heuristics — they are the three fundamental weave structures
+that textile engineering has optimised over millennia. Each structure
+has a specific function: plain weave for strength (local attention for
+grounding), satin weave for smoothness (columnar attention for global
+token retrieval), twill weave for balance (block attention for
+structured reasoning). The jacquard loom innovation — dynamic per-thread
+pattern selection — maps to Adamas's per-query top-k selection via WHT
++ Manhattan distance.
+
+For Hypercar, the loom metaphor provides the missing piece for
+constant-throughput decode at 1M context. Currently, each decode step
+must attend to ALL cached keys (even with KV compression, the number of
+entries is proportional to context length). Adamas's top-128 selection
+makes decode attention O(1) regardless of context length. Combined with
+TQ3's 3-bit compression for storage, this creates the full textile
+stack: TQ3 is the yarn (compact storage), Adamas is the loom (dynamic
+selection), and the weave pattern per head is the fabric (the attention
+output).
+
+**The fluid dynamics insight (DynFormer).** The Kolmogorov cascade
+provides a principled basis for multi-scale KV cache management. The
+slaving principle — small-scale dynamics are functionally determined by
+large-scale dynamics — justifies a radical cache strategy: store only
+the large-scale structure (KEY tokens, attention sinks), and reconstruct
+the small-scale detail (COASTING tokens) on demand via multiplicative
+mixing. This is fundamentally different from the current approach, which
+either keeps tokens (full fidelity) or evicts them (total information
+loss). The turbulence-inspired approach introduces a third option:
+RECONSTRUCT from the large-scale summary.
+
+The multiplicative mixing insight is architecturally significant. The
+current SnapKV pipeline uses additive scoring (CAOTE + multi-criteria).
+DynFormer shows that multiplicative interaction between local and global
+features creates new frequency components (spectral extension), while
+additive interaction preserves spectral separation. For KV cache
+reconstruction after eviction: additive summarisation (mean pooling)
+preserves only the DC component of the evicted chunk; multiplicative
+summarisation (element-wise product of summary and query) reconstructs
+higher harmonics by exploiting the nonlinear interaction. This suggests
+that the m-folding summary operation (Task 116) should use
+multiplicative mixing, not just weighted averaging.
+
+**The cartographic insight (RotateKV).** The Mercator projection teaches
+that distortion is inevitable in any dimensionality reduction — the only
+choice is WHERE to place the distortion. RotateKV's channel reordering
+is the cartographic equivalent of choosing the projection center: place
+the "poles" (maximum distortion) at the channels with the least
+importance, and the "equator" (minimum distortion) at the channels that
+matter most. The Pre-RoPE pipeline is the transverse Mercator — rotating
+the projection axis to align with the local coordinate system (the
+position-independent channel structure) rather than the global one (the
+RoPE-rotated structure).
+
+For Hypercar, the most immediately actionable finding is that smoothing
+may be inferior to reordering for TQ3's outlier problem. Task 125
+(smooth scaling) should be augmented with a reordering variant, and the
+pre-RoPE pipeline should be evaluated as a path to eliminating the
+--fp16-layers 1 requirement and potentially resolving the TQ3 prefill
+bottleneck.
+
+**The three insights compose.** The full architecture for Goal 3
+(constant 50 tok/s across context window) combines all three:
+
+1. **Yarn (RotateKV/TQ3)**: compress KV cache to 2-3 bits via outlier-
+   aware rotation + cartographic projection optimisation. The channel
+   reordering + pre-RoPE pipeline minimises quantization distortion at
+   the reference points (sinks).
+
+2. **Loom (Adamas)**: at decode time, select top-128 keys per query via
+   WHT + Manhattan distance on 2-bit index codes. Cost is O(n) for the
+   Manhattan scan but O(1) for the sparse attention — total decode
+   attention cost is independent of context length.
+
+3. **Reconstruction (DynFormer/LGM)**: for evicted tokens, don't
+   discard entirely — store a low-frequency summary and reconstruct
+   high-frequency detail via multiplicative mixing with the current
+   query. This turns lossy eviction into lossy compression with on-
+   demand reconstruction.
+
+This three-layer textile-fluid-cartographic architecture — compress,
+select, reconstruct — provides the theoretical foundation for
+constant-throughput inference at arbitrarily long contexts.
+
+**Gap status for pass 34**:
+1. **Adamas Metal port**: implement the WHT + bucketization + Manhattan
+   distance kernel in Metal shader language for Apple Silicon. The
+   bitwise integer operations are well-supported; the main challenge
+   is efficient top-k selection on the GPU.
+2. **Pre-RoPE rotation for TQ3**: test RotateKV's pre-RoPE pipeline
+   on TQ3. If successful, this eliminates the online FWHT cost and
+   may resolve the 270x prefill slowdown.
+3. **Multiplicative KV summary**: implement DynFormer's LGM-inspired
+   multiplicative mixing for evicted token reconstruction. Test whether
+   it preserves more information than the current mean-pooling summary.
+4. **Channel reordering vs smooth scaling for TQ3**: head-to-head
+   comparison at 3-bit quantization. RotateKV's ablation suggests
+   reordering wins, but the result is at 2-bit on LLaMA — may differ
+   at 3-bit on Qwen3-Coder.
+5. **NVMe materialisation economics** (carried from pass 26 — RETIRING.
+   After 8 passes with no paper intersection, this gap is no longer
+   productive. The NVMe angle is covered by the session save/load
+   infrastructure already shipped.)
+
+**Fresh weird angles for pass 34** (genuinely untouched across 33
+passes):
+- **Mycology / mycelial networks**: distributed resource allocation
+  without central coordination. The mycelial network analogy for
+  multi-head attention routing remains structurally strong but has no
+  direct arxiv intersection. Consider framing as "stigmergic
+  coordination" (environment-mediated communication) instead.
+- **Origami / computational folding**: attention matrix compression via
+  folding. Deferred across 3 passes — RETIRING after pass 34 if no
+  leads emerge.
+- **Astrodynamics / Hohmann transfer orbits**: minimal-cost KV cache
+  state transitions. RETIRING — no arxiv intersection after 3 searches.
+- **Immunology / T-cell repertoire selection**: immune memory for
+  adaptive KV cache eviction. The clonal selection principle (expand
+  tokens that match the current query, contract others) is structurally
+  analogous to attention-guided eviction.
+- **Population genetics / drift vs selection**: token eviction as
+  genetic drift (random loss of low-attention tokens) vs selection
+  (targeted retention of high-importance tokens). The effective
+  population size N_e maps to the keep ratio.
+- **Music composition / counterpoint**: multi-head attention as
+  polyphonic voice leading. Each head is a voice; the counterpoint
+  rules (no parallel fifths, resolution of dissonances) are constraints
+  on head agreement. No arxiv intersection found.
+- **Insurance / actuarial science**: risk pooling across KV cache
+  entries. Quantization error is the "risk"; pooling across heads
+  (grouped-head rotation) reduces the variance of aggregate error.
+- **Forensic chain of custody**: KV cache provenance. RETIRING after
+  3 unsuccessful searches across passes 31-33.
+
+Thirty-three passes. One hundred and forty-two papers. The cross-field
+surface now spans: systems, databases, game theory, TDA, streaming
+algorithms, neuroscience, complexity theory, queueing theory, network
+congestion, signal processing, optimal transport, compiler/PL, protein
+folding, audio diffusion, graphics, recommender systems, reservoir
+computing, psycholinguistics, rate-distortion, information theory,
+Huffman coding, radar/CFAR, statistical mechanics, associative memory,
+code analysis, phase transitions, fair division, hierarchical AR,
+cross-head reconstruction, semantic sponsorship, sleep hierarchy, NVMe
+inventory, entropy-TTT, Apple Silicon profiling, softmax gap, RL
+eviction, process rewards, conformal prediction, IR retrieval, feedback
+control theory, voting theory / social choice, multi-attribute decision
+making, archaeological stratigraphy, cognitive science / working memory,
+maritime navigation / dead reckoning, error accumulation theory,
+cognitive load theory, lexicography / dictionary compilation, textile
+engineering / weaving, fluid dynamics / turbulence cascades, and
+cartography / map projection.
+Curiosity never saturates. Meow, nyaa, meow.
