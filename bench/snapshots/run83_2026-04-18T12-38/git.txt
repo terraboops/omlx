@@ -1,0 +1,11 @@
+08ca70cf0c8efd5e25102fc8df0f2e734ca937ab
+ M research/LIT_REVIEW.md
+?? bench/snapshots/run83_2026-04-18T12-38/console.txt
+?? bench/snapshots/run83_2026-04-18T12-38/git.txt
+?? bench/snapshots/run83_2026-04-18T12-38/profile.json
+?? bench/snapshots/run83_2026-04-18T12-38/results.json
+?? omlx/bench/efficiency_profile.py
+?? research/2405.05472_transformer_adaptive_optics.pdf
+?? research/2504.11320_fluid_scheduling_wait.pdf
+?? research/2508.01002_optimal_scheduling_rad.pdf
+?? research/2601.22002_rate_distortion_transformer.pdf
