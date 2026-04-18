@@ -3642,6 +3642,24 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Effort**: XS (1 hour — literally one line: replace `self._quantize_wht(vectors)` with `_fused_quantize(vectors, self.rotation, self._boundaries, self.bits, self.dim)`)
 - **Depends on**: None. This fully resolves the core of Task 138 without writing any new Metal kernel.
 
+### 153. [TOP PRIORITY] Goal 1 + Goal 3 tension: decode drops to 11-15 tok/s at 8-16K — need pre-alloc DuoKV + fused native decode
+- **Goal**: 1 (1M context) + 3 (50 tok/s decode constant) — these goals are in DIRECT TENSION above 4K context
+- **Derived from**: Analyst real-model profiling INV 4-8, 2026-04-18.
+- **Profiling evidence** (real model, real weights, 2026-04-18 10:30):
+  - fp16: **50.1-50.7 tok/s CONSTANT** from 256 to 4K — meets Goal 3 but can't fit Goal 1
+  - DuoKV: 48.4 @ 256 → 46.7 @ 4K → **14.9 @ 8K → 11.4 @ 16K** — concat tax (Task 149)
+  - Native 3-bit: 45.1 @ 256 → 43.3 @ 4K → 14.2 @ 8K → **0.4 @ 16K** — dequant on every decode
+  - Cache update_and_fetch overhead: DuoKV 52.6ms @ 4K (14% of step), native3 15.7ms (5% of step)
+  - **DuoKV at 4K: update_and_fetch alone takes 52.6ms vs native3's 15.7ms — 3.3x worse**
+- **Root causes**:
+  1. DuoKV: `mx.concatenate` copies full buffer per token (Task 149 — 248x fix available)
+  2. Native 3-bit: `mx.dequantize` materializes full fp16 KV on every attention step
+  3. TQ3: has fused SDPA that avoids dequant (decode_attention), but prefill is 270x slower
+- **The resolution path**: DuoKV with pre-allocated buffers (Task 149) + TQ3 backend for retrieval heads (Task 151). This gives DuoKV's quality + TQ3's fused decode + pre-alloc's constant-time update.
+- **Verify**: After Tasks 149+151, DuoKV+TQ3 decode at 16K should be >= 40 tok/s (currently 11.4).
+- **Effort**: L (Tasks 149 + 151 combined — 4-6 days)
+- **Depends on**: Task 149 (pre-alloc slab), Task 151 (TQ3 retrieval heads)
+
 ### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
 - **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
 - **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
