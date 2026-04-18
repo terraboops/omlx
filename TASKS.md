@@ -512,8 +512,15 @@ _(none)_
 
 
 
+
+
 ## Completed
 
+- **SnapKV final vectorization cleanup** — fair selection, global selection, get_keep_indices (2026-04-18)
+  - _select_fair: Python sorted()+tolist() → mx.argpartition (same pattern as other strategies)
+  - _select_global: simplified to single argpartition on B=0 slice
+  - get_keep_indices: mask_np.tolist() → mx.argwhere().flatten()
+  - Dead code removed (unused pooled_np variable in fair selection)
 - **CLAUDE.md efficiency audit update** — documented 12 perf commits with impact table (2026-04-18)
   - Updated goal status: TQ3 prefill 672 tok/s (was "270x slower"), DuoKV 248x faster decode
   - Added perf optimization table with all 12 fixes and their measured impact

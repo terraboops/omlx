@@ -705,15 +705,9 @@ def compute_multi_layer_importance(
 
 def _select_global(pooled: mx.array, k: int) -> set:
     """Global top-K selection (original SnapKV behavior)."""
-    top_k_indices = mx.argpartition(-pooled, kth=k, axis=-1)[:, :k]
-    all_indices = set()
-    top_k_np = top_k_indices.tolist() if hasattr(top_k_indices, 'tolist') else [[]]
-    for b_indices in top_k_np:
-        if isinstance(b_indices, list):
-            all_indices.update(b_indices)
-        else:
-            all_indices.add(int(b_indices))
-    return all_indices
+    top_k_indices = mx.argpartition(-pooled[0], kth=k)[:k]
+    mx.eval(top_k_indices)
+    return set(top_k_indices.tolist())
 
 
 def _select_segmented(pooled: mx.array, k: int, segment_size: int) -> set:
@@ -890,7 +884,6 @@ def _select_fair(pooled: mx.array, k: int,
 
     # Run per-partition selection
     all_indices = set()
-    pooled_np = pooled[0].tolist()
 
     for i, ((start, end), budget) in enumerate(zip(partitions, budgets)):
         part_start = start
@@ -903,16 +896,16 @@ def _select_fair(pooled: mx.array, k: int,
 
         if segment_size > 0 and part_len > segment_size:
             # BUZZ segments within this partition
-            part_pooled = mx.array([pooled_np[part_start:part_end]])[None, :]
             part_pooled = pooled[:, part_start:part_end]
             seg_indices = _select_segmented(part_pooled, part_k, segment_size)
             for idx in seg_indices:
                 all_indices.add(part_start + idx)
         else:
-            # Top-K within partition
-            seg_scores = pooled_np[part_start:part_end]
-            indexed = sorted(range(part_len), key=lambda j: -seg_scores[j])
-            for j in indexed[:part_k]:
+            # Top-K via argpartition — stays in MLX
+            seg_scores = pooled[0, part_start:part_end]
+            top_k_idx = mx.argpartition(-seg_scores, kth=part_k)[:part_k]
+            mx.eval(top_k_idx)
+            for j in top_k_idx.tolist():
                 all_indices.add(part_start + j)
 
     return all_indices
@@ -1016,8 +1009,9 @@ def snapkv_select(
 
 def get_keep_indices(keep_mask: mx.array) -> list[int]:
     """Extract sorted keep indices from a mask (for cache compaction)."""
-    mask_np = keep_mask[0].tolist() if keep_mask.shape[0] > 0 else []
-    return [i for i, v in enumerate(mask_np) if v]
+    indices = mx.argwhere(keep_mask[0]).flatten()
+    mx.eval(indices)
+    return indices.tolist()
 
 
 def _rerope_keys(keys: mx.array, old_positions: list[int],
