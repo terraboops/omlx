@@ -514,6 +514,11 @@ _(none)_
 
 ## Completed
 
+- **Task 149+143: DuoKV pre-allocated slab + StreamingKV vectorized ring** — eliminate per-token concat (2026-04-18)
+  - DuoKV: pre-alloc buffer with 256-token headroom, O(1) slice write vs O(context) concat
+  - Analyst profiled: 248x faster at 64K (34.78ms → 0.14ms per token)
+  - StreamingKV: ring-buffer writes vectorized with modular arithmetic scatter
+  - state.setter also pre-allocates with headroom for SnapKV compact_cache compat
 - **Task 168: Default skip_rerope=True** — 4.7x faster decode after eviction, NIAH PASS confirmed (2026-04-18)
   - Re-RoPE was costing 4.7x decode speed (7.2 vs 33.7 tok/s after eviction)
   - Keys keep original RoPE positions with gaps — attention still retrieves correctly

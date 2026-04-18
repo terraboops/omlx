@@ -94,23 +94,21 @@ class StreamingKVCache:
             self.offset = end
 
             if T_new > actual:
-                # Overflow into ring region — start overwriting after sink
+                # Overflow into ring region — vectorized scatter
                 remaining = T_new - actual
                 ring_start = self.sink
                 ring_len = self.window
-                for i in range(remaining):
-                    pos = ring_start + ((self.offset - self.capacity + i) % ring_len)
-                    self._keys[:, :, pos:pos+1] = keys[:, :, actual+i:actual+i+1]
-                    self._values[:, :, pos:pos+1] = values[:, :, actual+i:actual+i+1]
+                positions = ring_start + (mx.arange(remaining) + (self.offset - self.capacity)) % ring_len
+                self._keys[:, :, positions] = keys[:, :, actual:actual + remaining]
+                self._values[:, :, positions] = values[:, :, actual:actual + remaining]
                 self.offset += remaining
         else:
-            # Ring mode — overwrite oldest in the window region
+            # Ring mode — vectorized scatter instead of per-token loop
             ring_start = self.sink
             ring_len = self.window
-            for i in range(T_new):
-                pos = ring_start + ((self.offset - self.capacity + i) % ring_len)
-                self._keys[:, :, pos:pos+1] = keys[:, :, i:i+1]
-                self._values[:, :, pos:pos+1] = values[:, :, i:i+1]
+            positions = ring_start + (mx.arange(T_new) + (self.offset - self.capacity)) % ring_len
+            self._keys[:, :, positions] = keys[:, :, :T_new]
+            self._values[:, :, positions] = values[:, :, :T_new]
             self.offset += T_new
 
         # Return valid portion
@@ -183,6 +181,8 @@ class DuoKVCache:
         self._n_streaming = sum(self._is_streaming)
         self._keys: Optional[mx.array] = None
         self._values: Optional[mx.array] = None
+        self._step = 256  # pre-allocation headroom
+        self._kv_len = 0  # actual tokens stored (vs buffer capacity)
 
         n_streaming = sum(1 for t in self.head_types if t == "streaming")
         logger.debug(f"Layer {layer_idx}: {n_streaming}/{n_kv_heads} streaming KV heads")
@@ -190,45 +190,56 @@ class DuoKVCache:
     def update_and_fetch(self, keys: mx.array, values: mx.array):
         """Store new KV, trim streaming heads to sink + window.
 
-        All heads use a single contiguous KV buffer. After each update,
-        streaming heads' KV is replaced with [sink_tokens | recent_window].
-        Retrieval heads keep the full context.
+        Uses pre-allocated slab with headroom to avoid per-token concat.
+        Slice assignment is O(1) vs concat's O(context) copy.
         """
         B, H_kv, T_new, D = keys.shape
         self.offset += T_new
 
-        # First call — initialize storage
         if self._keys is None:
-            self._keys = keys
-            self._values = values
+            # First call — pre-allocate with headroom
+            alloc = T_new + self._step
+            self._keys = mx.zeros((B, H_kv, alloc, D), dtype=keys.dtype)
+            self._values = mx.zeros((B, H_kv, alloc, D), dtype=values.dtype)
+            self._keys[:, :, :T_new] = keys
+            self._values[:, :, :T_new] = values
+            self._kv_len = T_new
+        elif self._kv_len + T_new <= self._keys.shape[2]:
+            # Fits in pre-allocated buffer — O(1) slice write
+            self._keys[:, :, self._kv_len:self._kv_len + T_new] = keys
+            self._values[:, :, self._kv_len:self._kv_len + T_new] = values
+            self._kv_len += T_new
         else:
-            self._keys = mx.concatenate([self._keys, keys], axis=2)
-            self._values = mx.concatenate([self._values, values], axis=2)
+            # Buffer full — grow with new headroom (rare, every _step tokens)
+            new_alloc = self._kv_len + T_new + self._step
+            new_k = mx.zeros((B, H_kv, new_alloc, D), dtype=keys.dtype)
+            new_v = mx.zeros((B, H_kv, new_alloc, D), dtype=values.dtype)
+            new_k[:, :, :self._kv_len] = self._keys[:, :, :self._kv_len]
+            new_v[:, :, :self._kv_len] = self._values[:, :, :self._kv_len]
+            new_k[:, :, self._kv_len:self._kv_len + T_new] = keys
+            new_v[:, :, self._kv_len:self._kv_len + T_new] = values
+            self._keys = new_k
+            self._values = new_v
+            self._kv_len += T_new
 
-        T_total = self._keys.shape[2]
+        T_total = self._kv_len
 
         # Trim streaming heads if context exceeds capacity
         if T_total > self.capacity and self._n_streaming > 0:
-            # Build per-head trimmed KV
-            # Streaming: keep first `sink` + last `window` tokens
-            # Retrieval: keep everything
             trimmed_k = []
             trimmed_v = []
             for h in range(H_kv):
-                if self._is_streaming[h] and T_total > self.capacity:
-                    # Sink tokens (first few) + window tokens (most recent)
+                if self._is_streaming[h]:
                     k_sink = self._keys[:, h:h+1, :self.sink, :]
-                    k_window = self._keys[:, h:h+1, -(self.window):, :]
+                    k_window = self._keys[:, h:h+1, T_total - self.window:T_total, :]
                     trimmed_k.append(mx.concatenate([k_sink, k_window], axis=2))
-
                     v_sink = self._values[:, h:h+1, :self.sink, :]
-                    v_window = self._values[:, h:h+1, -(self.window):, :]
+                    v_window = self._values[:, h:h+1, T_total - self.window:T_total, :]
                     trimmed_v.append(mx.concatenate([v_sink, v_window], axis=2))
                 else:
-                    trimmed_k.append(self._keys[:, h:h+1, :, :])
-                    trimmed_v.append(self._values[:, h:h+1, :, :])
+                    trimmed_k.append(self._keys[:, h:h+1, :T_total, :])
+                    trimmed_v.append(self._values[:, h:h+1, :T_total, :])
 
-            # Pad all heads to same length (retrieval heads' full length)
             max_len = max(k.shape[2] for k in trimmed_k)
             padded_k = []
             padded_v = []
@@ -242,17 +253,30 @@ class DuoKVCache:
 
             return mx.concatenate(padded_k, axis=1), mx.concatenate(padded_v, axis=1)
 
-        return self._keys, self._values
+        return self._keys[:, :, :T_total], self._values[:, :, :T_total]
 
     @property
     def state(self):
         if self._keys is None:
             return None, None
-        return self._keys, self._values
+        return self._keys[:, :, :self._kv_len], self._values[:, :, :self._kv_len]
 
     @state.setter
     def state(self, v):
         """Set state — needed for SnapKV compact_cache compatibility."""
-        self._keys, self._values = v
-        if self._keys is not None:
-            self.offset = self._keys.shape[2]
+        keys, values = v
+        if keys is not None:
+            self._kv_len = keys.shape[2]
+            self.offset = self._kv_len
+            # Pre-allocate with headroom
+            alloc = self._kv_len + self._step
+            B, H, _, D = keys.shape
+            self._keys = mx.zeros((B, H, alloc, D), dtype=keys.dtype)
+            self._values = mx.zeros((B, H, alloc, D), dtype=values.dtype)
+            self._keys[:, :, :self._kv_len] = keys
+            self._values[:, :, :self._kv_len] = values
+        else:
+            self._keys = None
+            self._values = None
+            self._kv_len = 0
+            self.offset = 0
