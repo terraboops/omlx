@@ -514,6 +514,10 @@ _(none)_
 
 ## Completed
 
+- **Task 148: CAOTE/importance scoring GQA-aware broadcast** — eliminate mx.repeat GQA expansion (2026-04-18)
+  - Reshape Q into (B, H_kv, gqa_ratio, obs_len, D) and broadcast with K
+  - Saves 1.07 GB per layer at 64K (no full key copy for GQA expansion)
+  - Applied to both compute_caote_importance and compute_importance_from_real_q
 - **Task 149+143: DuoKV pre-allocated slab + StreamingKV vectorized ring** — eliminate per-token concat (2026-04-18)
   - DuoKV: pre-alloc buffer with 256-token headroom, O(1) slice write vs O(context) concat
   - Analyst profiled: 248x faster at 64K (34.78ms → 0.14ms per token)

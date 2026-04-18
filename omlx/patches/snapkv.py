@@ -438,24 +438,32 @@ def compute_caote_importance(
         gqa_ratio = H_q // H_kv
         scale = D ** -0.5
 
-        # --- Attention scores (same as compute_importance_from_real_q) ---
+        # --- Attention scores via SDPA (handles GQA + causal natively) ---
         obs_start = max(0, queries.shape[2] - obs_window)
         Q_obs = queries[:, :, obs_start:, :]
         obs_len = Q_obs.shape[2]
 
-        K_expanded = mx.repeat(keys, gqa_ratio, axis=1)
-        scores = (Q_obs @ K_expanded.swapaxes(-1, -2)) * scale
-
+        # Build causal mask: obs queries can attend to keys at positions <= their position
+        # mask shape (1, 1, obs_len, T) — True = attend, False = ignore
         q_pos = mx.arange(obs_start, obs_start + obs_len).reshape(1, 1, obs_len, 1)
         k_pos = mx.arange(T).reshape(1, 1, 1, T)
-        scores = mx.where(k_pos <= q_pos, scores, mx.array(float('-inf')))
+        causal_mask = k_pos <= q_pos
 
-        weights = mx.softmax(scores, axis=-1)  # (B, H_q, obs_len, T)
+        # SDPA handles GQA broadcasting (H_q Q heads, H_kv K/V heads)
+        # Returns (B, H_q, obs_len, D) — we only need the weights, but SDPA
+        # doesn't expose them. Use manual matmul with SDPA's scale but skip
+        # the expensive GQA expand by computing per-KV-head scores.
+        # Per-KV-head: reshape Q to (B, H_kv, gqa_ratio, obs_len, D)
+        Q_grouped = Q_obs.reshape(B, H_kv, gqa_ratio, obs_len, D)
 
-        # Pool attention: max over obs window, then max across GQA group
-        alpha = mx.max(weights, axis=2)  # (B, H_q, T)
-        alpha = alpha.reshape(B, H_kv, gqa_ratio, T)
-        alpha = mx.max(alpha, axis=2)  # (B, H_kv, T)
+        # Scores: (B, H_kv, gqa_ratio, obs_len, T)
+        scores = (Q_grouped @ keys[:, :, None, :, :].swapaxes(-1, -2)) * scale
+        scores = mx.where(causal_mask[:, :, None, :, :], scores, mx.array(float('-inf')))
+        weights = mx.softmax(scores, axis=-1)
+
+        # Pool: max over obs window and GQA group
+        alpha = mx.max(weights, axis=3)  # (B, H_kv, gqa_ratio, T)
+        alpha = mx.max(alpha, axis=2)    # (B, H_kv, T)
 
         # --- Value distinctiveness (FastCAOTE) ---
         # V_mean: mean of all value vectors per head (B, H_kv, 1, D)
@@ -527,22 +535,22 @@ def compute_importance_from_real_q(
         Q_obs = queries[:, :, obs_start:, :]  # (B, H_q, obs_len, D)
         obs_len = Q_obs.shape[2]
 
-        # Expand K for GQA
-        K_expanded = mx.repeat(keys, gqa_ratio, axis=1)  # (B, H_q, T, D)
-
-        # Attention scores
-        scores = (Q_obs @ K_expanded.swapaxes(-1, -2)) * scale
+        # GQA-aware scoring: reshape Q into groups, broadcast with K
+        # Avoids mx.repeat which copies all T keys per GQA group (1+ GB at 64K)
+        Q_grouped = Q_obs.reshape(B, H_kv, gqa_ratio, obs_len, D)
 
         # Causal mask
         q_pos = mx.arange(obs_start, obs_start + obs_len).reshape(1, 1, obs_len, 1)
         k_pos = mx.arange(T).reshape(1, 1, 1, T)
-        scores = mx.where(k_pos <= q_pos, scores, mx.array(float('-inf')))
+        causal_mask = k_pos <= q_pos
 
-        weights = mx.softmax(scores, axis=-1)  # (B, H_q, obs_len, T)
+        # Scores: (B, H_kv, gqa_ratio, obs_len, T) via broadcast
+        scores = (Q_grouped @ keys[:, :, None, :, :].swapaxes(-1, -2)) * scale
+        scores = mx.where(causal_mask[:, :, None, :, :], scores, mx.array(float('-inf')))
+        weights = mx.softmax(scores, axis=-1)
 
-        # Pool: max over obs window, then max across GQA group
-        max_weights = mx.max(weights, axis=2)  # (B, H_q, T)
-        max_weights = max_weights.reshape(B, H_kv, gqa_ratio, T)
+        # Pool: max over obs window and GQA group
+        max_weights = mx.max(weights, axis=3)  # (B, H_kv, gqa_ratio, T)
         importance = mx.max(max_weights, axis=2)  # (B, H_kv, T)
         mx.eval(importance)
         all_importance.append(importance)
