@@ -53,9 +53,10 @@ any of these — even to improve another — needs explicit justification.
 TQ3 mode: good decode (50 tok/s) but prefill is 270× slower — use only for single-turn generation
 with session save/load (prefill once, reload via `/v1/sessions/load`).
 
-**5 of 6 goals MET** in duo mode. Full `--full` benchmark ALL 9 GATES PASS (HumanEval 95%, 1481s).
-**Goal 1 validated to 128K** with SnapKV+CAOTE eviction (9 GB Metal saved, NIAH PASS).
-At 1M native 3-bit @25% keep: KV ~5.6 GB, total ~23 GB — fits 48 GB.
+**5 of 6 goals MET** in duo mode. Full `--full` benchmark ALL 11 GATES PASS (Run 74).
+**Goal 1**: SnapKV validated to 128K (fp16) and 64K (TQ3 native 3-bit).
+120K single-pass exceeds 48 GB Metal — progressive mid-prefill eviction required.
+Progressive eviction with single midpoint cut being validated (avoids re-RoPE accumulation).
 Server: `--snapkv-keep K --caote --segmented-evict 512` enables the full eviction stack.
 Per-phase headroom checks (Task 86) now gracefully skip memory-hungry phases under co-tenancy.
 
