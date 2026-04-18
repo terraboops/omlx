@@ -3819,10 +3819,22 @@ _streaming instead of reading whole, or using memory more efficiently._
   - fp16 @ 1024 FRESH: 48.9 tok/s
   - fp16 @ 4096 FRESH: **14.1 tok/s** (73% drop from short context)
   - Heatmap showed 8.2 (contamination accounts for ~40% of pessimism, but cliff is REAL)
-  - **O(n²) attention is the bottleneck at 4K+, not cache update speed**
-  - Goal 3 at 4K+ requires SnapKV eviction to reduce effective KV size (Task 163)
-- **Effort**: (Covered by Task 163 — SnapKV+DuoKV eviction is the decode speed fix)
+  - **CORRECTION** (INV 48, 2026-04-18 12:20): Per-step breakdown shows model forward is LAZY (1.03ms constant), all compute is in mx.eval. At 4K, eval takes 20.8ms (vs 17.8ms at 256) — only 3ms more. **Actual decode at 4K after proper warmup: 45.4 tok/s**, not 14.1. The earlier 14.1 was contaminated by Q capture hook overhead and insufficient warmup. The "cliff" is less severe than initially reported but Goal 3 (50 tok/s constant) is still not met at 4K.
+  - Re-RoPE in compact_cache costs 4.7x decode speed (7.2 vs 33.7 tok/s)
+- **Effort**: (Less critical than initially assessed — decode is 45.4 tok/s at 4K with proper warmup, not 14.1)
 - **Depends on**: None.
+
+### 168. Re-RoPE in compact_cache costs 4.7x decode speed — skip_rerope=True gives 33.7 tok/s with NIAH PASS
+- **Goal**: 3 (decode speed after eviction)
+- **Derived from**: Analyst real-model INV 47, 2026-04-18.
+- **Evidence**:
+  - with re-RoPE: 7.2 tok/s (re-RoPE computation dominates every decode step)
+  - skip re-RoPE: **33.7 tok/s** (4.7x faster, NIAH still PASS)
+  - The skip_rerope path preserves original RoPE positions — keys have position gaps but attention still retrieves the needle correctly at 4K
+- **Implication**: For agentic workflows where decode speed matters more than position-perfect attention, `skip_rerope=True` should be the default for `compact_cache`. The 4.7x speed difference is the most impactful single optimization for post-eviction decode.
+- **Change**: Default `skip_rerope=True` in `compact_cache` when called from `apply_snapkv_to_generate`. Add a quality gate: NIAH at 4K and 8K must still PASS with skip_rerope.
+- **Verify**: NIAH PASS at 4K and 8K with skip_rerope=True. Decode >= 30 tok/s after eviction.
+- **Effort**: XS (change default parameter)
 
 ### 167. SnapKV eviction caps decode at ~33 tok/s — re-RoPE + fragmented memory layout prevents reaching 50
 - **Goal**: 3 (decode speed)
