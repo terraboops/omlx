@@ -514,6 +514,9 @@ _(none)_
 
 ## Completed
 
+- **CLAUDE.md efficiency audit update** — documented 12 perf commits with impact table (2026-04-18)
+  - Updated goal status: TQ3 prefill 672 tok/s (was "270x slower"), DuoKV 248x faster decode
+  - Added perf optimization table with all 12 fixes and their measured impact
 - **Task 161: Tool-call JSON validity gate** — Phase 3f in benchmark (2026-04-18)
   - Prompts model for JSON tool call, validates single parseable JSON object
   - Informational gate (doesn't block) — tracks regression for --grammar flag
