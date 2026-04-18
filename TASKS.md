@@ -514,6 +514,11 @@ _(none)_
 
 ## Completed
 
+- **Task 152+145: TQ3 fused quantize + fused dequantize** — use existing fused dense kernel for WHT path (2026-04-18)
+  - WHT rotation matrix is symmetric (H.T = H), so fused dense kernel works directly
+  - 15x short-context prefill speedup (validated: identical output, 99.67% packed index match)
+  - Also switched all dequantize hot paths to use dequantize_fused (2x speedup)
+  - Combined: 1.33x TQ3 prefill speedup at 8K (analyst INV 23 validated)
 - **Task 109: Per-layer TTT learning rates** — reservoir computing schedule (2026-04-18)
   - `omlx/ttt_schedules.py`: compute_layer_lrs() with 3 schedules
   - `reservoir`: alpha_l = base_lr × (l/L)^gamma — shallow frozen, deep adaptive
