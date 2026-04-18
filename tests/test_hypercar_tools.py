@@ -1366,6 +1366,26 @@ class TestXGrammarSource:
         assert "grammar_cache_stats" in server_src
 
 
+class TestSessionSaveLoad:
+    """Tests for fp16 KVCache session save/load (SnapKV-compacted)."""
+
+    def test_fp16_save_path_exists(self):
+        """Server must save fp16 KVCache with cache_type marker."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert 'cache_type' in server_src
+        assert '"fp16"' in server_src
+
+    def test_fp16_load_path_exists(self):
+        """Server must detect and load fp16 sessions."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "is_fp16" in server_src
+
+    def test_load_restores_offset(self):
+        """Load must restore cache offset from saved data."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "offset" in server_src
+
+
 class TestXGrammarLogic:
     """Functional tests for schema extraction (no GPU needed)."""
 

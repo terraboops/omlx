@@ -743,8 +743,20 @@ def main():
                     saved = 0
                     total_bytes = 0
                     for i, c in enumerate(session["cache"]):
+                        layer_path = str(save_dir / f"layer_{i}")
                         if hasattr(c, 'save_to_disk') and hasattr(c, '_k_norms') and c._k_norms is not None:
-                            info = c.save_to_disk(str(save_dir / f"layer_{i}"))
+                            # TQ3 cache save
+                            c.save_to_disk(layer_path)
+                            saved += 1
+                            total_bytes += (save_dir / f"layer_{i}.npz").stat().st_size
+                        elif hasattr(c, 'keys') and c.keys is not None and not isinstance(c.keys, tuple):
+                            # fp16 KVCache save (for SnapKV-compacted sessions)
+                            import numpy as _np
+                            _np.savez(layer_path + ".npz",
+                                      keys=_np.array(c.keys.astype(mx.float32)),
+                                      values=_np.array(c.values.astype(mx.float32)),
+                                      offset=_np.array([c.offset]),
+                                      cache_type=_np.array(["fp16"]))
                             saved += 1
                             total_bytes += (save_dir / f"layer_{i}.npz").stat().st_size
                     _agentic_logger.info(f"💾 Save: {sid} → {save_dir} ({saved} layers, {total_bytes/1e6:.1f}MB)")
@@ -809,15 +821,35 @@ def main():
                     # Detect layer count from files
                     layer_files = sorted(load_dir.glob("layer_*.npz"))
                     n_layers = max(int(f.stem.split("_")[1]) for f in layer_files) + 1 if layer_files else 48
-                    cache = [KVCache() if i == 0 else TurboQuantKVCache(bits=3)
-                             for i in range(n_layers)]
-                    loaded = 0
-                    for f in layer_files:
-                        idx = int(f.stem.split("_")[1])
-                        if hasattr(cache[idx], 'load_from_disk'):
-                            cache[idx].load_from_disk(str(f).replace(".npz", ""))
-                            loaded += 1
-                    tokens = cache[1].offset if loaded > 0 and hasattr(cache[1], 'offset') else 0
+                    # Detect cache type from first file
+                    import numpy as _np
+                    first_data = _np.load(str(layer_files[0]), allow_pickle=True)
+                    is_fp16 = "cache_type" in first_data and str(first_data["cache_type"]) == "fp16"
+
+                    if is_fp16:
+                        # fp16 KVCache (SnapKV-compacted session)
+                        cache = [KVCache() for _ in range(n_layers)]
+                        loaded = 0
+                        for f in layer_files:
+                            idx = int(f.stem.split("_")[1])
+                            data = _np.load(str(f), allow_pickle=True)
+                            if "cache_type" in data and str(data["cache_type"]) == "fp16":
+                                cache[idx].keys = mx.array(data["keys"])
+                                cache[idx].values = mx.array(data["values"])
+                                cache[idx].offset = int(data["offset"][0])
+                                loaded += 1
+                        _agentic_logger.info(f"📂 Loading fp16 SnapKV-compacted session")
+                    else:
+                        # TQ3 session
+                        cache = [KVCache() if i == 0 else TurboQuantKVCache(bits=3)
+                                 for i in range(n_layers)]
+                        loaded = 0
+                        for f in layer_files:
+                            idx = int(f.stem.split("_")[1])
+                            if hasattr(cache[idx], 'load_from_disk'):
+                                cache[idx].load_from_disk(str(f).replace(".npz", ""))
+                                loaded += 1
+                    tokens = cache[0].offset if loaded > 0 else 0
                     new_id = str(uuid.uuid4())[:12]
                     with _sessions_lock:
                         _sessions[new_id] = {"cache": cache, "tokens": tokens}
