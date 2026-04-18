@@ -1265,13 +1265,41 @@ class TurboQuantKVCache(_BaseCache):
         self._fp16_values = None
         self._quantized = False
         self._codec: Optional[TurboQuantMSECodec] = None
-        self._step = 256
+        self._step = 256  # initial allocation; growth is geometric (2x)
         self._streaming_active = False
         self._new_chunk_start = 0
 
     def _ensure_codec(self, dim: int):
         if self._codec is None:
             self._codec = TurboQuantMSECodec(dim, self.bits, self.seed)
+
+    def _ensure_compressed_storage(self, B: int, H: int, new_end: int, pw: int):
+        """Ensure compressed storage has room for new_end tokens.
+
+        Uses geometric growth (2x) to minimize allocation count.
+        At 64K: ~7 allocs instead of ~250 with linear step=256.
+        """
+        if self._k_norms is None:
+            alloc = max(self._step, ((new_end + self._step - 1) // self._step) * self._step)
+            self._k_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+            self._k_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+            self._v_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+            self._v_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+        elif new_end > self._k_norms.shape[2]:
+            cur = self._k_norms.shape[2]
+            alloc = max(cur * 2, new_end)  # geometric doubling
+            new_k_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+            new_k_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+            new_v_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
+            new_v_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
+            new_k_norms[:, :, :self.offset] = self._k_norms[:, :, :self.offset]
+            new_k_packed[:, :, :self.offset] = self._k_packed[:, :, :self.offset]
+            new_v_norms[:, :, :self.offset] = self._v_norms[:, :, :self.offset]
+            new_v_packed[:, :, :self.offset] = self._v_packed[:, :, :self.offset]
+            self._k_norms = new_k_norms
+            self._k_packed = new_k_packed
+            self._v_norms = new_v_norms
+            self._v_packed = new_v_packed
 
     def _quantize_fp16_buffer(self):
         """Convert accumulated fp16 KV to quantized format."""
@@ -1357,20 +1385,8 @@ class TurboQuantKVCache(_BaseCache):
 
             new_end = self.offset + T_new
 
-            # Initialize or extend compressed storage
-            if self._k_norms is None:
-                alloc = ((new_end + self._step - 1) // self._step) * self._step
-                self._k_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
-                self._k_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
-                self._v_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
-                self._v_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
-            elif new_end > self._k_norms.shape[2]:
-                alloc = ((new_end + self._step - 1) // self._step) * self._step
-                pad = alloc - self._k_norms.shape[2]
-                self._k_norms = mx.concatenate([self._k_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
-                self._k_packed = mx.concatenate([self._k_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
-                self._v_norms = mx.concatenate([self._v_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
-                self._v_packed = mx.concatenate([self._v_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
+            # Initialize or extend compressed storage (geometric growth)
+            self._ensure_compressed_storage(B, H, new_end, pw)
 
             # Store compressed
             self._k_norms[:, :, self.offset:new_end] = k_norms
@@ -1425,19 +1441,7 @@ class TurboQuantKVCache(_BaseCache):
 
             new_end = self.offset + 1
             pw = _packed_width(D, self.bits)
-            if self._k_norms is None:
-                alloc = self._step
-                self._k_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
-                self._k_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
-                self._v_norms = mx.zeros((B, H, alloc), dtype=mx.float32)
-                self._v_packed = mx.zeros((B, H, alloc, pw), dtype=mx.uint32)
-            elif new_end > self._k_norms.shape[2]:
-                alloc = ((new_end + self._step - 1) // self._step) * self._step
-                pad = alloc - self._k_norms.shape[2]
-                self._k_norms = mx.concatenate([self._k_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
-                self._k_packed = mx.concatenate([self._k_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
-                self._v_norms = mx.concatenate([self._v_norms, mx.zeros((B, H, pad), dtype=mx.float32)], axis=2)
-                self._v_packed = mx.concatenate([self._v_packed, mx.zeros((B, H, pad, pw), dtype=mx.uint32)], axis=2)
+            self._ensure_compressed_storage(B, H, new_end, pw)
 
             self._k_norms[:, :, self.offset:new_end] = k_norms
             self._k_packed[:, :, self.offset:new_end] = k_packed

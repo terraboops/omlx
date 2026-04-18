@@ -514,6 +514,10 @@ _(none)_
 
 ## Completed
 
+- **Task 144: TQ3 KV buffer geometric growth** — 2x doubling replaces linear step=256 concat (2026-04-18)
+  - Extracted _ensure_compressed_storage() helper, used by both prefill and decode paths
+  - At 64K: ~7 allocs instead of ~250 (log2(64K/256) = 8)
+  - No transient 2x memory spike from concat — allocate+copy instead
 - **Task 141: Segmented selection vectorized** — mx.argpartition replaces Python sorted()+tolist() (2026-04-18)
   - GPU-side top-K via argpartition — O(n) vs O(n log n), no CPU roundtrip
 - **Task 148: CAOTE/importance scoring GQA-aware broadcast** — eliminate mx.repeat GQA expansion (2026-04-18)
