@@ -201,7 +201,8 @@ def run_test(model, tokenizer, context_tokens, keep_ratio, obs_window=64,
                 merged_mid.update(kv_captured)
             merged_mid.update(captured)
             compact_cache(cache, mid_indices, model=model,
-                          captured_kv=merged_mid if merged_mid else None)
+                          captured_kv=merged_mid if merged_mid else None,
+                          skip_rerope=True)  # preserve original positions
             # Reset KV capture for next segment
             if kv_captured is not None:
                 kv_cleanup()

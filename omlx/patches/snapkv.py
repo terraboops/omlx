@@ -1080,11 +1080,16 @@ def _rerope_keys(keys: mx.array, old_positions: list[int],
 def compact_cache(cache: list, keep_indices: list[int],
                    original_offset: int | None = None,
                    model=None,
-                   captured_kv: dict | None = None) -> None:
+                   captured_kv: dict | None = None,
+                   skip_rerope: bool = False) -> None:
     """Compact KV cache in-place, keeping only selected token positions.
 
     CRITICAL: Keys have RoPE baked in at their original positions. After
     compaction, keys are repositioned to [0, 1, ..., N-1] via re-RoPE.
+    Set skip_rerope=True for progressive mid-prefill eviction to avoid
+    re-RoPE accumulation — positions stay at original values. The cache
+    offset is restored to original_offset so new tokens get correct RoPE.
+    Final eviction should use skip_rerope=False for the definitive shift.
 
     For QuantizedKVCache: uses captured fp16 K/V (from Q hooks) when
     available to avoid dequantization noise. Falls back to dequant path.
@@ -1094,9 +1099,10 @@ def compact_cache(cache: list, keep_indices: list[int],
         keep_indices: Sorted list of token positions to keep
         original_offset: Original cache offset before compaction.
         model: Model object (used to extract RoPE config).
-        captured_kv: dict from install_q_capture_hook — maps layer_idx
-            to (Q, K_fp16, V_fp16) tuples. When provided for a layer,
-            uses the fp16 K/V instead of dequantizing from cache.
+        captured_kv: dict — maps layer_idx to captured K/V data.
+        skip_rerope: If True, skip re-RoPE (for progressive eviction).
+            Preserves original RoPE positions. Offset is restored to
+            original_offset so subsequent tokens get correct positions.
     """
     if not cache:
         return
@@ -1152,25 +1158,57 @@ def compact_cache(cache: list, keep_indices: list[int],
             keys_compact = keys_fp[:, :, idx, :]
             values_compact = values_fp[:, :, idx, :]
 
-            keys_compact = _rerope_keys(keys_compact, keep_indices,
-                                        rope_dims, rope_base)
-
-            c.keys = mx.quantize(
-                keys_compact, group_size=c.group_size, bits=c.bits)
-            c.values = mx.quantize(
-                values_compact, group_size=c.group_size, bits=c.bits)
-            c.offset = new_len
+            if not skip_rerope:
+                keys_compact = _rerope_keys(keys_compact, keep_indices,
+                                            rope_dims, rope_base)
+                c.keys = mx.quantize(
+                    keys_compact, group_size=c.group_size, bits=c.bits)
+                c.values = mx.quantize(
+                    values_compact, group_size=c.group_size, bits=c.bits)
+                c.offset = new_len
+            else:
+                # Progressive eviction: scatter kept tokens back into
+                # full-size buffer at original positions. Zeros at evicted
+                # positions are harmless (near-zero attention after quantize).
+                B, H, _, D = keys_fp.shape
+                keys_full = mx.zeros((B, H, original_offset, D), dtype=keys_compact.dtype)
+                vals_full = mx.zeros((B, H, original_offset, D), dtype=values_compact.dtype)
+                for pos_new, pos_old in enumerate(keep_indices):
+                    if pos_old < original_offset:
+                        keys_full = keys_full.at[:, :, pos_old, :].add(
+                            keys_compact[:, :, pos_new, :])
+                        vals_full = vals_full.at[:, :, pos_old, :].add(
+                            values_compact[:, :, pos_new, :])
+                c.keys = mx.quantize(
+                    keys_full, group_size=c.group_size, bits=c.bits)
+                c.values = mx.quantize(
+                    vals_full, group_size=c.group_size, bits=c.bits)
+                c.offset = original_offset
         else:
             # KVCache (fp16) or DuoKVCache — direct gather
             keys_compact = keys_raw[:, :, idx, :]
             values_compact = values_raw[:, :, idx, :]
 
-            # Re-encode RoPE from original positions to [0, 1, ..., N-1]
-            keys_compact = _rerope_keys(keys_compact, keep_indices,
-                                        rope_dims, rope_base)
-
-            # state.setter updates offset to keys.shape[2]
-            c.state = (keys_compact, values_compact)
+            if not skip_rerope:
+                keys_compact = _rerope_keys(keys_compact, keep_indices,
+                                            rope_dims, rope_base)
+                c.state = (keys_compact, values_compact)
+            else:
+                # Progressive eviction: keep original positions by
+                # writing kept tokens into a full-size buffer at their
+                # original indices. Evicted positions become zero (ignored
+                # by attention because they have near-zero importance).
+                B, H, _, D = keys_raw.shape
+                keys_full = mx.zeros((B, H, original_offset, D), dtype=keys_compact.dtype)
+                vals_full = mx.zeros((B, H, original_offset, D), dtype=values_compact.dtype)
+                for pos_new, pos_old in enumerate(keep_indices):
+                    if pos_old < original_offset:
+                        keys_full = keys_full.at[:, :, pos_old, :].add(
+                            keys_compact[:, :, pos_new, :])
+                        vals_full = vals_full.at[:, :, pos_old, :].add(
+                            values_compact[:, :, pos_new, :])
+                c.state = (keys_full, vals_full)
+                # offset stays at original_offset (already set by state.setter)
 
     # Force evaluation of compacted state
     to_eval = []
