@@ -514,6 +514,9 @@ _(none)_
 
 ## Completed
 
+- **Task 142: DuoKV streaming trim gather** — per-head Python loop → single take_along_axis (2026-04-18)
+  - Build (H_kv, T) gather index: streaming→[sink+window+pad], retrieval→[0..T-1]
+  - One take_along_axis + mask replaces 12 intermediate tensors per head
 - **Task 155: SnapKV default 50% keep** — 25% hurts decode 14%, 50% is 7% faster (2026-04-18)
   - Updated snapkv_bench default ratios and CLAUDE.md documentation
 - **Task 144: TQ3 KV buffer geometric growth** — 2x doubling replaces linear step=256 concat (2026-04-18)

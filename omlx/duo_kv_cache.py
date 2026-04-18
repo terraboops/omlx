@@ -226,32 +226,35 @@ class DuoKVCache:
 
         # Trim streaming heads if context exceeds capacity
         if T_total > self.capacity and self._n_streaming > 0:
-            trimmed_k = []
-            trimmed_v = []
-            for h in range(H_kv):
-                if self._is_streaming[h]:
-                    k_sink = self._keys[:, h:h+1, :self.sink, :]
-                    k_window = self._keys[:, h:h+1, T_total - self.window:T_total, :]
-                    trimmed_k.append(mx.concatenate([k_sink, k_window], axis=2))
-                    v_sink = self._values[:, h:h+1, :self.sink, :]
-                    v_window = self._values[:, h:h+1, T_total - self.window:T_total, :]
-                    trimmed_v.append(mx.concatenate([v_sink, v_window], axis=2))
-                else:
-                    trimmed_k.append(self._keys[:, h:h+1, :T_total, :])
-                    trimmed_v.append(self._values[:, h:h+1, :T_total, :])
+            # Single gather replaces per-head Python loop (12 intermediates → 1 op)
+            # Streaming: [0..sink-1, T-window..T-1, 0-padded to T_total]
+            # Retrieval: [0..T_total-1]
+            sink_idx = list(range(self.sink))
+            window_idx = list(range(T_total - self.window, T_total))
+            stream_idx = sink_idx + window_idx  # length = capacity
+            # Pad to T_total: gather a harmless index, then zero-mask
+            stream_padded = stream_idx + [0] * (T_total - len(stream_idx))
+            retrieval_idx = list(range(T_total))
 
-            max_len = max(k.shape[2] for k in trimmed_k)
-            padded_k = []
-            padded_v = []
-            for k, v in zip(trimmed_k, trimmed_v):
-                if k.shape[2] < max_len:
-                    pad = max_len - k.shape[2]
-                    k = mx.concatenate([k, mx.zeros((B, 1, pad, D), dtype=k.dtype)], axis=2)
-                    v = mx.concatenate([v, mx.zeros((B, 1, pad, D), dtype=v.dtype)], axis=2)
-                padded_k.append(k)
-                padded_v.append(v)
+            # Build (H_kv, T_total) gather index
+            gather = [stream_padded if self._is_streaming[h] else retrieval_idx
+                      for h in range(H_kv)]
+            g = mx.array(gather)[None, :, :, None]  # (1, H_kv, T_total, 1)
+            g = mx.broadcast_to(g, (B, H_kv, T_total, D))
 
-            return mx.concatenate(padded_k, axis=1), mx.concatenate(padded_v, axis=1)
+            out_k = mx.take_along_axis(self._keys[:, :, :T_total, :], g, axis=2)
+            out_v = mx.take_along_axis(self._values[:, :, :T_total, :], g, axis=2)
+
+            # Zero-mask padded positions for streaming heads
+            if len(stream_idx) < T_total:
+                mask = mx.ones((H_kv, T_total), dtype=mx.bool_)
+                for h in range(H_kv):
+                    if self._is_streaming[h]:
+                        mask[h, len(stream_idx):] = False
+                out_k = mx.where(mask[None, :, :, None], out_k, mx.zeros_like(out_k))
+                out_v = mx.where(mask[None, :, :, None], out_v, mx.zeros_like(out_v))
+
+            return out_k, out_v
 
         return self._keys[:, :, :T_total], self._values[:, :, :T_total]
 
