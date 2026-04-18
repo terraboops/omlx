@@ -1,0 +1,141 @@
+{
+  "session": "analyst_efficiency_audit",
+  "timestamp": "2026-04-18T06:00-06:45",
+  "trigger": "3-hour deep benchmarking window (implementer paused)",
+  "methodology": "Static code audit + cProfile + MLX microbenchmarks at 4K-64K contexts",
+  "sandbox_note": "Claude Code sandbox blocks Metal GPU; disabled for .venv/bin/python per user sandbox exclusion",
+
+  "experiments": {
+    "exp1_wht_vs_dense_rotation": {
+      "finding": "Dense matmul 26x faster than Python WHT at 262K vectors",
+      "data": {
+        "1K_vectors": {"wht_ms": 0.98, "dense_ms": 1.01, "ratio": 0.97},
+        "8K_vectors": {"wht_ms": 3.34, "dense_ms": 0.81, "ratio": 4.14},
+        "64K_vectors": {"wht_ms": 12.62, "dense_ms": 2.17, "ratio": 5.82},
+        "262K_vectors": {"wht_ms": 45.30, "dense_ms": 1.74, "ratio": 26.01}
+      },
+      "implication": "AMX matmul dominates Python butterfly loop overhead"
+    },
+    "exp2_scatter_vectorization": {
+      "finding": ".at[].add() loop 264x slower than vectorized scatter at 16K",
+      "data": {
+        "4K": {"loop_ms": 19.2, "vec_ms": 266.4, "speedup": "0x (cold start)"},
+        "16K": {"loop_ms": 75.7, "vec_ms": 0.3, "speedup": "264x"},
+        "64K": {"loop_ms": 337.7, "vec_ms": 2.1, "speedup": "161x"}
+      }
+    },
+    "exp3_freshness_vectorized": {
+      "finding": "Vectorized triangular mask gives 1.5-2.5x but scatter loop remains bottleneck",
+      "data": {
+        "4K": {"loop_ms": 122, "vec_ms": 81, "speedup": 1.5},
+        "16K": {"loop_ms": 534, "vec_ms": 212, "speedup": 2.5}
+      },
+      "implication": "Need fully vectorized scatter OR custom Metal kernel for full speedup"
+    },
+    "exp4_sdpa_vs_manual_importance": {
+      "finding": "mx.fast.scaled_dot_product_attention 1.9x faster + 7.7x less memory at 64K",
+      "data": {
+        "4K": {"manual_ms": 8.2, "sdpa_ms": 65.1, "manual_gb": 0.19, "sdpa_gb": 0.06},
+        "16K": {"manual_ms": 18.2, "sdpa_ms": 11.2, "manual_gb": 0.64, "sdpa_gb": 0.11},
+        "64K": {"manual_ms": 54.2, "sdpa_ms": 28.0, "manual_gb": 2.46, "sdpa_gb": 0.32}
+      },
+      "implication": "SDPA overhead at small T, but wins on both speed and memory at 16K+"
+    },
+    "exp5_duokv_concat_vs_slab_48layers": {
+      "finding": "Pre-allocated slab 18.2x faster at 16K across 48 layers",
+      "data": {
+        "4K_48L": {"concat_s": 0.54, "slab_s": 0.12, "concat_toks": 185.6, "slab_toks": 858.6, "speedup": 4.6},
+        "16K_48L": {"concat_s": 4.17, "slab_s": 0.23, "concat_toks": 24.0, "slab_toks": 435.1, "speedup": 18.2}
+      },
+      "implication": "Concat at 16K limits decode to 24 tok/s (below Goal 3). Slab fixes it."
+    },
+    "exp6_fused_dequant": {
+      "finding": "Fused dequant 2.0-2.5x faster, trivial to enable",
+      "data": {
+        "2K_chunk": {"unfused_ms": 2.17, "fused_ms": 0.88, "speedup": 2.47, "max_diff": 0.0019},
+        "8K_chunk": {"unfused_ms": 4.24, "fused_ms": 2.26, "speedup": 1.87},
+        "16K_chunk": {"unfused_ms": 8.66, "fused_ms": 4.30, "speedup": 2.01}
+      }
+    },
+    "exp7_dense_quantize": {
+      "finding": "Dense matmul quantize 2.5-3x faster than Python WHT quantize",
+      "data": {
+        "4K": {"wht_ms": 7.53, "dense_ms": 3.04, "speedup": 2.48},
+        "16K": {"wht_ms": 22.13, "dense_ms": 7.49, "speedup": 2.95},
+        "64K": {"wht_ms": 74.73, "dense_ms": 28.46, "speedup": 2.63}
+      }
+    },
+    "exp8_sdpa_peak_memory": {
+      "finding": "SDPA saves 99% peak memory vs manual GQA expansion",
+      "data": {
+        "16K": {"manual_gb": 0.403, "sdpa_gb": 0.005, "saved_pct": 99},
+        "64K": {"manual_gb": 1.611, "sdpa_gb": 0.018, "saved_pct": 99}
+      }
+    },
+    "exp10_dense_quality_warning": {
+      "finding": "CRITICAL: naive R.T substitution produces 100% wrong indices",
+      "data": {
+        "4K": {"mse_wht": 0.033958, "mse_dense_wrong": 1.963233, "packed_diff_pct": 100},
+        "16K": {"mse_wht": 0.034025, "mse_dense_wrong": 1.962221, "packed_diff_pct": 100}
+      },
+      "root_cause": "Forward rotation is H @ diag(signs) @ x, not (diag(signs) @ H).T @ x"
+    }
+  },
+
+  "profiling": {
+    "snapkv_pipeline_64K": {
+      "importance_realQ": {"elapsed_s": 0.423, "pct": 6.3},
+      "importance_CAOTE": {"elapsed_s": 0.143, "pct": 2.1},
+      "freshness": {"elapsed_s": 5.737, "pct": 85.1},
+      "select_segmented": {"elapsed_s": 0.277, "pct": 4.1},
+      "select_global": {"elapsed_s": 0.136, "pct": 2.0},
+      "get_indices": {"elapsed_s": 0.002, "pct": 0.0},
+      "compact_cache": {"elapsed_s": 0.018, "pct": 0.3},
+      "total": {"elapsed_s": 6.737}
+    },
+    "freshness_scaling": {
+      "4K": 0.514, "16K": 1.335, "32K": 2.677, "64K": 5.687,
+      "scaling": "linear in T (Python loop)",
+      "function_calls_at_64K": {"max": 262140, "min": 264188, "total": 526347}
+    },
+    "tq3_quantize_48L": {
+      "4K": {"elapsed_s": 0.159, "vecs_per_s": 1239435},
+      "16K": {"elapsed_s": 0.673, "vecs_per_s": 1168034},
+      "32K": {"elapsed_s": 1.418, "vecs_per_s": 1108828}
+    },
+    "duokv_decode_per_layer": {
+      "1K": {"concat_ms": 1.81, "slab_ms": 0.21},
+      "4K": {"concat_ms": 2.30, "slab_ms": 0.25},
+      "16K": {"concat_ms": 4.42, "slab_ms": 0.17},
+      "64K": {"concat_ms": 34.78, "slab_ms": 0.14}
+    }
+  },
+
+  "tasks_filed": [138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150],
+  "tasks_filed_count": 13,
+  "top3_quick_wins": [145, 140, 143],
+  "top3_high_impact": [149, 139, 148],
+
+  "late_experiments": {
+    "exp10_dense_quality_warning": {
+      "finding": "Naive R.T substitution produces 100% wrong packed indices — sign ordering matters",
+      "mse_wrong": 1.963, "mse_correct": 0.034
+    },
+    "exp12_wht_pass_breakdown": {
+      "finding": "7 butterfly passes each cost 4-20ms due to reshape+stack+eval kernel dispatches",
+      "262K_total_ms": 130.9
+    },
+    "exp13_eval_overhead": {
+      "finding": "mx.eval() costs 0.746ms even for trivial ops. 48L × 2 evals = 71ms/decode token",
+      "per_eval_ms": 0.746
+    },
+    "exp14_concat_vs_inplace_16K": {
+      "finding": "mx.concatenate 445x slower than in-place at 16K context",
+      "concat_ms": 17.99, "inplace_ms": 0.04, "speedup": 445
+    },
+    "exp15_goal1_budget": {
+      "finding": "3-bit native fits 1.5M tokens (Goal 1 achievable). DuoKV fp16 only fits 305K. DuoKV needs quantized retrieval heads for 1M.",
+      "max_3bit_tokens": 1542467, "max_fp16_tokens": 313313, "max_duokv_fp16_tokens": 390000
+    }
+  }
+}

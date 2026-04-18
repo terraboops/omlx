@@ -3450,3 +3450,203 @@ _(none)_
 - **Effort**: M (3 days: 1d saliency scoring + selection, 1d recovery mechanism, 1d integration + validation)
 - **Depends on**: SnapKV eviction (SHIPPED). Independent of TQ3 quantization (operates on a different axis). Composes with KeyDiff pre-filter (Task 134).
 - **Risk**: per-token unstructured channel masks are harder to implement efficiently than structured masks. On MLX/Metal, gather operations for non-contiguous channel subsets may be slower than contiguous slicing. Mitigation: implement as a dense mask multiply (sparse * dense) rather than gather, or sort channels by saliency and slice the top-T (contiguous after sort).
+
+## Efficiency Audit Findings (analyst deep bench, 2026-04-18)
+
+_Filed by the performance analyst during a 3-hour deep benchmarking window._
+_These are implementation inefficiencies — places where we could be batching into fused ops,_
+_streaming instead of reading whole, or using memory more efficiently._
+
+### 138. [TOP PRIORITY] Fused WHT quantize kernel — TQ3 prefill is 270x slower because WHT path lacks the fused Metal kernel that Givens/dense paths have
+- **Goal**: 4 (prefill speed — this is the root cause of the 270x prefill slowdown documented in Task 127)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/turboquant_kv.py:617-639` (`_quantize_wht`).
+- **The problem**: The Givens rotation path has `_fused_quantize_givens_kernel()` (line 283) that does norm+rotate+boundary+pack in ONE Metal dispatch. The dense rotation path has `_fused_quantize_kernel()` (line 218). But the WHT path — which is the ONLY correct rotation per the paper and the one actually used — does 5 SEPARATE operations: (1) `mx.linalg.norm`, (2) division for unit vector, (3) `_apply_wht_rotation`, (4) Python loop over 7 boundaries, (5) `_pack_contiguous`. Each is a separate Metal kernel dispatch with synchronization overhead.
+- **Why this matters**: At 64K context with 48 layers × 4 KV heads × 128 dims, the WHT quantize path processes ~4M vectors. Five separate kernel dispatches vs. one fused dispatch = ~4x kernel launch overhead PLUS the Python boundary loop adds 7 iterations with full tensor comparisons each. This is THE reason TQ3 prefill is 3 tok/s vs duo's 817 tok/s.
+- **Change**: Write a `_fused_quantize_wht_kernel()` Metal kernel analogous to the existing `_fused_quantize_kernel()` but using WHT butterfly operations instead of dense matrix multiply. The WHT butterfly is O(D log D) vs O(D²) for dense — each output coordinate depends on ALL input coordinates but via D/2 additions per pass (log₂(128) = 7 passes). The kernel should: (1) compute norm, (2) normalize, (3) apply sign flips, (4) butterfly WHT passes in registers, (5) boundary quantize, (6) pack — all in one dispatch.
+- **Profiling evidence** (2026-04-18 06:09):
+  - WHT quantize @ 4K × 48 layers: 0.159s (1.24M vec/s)
+  - WHT quantize @ 16K × 48 layers: 0.673s (1.17M vec/s)
+  - WHT quantize @ 32K × 48 layers: 1.418s (1.11M vec/s)
+  - Fused vs unfused dequant: fused is **1.7x faster** at 16K (0.005s vs 0.009s)
+  - The quantize path has NO fused kernel — it's 5 separate dispatches. Based on the dequant fusion ratio, expect 2-4x speedup from a fused quantize kernel.
+- **Additional experiment** (2026-04-18 06:30): Dense matmul is **2.5-3.0x faster** than Python WHT at all scales (4K: 7.5→3.0ms, 16K: 22.1→7.5ms, 64K: 74.7→28.5ms). At 262K vectors, dense matmul is **26x faster** than Python WHT because MLX's AMX matmul dominates vs O(D log D) butterfly with Python loop overhead.
+- **CRITICAL QUALITY WARNING** (EXP 10): Naively replacing `_apply_wht_rotation(unit, signs)` with `unit @ codec.rotation.T` produces **100% different packed indices** (MSE 0.034 → 1.96). This is because the forward rotation is `WHT(signs * x)` = `H @ diag(signs) @ x`, but `codec.rotation` stores `R = diag(signs) @ H`, so `R.T = H.T @ diag(signs) ≠ H @ diag(signs)`. The correct dense matmul form for the forward rotation is `(signs * unit) @ H.T` where `H = _wht(eye(D))`, or equivalently `unit @ (H @ diag(signs)).T`. **The fused kernel MUST apply signs first, then WHT — matching the existing `_apply_wht_rotation` composition.**
+- **Verify**: `TurboQuantMSECodec(128, 3).quantize(random_vectors)` should be at least 2.5x faster than current (profiled 2.5-3.0x from dense matmul alone, before fusing with norm+boundary+pack).
+- **Effort**: M (2 days — the Givens kernel is a template; WHT butterfly in Metal registers is the new part)
+- **Depends on**: None. The fused dequant kernel (`_fused_dequant_wht_kernel`, line 435) already exists and works — this is the quantize counterpart.
+
+### 139. [TOP PRIORITY] SnapKV freshness scoring has O(T) Python loop — vectorize the supersession counter
+- **Goal**: 3 (decode speed — freshness scoring runs at eviction time, blocking decode start), 1 (context window — makes SnapKV impractical for agentic multi-turn at 64K+)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:363-394` (`compute_freshness_scores`).
+- **Profiling evidence** (cProfile @ 64K, 2026-04-18 06:09):
+  - **5.737s wall clock** — **85.1% of the entire SnapKV pipeline** at 64K context
+  - 526,347 function calls: 262,140 calls to `max()`, 264,188 calls to `min()` (inner loop per-element)
+  - Scaling: 0.514s @ 4K → 1.335s @ 16K → 2.677s @ 32K → 5.687s @ 64K (linear in T, as expected from the O(T) Python loop)
+  - The function body itself accounts for 5.832s of the 5.853s total — virtually ALL time is spent in the Python loop, zero time in GPU ops
+- **The problem**: The inner loop `for local_i in range(chunk_len)` (line 384, chunk_len=256) runs inside an outer loop over 256-token chunks. For 64K context: 250 chunks × 256 iterations = 64,000 Python-level iterations, each doing tensor slicing, comparison, and `.at[].add()`. The `.at[].add()` pattern is a Python-level scatter that creates a new tensor per call.
+- **Change**: Replace the double loop with a vectorized approach: (1) Compute the full (chunk, window) similarity matrix `sims` already done. (2) Apply a triangular mask for the valid window region. (3) `mx.sum(sims > threshold, axis=-1)` gives the supersession count for the entire chunk in one op. (4) Scatter the counts into the output with a single indexed assignment, not per-element `.at[].add()`.
+- **Verify**: `compute_freshness_scores(cache, T=16384)` should complete in <0.5s (currently 1.335s — profiled). At 64K, should drop from 5.7s to <0.5s. Quality: freshness scores should be numerically identical (same algorithm, just vectorized).
+- **Effort**: S (1 day — the vectorization is straightforward, the triangular mask is the tricky part)
+- **Depends on**: None.
+
+### 140. [TOP PRIORITY] SnapKV keep_mask construction uses per-element .at[].add() Python loop
+- **Goal**: 3 (decode speed), 1 (context window — affects all SnapKV evictions)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1006-1011` (`snapkv_select`).
+- **Profiling evidence** (cProfile @ 64K, 2026-04-18 06:09):
+  - **0.277s** for segmented selection path, **0.136s** for global selection path at 64K
+  - `snapkv_select` itself takes 0.202s of 0.215s profiled time — the `.at[].add()` loop is the dominant cost
+  - 16,384 calls to `set.add()`, 65,472 lambda calls for segment sorting
+  - Combined with Task 141 (segmented sorting), this is **4.1% of the full pipeline** — small vs freshness but still >0.25s of pure Python
+- **The problem**: After computing the set of indices to keep, the mask is built by iterating through sorted_indices in Python: `for pos in sorted_indices: keep_mask = keep_mask.at[:, pos].add(...)`. At 25% keep of 64K context = 16,384 Python iterations, each creating a new tensor via `.at[].add()`. This is O(T) Python overhead for what should be a single scatter operation.
+- **Change**: Build the mask in one shot: `keep_mask = mx.zeros((B, T), dtype=mx.bool_); idx = mx.array(sorted_indices); keep_mask[:, idx] = True` — or use `mx.scatter` / boolean indexing. The `sorted_indices` list is already computed; converting it to an mx.array and doing a single indexed assignment is O(1) Python calls.
+- **Verify**: `snapkv_select(importance, keep_count=16384, T=65536)` should complete in <0.01s (currently 0.277s from profiling).
+- **Effort**: XS (30 min — single line change)
+- **Depends on**: None.
+
+### 141. SnapKV segmented selection uses Python sorted() and list iteration instead of mx.argpartition
+- **Goal**: 3 (decode speed at eviction time)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:748-755` (`_select_segmented`).
+- **The problem**: `pooled_np = pooled[0].tolist()` materializes the entire importance tensor to a Python list, then sorts each segment with Python `sorted()`. For 64K context with 512-token segments: 128 segments, each Python-sorting 512 floats. While not the worst bottleneck, this is unnecessary Python overhead when `mx.argpartition` (used in `_select_global`) can do this in one GPU dispatch per segment.
+- **Change**: Keep computations in MLX: for each segment, use `mx.argpartition(-seg_scores, kth=seg_k)[:seg_k]` to select the top-K indices without full sorting. Avoids the `.tolist()` CPU roundtrip entirely.
+- **Verify**: Correctness test: same indices selected. Speed: should be 5-10x faster at 64K context.
+- **Effort**: S (1 day)
+- **Depends on**: None.
+
+### 142. DuoKVCache update_and_fetch does per-head Python loop for streaming trim + growing concatenate overhead
+- **Goal**: 3 (decode speed — affects every prefill chunk when context exceeds 260 tokens)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/duo_kv_cache.py:215-243` (`DuoKVCache.update_and_fetch`).
+- **Profiling evidence** (memory profiling @ 64K, 2026-04-18 06:10):
+  - Update time grows linearly with context: 0.83ms @ 2K → 14.28ms @ 64K (17x increase)
+  - Metal growth is stable (no transient 2x spikes from concat — MLX handles this gracefully)
+  - However: at 64K, each `update_and_fetch` call takes 14ms, and with 48 layers × 32 chunks = 1,536 calls, total DuoKV overhead is ~21.5 seconds per 64K prefill
+  - The per-head trim loop runs on every chunk after context exceeds 260 tokens
+- **The problem**: When context exceeds sink+window capacity (260 tokens), the trim path iterates per-head in Python: `for h in range(H_kv)` (4 iterations) with per-head slice+concatenate+pad. Each streaming head does 2 slices + 1 concatenate (sink + window), then all heads are padded to max_len and concatenated. This creates 4×3 = 12 intermediate tensors per call, plus the padding tensors.
+- **Better approach**: Build a single gather index tensor that maps each (head, position) to either a sink position, a window position, or a pad position. Apply it once across all heads: `trimmed = full_kv[:, :, gather_indices, :]`. One gather op replaces the entire per-head loop. The gather_indices tensor can be precomputed once (it only depends on head types and current offset, not the actual KV values).
+- **Verify**: DuoKV prefill at 4K should be measurably faster (~5x reduction in trim overhead). Quality: numerically identical output.
+- **Effort**: S (1 day)
+- **Depends on**: None.
+
+### 143. StreamingKVCache ring-buffer write uses per-token Python loop
+- **Goal**: 3 (decode speed in duo mode — affects every token once ring buffer fills at 260 tokens)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/duo_kv_cache.py:100-114` (`StreamingKVCache.update_and_fetch`).
+- **The problem**: In ring mode (offset >= capacity), each new token is written via a Python loop: `for i in range(T_new): pos = ...; self._keys[:, :, pos:pos+1] = keys[:, :, i:i+1]`. During prefill with 8K-token chunks, this is 8,000 Python iterations with per-element tensor slice assignment. During decode (T_new=1), it's only 1 iteration — tolerable. But during prefill, this is catastrophic.
+- **Change**: Compute all ring positions at once with modular arithmetic: `positions = (mx.arange(T_new) + (self.offset - self.capacity)) % ring_len + ring_start`. Then use scatter: `self._keys[:, :, positions, :] = keys`. One tensor operation replaces T_new Python iterations.
+- **Verify**: Prefill of 8K tokens into a full ring buffer should complete in <1ms (currently O(seconds) from Python loop).
+- **Effort**: XS (30 min)
+- **Depends on**: None. Note: `StreamingKVCache` is a subcomponent of `DuoKVCache`, not used directly.
+
+### 144. TQ3 KV buffer uses mx.concatenate for growth instead of pre-allocated slab
+- **Goal**: 1 (1M context — concatenate copies entire buffer on every extension), 6 (machine fit — transient 2x memory spike during concat)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/turboquant_kv.py:1360-1366` (`TurboQuantKVCache.update_and_fetch`).
+- **The problem**: When the compressed KV buffer needs to grow, it uses `mx.concatenate([self._k_norms, mx.zeros(...)])` for FOUR arrays (k_norms, k_packed, v_norms, v_packed). Each concatenation creates a copy of the entire existing buffer plus the new zeros. At 256K context with TQ3, the buffer is ~5GB — concatenation temporarily requires ~10GB. The code does have pre-allocation in 256-token steps (the `_step` field), but when those steps are exhausted, it falls back to concatenation.
+- **Better approach**: Pre-allocate larger slabs (e.g., 2x current size, geometric growth) to reduce the number of concatenations. Or use a list of chunks and concatenate lazily only when the full buffer is needed (for decode). The `_step = 256` allocation step is too small for long contexts.
+- **Verify**: Memory profile during 64K prefill should show no 2x transient spikes from buffer growth. Concatenation count should drop from ~250 (64K/256) to ~7 (64K with geometric 2x growth from 256).
+- **Effort**: S (1 day)
+- **Depends on**: None.
+
+### 145. TQ3 dequantize path doesn't use fused kernel by default — dequantize_fused exists but isn't called in the streaming attention hot path
+- **Goal**: 4 (prefill speed — streaming attention dequants chunks during prefill)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/streaming_attention.py` calls `codec.dequantize()`, not `codec.dequantize_fused()`. The fused kernel at `omlx/turboquant_kv.py:660-671` does unpack+codebook+WHT+norm in ONE Metal dispatch, but it's only called explicitly — the streaming attention hot path doesn't use it.
+- **Profiling evidence** (EXP 6, 2026-04-18 06:30):
+  - chunk=2048: unfused 2.17ms → fused 0.88ms (**2.47x speedup**)
+  - chunk=8192: unfused 4.24ms → fused 2.26ms (**1.87x speedup**)
+  - chunk=16384: unfused 8.66ms → fused 4.30ms (**2.01x speedup**)
+  - max_diff between fused/unfused output: 0.0019 (acceptable precision difference)
+- **The problem**: During streaming prefill, each dequant chunk goes through: (1) unpack kernel, (2) codebook gather, (3) WHT inverse, (4) norm scale — four separate dispatches. The `dequantize_fused` method exists and would do this in one dispatch, but `streaming_tq_attention` calls `codec.dequantize(k_norms[chunk], k_packed[chunk])` which is the unfused path.
+- **Change**: In `streaming_tq_attention`, replace `codec.dequantize(...)` calls with `codec.dequantize_fused(...)`. This is a one-line change per call site.
+- **Verify**: Streaming prefill throughput at 16K+ context should improve 2.0-2.5x for the dequant step (profiled). Quality: max difference 0.0019 (acceptable).
+- **Effort**: XS (15 min — literally changing method names)
+- **Depends on**: None. The fused kernel already exists and works.
+
+### 146. SnapKV submodular selection uses pure Python inner loop with O(T×K×D) complexity
+- **Goal**: 3 (decode speed at eviction time for long contexts with --submodular-evict)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:815-839` (`_select_submodular`).
+- **The problem**: The greedy submodular selection does `for _ in range(seg_k)` with an inner `for j in range(seg_len)` that computes cosine similarity using `sum(a*b for a,b in zip(...))` — pure Python zip-and-sum over D=128 floats. For a 512-token segment keeping 128 tokens: 128 × 512 × 128 = 8.4M Python float operations. The `set(retained_in_seg)` check inside `max()` is also O(K) per candidate per iteration.
+- **Change**: Move the diversity-penalized selection into MLX: precompute the V similarity matrix for the segment (512×512 at D=128 = 32MB, fits in cache), then iterate the greedy loop with vectorized score updates. Replace `sum(a*b...)` with `mx.sum(v1 * v2)` or batch dot product. The greedy outer loop can stay in Python (K iterations) but the inner scoring must be vectorized.
+- **Verify**: Submodular selection at 16K context should complete in <1s (currently estimated >30s from Python loops).
+- **Effort**: S (1 day)
+- **Depends on**: None. Low priority since `--submodular-evict` is optional and not default.
+
+### 149. [TOP PRIORITY] DuoKVCache uses mx.concatenate per decode token — 248x slower than pre-allocated slab at 64K
+- **Goal**: 3 (decode speed — this is the single largest decode bottleneck at long context), 1 (context window — DuoKV becomes impractical at 16K+)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/duo_kv_cache.py:205-206` (`update_and_fetch` line `self._keys = mx.concatenate([self._keys, keys], axis=2)`).
+- **Profiling evidence** (microbench, 2026-04-18 06:20):
+  - **mx.concatenate per-token overhead scales linearly with buffer size**:
+    - 1K context: 1.81 ms/token
+    - 4K context: 2.30 ms/token
+    - 16K context: 4.42 ms/token
+    - 64K context: **34.78 ms/token** (copies 134 MB buffer every single token)
+  - **Pre-allocated slab (slice assignment) is constant and 248x faster at 64K**:
+    - 1K: 0.21 ms, 4K: 0.25 ms, 16K: 0.17 ms, 64K: **0.14 ms**
+  - At 48 layers × 34.8ms = **1.67s per decode token at 64K** from concat alone — limits decode to 0.6 tok/s (Goal 3 requires 50 tok/s)
+  - MLX's own `KVCache` class avoids this by pre-allocating and using in-place slice writes
+- **The problem**: `DuoKVCache.update_and_fetch` does `self._keys = mx.concatenate([self._keys, keys], axis=2)` on every call. During decode (T_new=1), this copies the ENTIRE buffer to add ONE token. At 64K context with 4 KV heads × 128 dim × fp16 = 64MB per array, two arrays (K+V) = 128MB of unnecessary copying per layer per token.
+- **Change**: Pre-allocate the KV buffer with headroom (e.g., `step=256` like TQ3 does). Use slice assignment `self._keys[:, :, offset:offset+1] = keys` for decode (T_new=1). Only fall back to concat when headroom is exhausted. The MLX `KVCache` class in `mlx_lm.models.cache` has a working implementation of this pattern — adapt it.
+- **Additional experiment** (EXP 14, 2026-04-18 06:40): At 16K context, concat costs **17.99ms/token** while in-place `.at[]` costs **0.04ms/token** — a **445x speedup**. Over 200 decode tokens, concat copies 6.8 GB vs in-place copying 200 KB. At 48 layers × 200 tokens: concat = 173 seconds, in-place = 0.38 seconds.
+- **Why concat is so expensive**: `mx.concatenate([buf, tok], axis=2)` must allocate a new (ctx+1)-sized buffer, copy the entire old buffer, then copy the new token. At 16K this copies 34 MB per call. MLX cannot optimize this away because the old buffer must be preserved until the new one is evaluated.
+- **Verify**: DuoKV decode at 64K should be <0.5ms/token (currently 34.78ms — profiled). Goal 3 decode speed at long context should be achievable with DuoKV mode.
+- **Effort**: S (1 day — pre-allocation is well-understood, can reference MLX KVCache pattern)
+- **Depends on**: None. HIGH IMPACT — this single fix would unlock DuoKV for long context.
+
+### 148. CAOTE importance scoring: GQA key expansion + causal mask waste 1.6 GB and 2.2s at 64K
+- **Goal**: 1 (context window — CAOTE at 64K needs 4.3 GB transient memory for GQA copies alone), 3 (decode speed — 2.2s of mask compute per layer at 64K)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:440-459` (`compute_caote_importance`).
+- **Profiling evidence** (component timing @ 64K, 2026-04-18 06:15):
+  - Causal mask (`mx.where`): **2,240ms (72% of single-layer time)**
+  - Q@K^T scores: 351ms (11%)
+  - GQA expand (`mx.repeat`): 95ms (3%) but **1.074 GB per layer** memory cost
+  - Softmax: 249ms (8%)
+  - At 4 layers: total CAOTE scoring is ~12.5s estimated, with 4.3 GB transient from GQA expansion
+- **The problem**: (1) `mx.repeat(keys, gqa_ratio, axis=1)` creates a full copy of all 65K keys expanded from H_kv=4 to H_q=32 heads — 1.07 GB per layer. (2) The causal mask creates a `(1, 1, 64, 65536)` boolean comparison and broadcasts it via `mx.where` against the `(1, 32, 64, 65536)` scores — 537MB allocation plus the broadcast.
+- **Experimental validation** (EXP 8, 2026-04-18 06:30): `mx.fast.scaled_dot_product_attention` saves **99% of peak memory** vs manual GQA expansion. At 64K: manual peak 1.611 GB vs SDPA peak 0.018 GB — saving 1.59 GB per call. At 16K: 0.403 GB → 0.005 GB. SDPA is also 1.6-1.9x faster at 16K+ (EXP 4).
+- **Change**: Replace the manual Q@K^T + causal mask with `mx.fast.scaled_dot_product_attention` which handles GQA natively (no key expansion) and applies causal masking internally. For the observation-window-only queries, slice Q_obs and pass the appropriate mask=None (since obs_window queries at the end of context can attend to everything before them). This eliminates the 1.07 GB GQA copy and the 2.2s mask computation entirely.
+- **Verify**: CAOTE scoring at 64K should drop from ~3.1s/layer to <0.5s/layer. Memory peak should drop by 1.59 GB per layer (validated by EXP 8).
+- **Effort**: S (1 day)
+- **Depends on**: None. Also applies to `compute_importance_from_real_q` (same GQA expansion pattern).
+
+### 150. DuoKVCache retrieval heads use fp16 — must use QuantizedKVCache for Goal 1 (1M context)
+- **Goal**: 1 (1M context — DuoKV in fp16 can only reach ~305K before exceeding 30.8 GB KV budget)
+- **Derived from**: Analyst efficiency audit 2026-04-18, EXP 15 memory budget analysis.
+- **Profiling evidence** (EXP 15):
+  - Measured fp16: 4096 bytes/tok/layer. At 48L × 1M = **196.6 GB** — exceeds 48 GB by 4x
+  - Measured 3-bit native: 512 bytes/tok/layer. At 48L × 1M = **24.6 GB** — fits within 30.8 GB budget
+  - DuoKV (41% retrieval fp16 + 59% streaming ring): ~1640 bytes/tok/layer. At 48L × 1M = **75 GB** — exceeds 48 GB by 56%
+  - Maximum DuoKV fp16 context: ~390K tokens (vs Goal 1 target of 1M)
+- **The problem**: `DuoKVCache` stores both retrieval AND streaming heads as fp16 arrays. Streaming heads are bounded by the ring buffer (sink+window=260 tokens) and have constant memory. But retrieval heads grow linearly with context in fp16, consuming 4096 bytes/tok/layer. To reach 1M, retrieval heads must use 3-bit quantization like native mode's `QuantizedKVCache`.
+- **Change**: Use `QuantizedKVCache(bits=3)` for retrieval heads instead of raw fp16 arrays. Streaming heads stay fp16 (ring buffer is only 260 tokens). This gives DuoKV's quality benefits (streaming/retrieval classification) with 3-bit memory efficiency for the full context.
+- **Verify**: DuoKV at 256K context should use < 10 GB KV memory (vs current 25.8 GB). At 1M: < 30 GB (fits in budget).
+- **Effort**: M (2 days — need to handle the quantized K/V in attention correctly for retrieval heads)
+- **Depends on**: None. Independent of Task 149 (concat→slab). Both needed for DuoKV at long context.
+
+### 151. TQ3 as DuoKV backend — quantized retrieval heads for Goal 1 + DuoAttention quality for Goal 2
+- **Goal**: 1 (1M context), 2 (intelligence — DuoAttention preserves quality by keeping retrieval heads at full fidelity)
+- **Derived from**: Analyst EXP 15 memory budget analysis + architectural insight.
+- **The insight**: DuoKV's quality advantage comes from the streaming/retrieval HEAD CLASSIFICATION, not from fp16 storage. The classification tells us WHICH heads need full context (retrieval) and which can use a ring buffer (streaming). But the STORAGE for retrieval heads doesn't need to be fp16 — TQ3's 3-bit codebook quantization is the right backend. At 1M context, TQ3 retrieval heads use 512 bytes/tok/layer vs fp16's 4096 bytes/tok/layer — 8x compression. Combined with streaming heads' ring buffer (constant memory), this gives DuoKV+TQ3 the memory efficiency of native 3-bit with the quality advantage of DuoAttention.
+- **Change**: Modify `DuoKVCache.__init__` to use `TurboQuantKVCache(bits=3)` for retrieval heads instead of raw fp16 arrays. Streaming heads stay as fp16 ring buffers (only 260 tokens). The attention dispatch needs to handle mixed cache types: SDPA for streaming heads (fp16), fused TQ SDPA for retrieval heads (3-bit codebook).
+- **Verify**: (1) DuoKV+TQ3 at 256K context fits in 48 GB. (2) MMLU-Pro score stays >= 60% (DuoKV quality). (3) NIAH at 64K passes (retrieval heads preserve needles). (4) Decode speed >= 50 tok/s at 4K (TQ3 fused SDPA handles decode).
+- **Effort**: M-L (3-5 days — mixed cache attention dispatch is the hard part)
+- **Depends on**: Task 149 (DuoKV slab pre-allocation) should land first for the streaming heads. Task 138 (fused WHT quantize) improves prefill speed.
+
+### 152. TQ3 quantize can use existing fused dense kernel with WHT rotation matrix
+- **Goal**: 4 (prefill speed — TQ3 prefill is 270x slower due to unfused WHT, but a fused dense kernel already exists)
+- **Derived from**: Analyst experiments EXP 1, 7, 10 (2026-04-18).
+- **The insight**: The codebase already has `_fused_quantize_kernel()` (line 218 in turboquant_kv.py) — a Metal kernel that does norm+rotate+boundary+pack in ONE dispatch using a dense rotation matrix. The WHT rotation matrix IS a dense matrix (it's `diag(signs) @ H`). The existing fused kernel can be reused directly with the WHT rotation matrix as input. No new Metal kernel needed — just call `_fused_quantize(vectors, codec.rotation, codec._boundaries, 3, 128)` instead of `codec._quantize_wht(vectors)`.
+- **CRITICAL CAVEAT from EXP 10**: The fused kernel applies `R` as `vectors @ R`, but the forward WHT rotation is `H @ diag(signs) @ x = (diag(signs) @ H).T @ x` when applied to column vectors. The `_fused_quantize_kernel` does `out_coord = sum_j(vec[j] * rotation[j * Dim + idx])` which is `vec @ R[:, idx]` = applying R as a ROW-vector convention. Need to verify: is `codec.rotation` stored in the same convention as the dense kernel expects? If so, this is a zero-effort fix. If not, transpose it.
+- **Change**: In `TurboQuantMSECodec.quantize()`, replace `self._quantize_wht(vectors)` with `_fused_quantize(vectors, self.rotation, self._boundaries, self.bits, self.dim)`. Test quality is identical to current WHT path.
+- **VALIDATED** (EXP 16, 2026-04-18 06:45):
+  - MSE: **identical** (0.033897 both paths)
+  - Packed indices: **99.67% match** (0.33% differ from fp32→fp16 cast in Metal kernel)
+  - Speed: **3.5x** (4.41ms → 1.25ms at 4K)
+  - The math is correct: `H.T = H` (Hadamard symmetric), so `codec.rotation.T @ v = H @ diag(signs) @ v = WHT(signs * v)` — exactly the forward WHT rotation
+- **Verify**: (1) This experiment validated quality and speed. (2) Run NIAH 4K and Code Intel 5/5 with fused quantize to confirm no regression in real generation. (3) Test at 64K context to verify scaling.
+- **Effort**: XS (1 hour — literally one line: replace `self._quantize_wht(vectors)` with `_fused_quantize(vectors, self.rotation, self._boundaries, self.bits, self.dim)`)
+- **Depends on**: None. This fully resolves the core of Task 138 without writing any new Metal kernel.
+
+### 147. GER safety check materializes importance to Python via .tolist() for per-element mask construction
+- **Goal**: 3 (decode speed — GER check runs on every SnapKV eviction)
+- **Derived from**: Analyst efficiency audit 2026-04-18. Code location: `omlx/patches/snapkv.py:1241-1244` (`compute_ger`).
+- **The problem**: `threshold_idx = mx.argpartition(...)[:n_important]` returns an MLX array, then iterates with `for idx in threshold_idx.tolist(): important_mask = important_mask.at[idx].add(...)`. Same `.at[].add()` per-element loop pattern as Task 140. For 10% of 64K = 6,553 Python iterations.
+- **Change**: Same fix as Task 140: `important_mask[threshold_idx] = True` or equivalent single-op scatter.
+- **Verify**: GER check at 64K should complete in <0.01s.
+- **Effort**: XS (15 min — same pattern as Task 140)
+- **Depends on**: None. Can be fixed alongside Task 140.

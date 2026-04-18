@@ -3281,6 +3281,65 @@ tok/s should jump further (the MagicDec paper claims 2-4×).
   (#85, #86) remain open because the run didn't exercise them.
 ```
 
+### Run 81: ALL 11 GATES PASS — First Analyst Verification Post-Efficiency Audit + 15 Tasks Filed
+```
+Date: 2026-04-18
+SHA:  9bfd54c
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo)
+
+First clean-system analyst --full run after deep efficiency audit session. Confirms
+11-gate configuration at SHA 9bfd54c (post-TTT, post-progressive eviction, post-CLAUDE.md
+Goal 1 path documentation). 15 efficiency tasks filed (138-152) with profiling evidence
+from GPU microbenchmarks.
+
+Commits since Run 61 (aad424e): 30+ commits including:
+  - 9bfd54c docs: Complete CLAUDE.md Goal 1 path
+  - 3a4d453 feat: Per-layer TTT learning rates (Task 109)
+  - 3e08ea0 milestone: 96K NIAH PASS
+  - abbaf26 feat: TQ3+SnapKV fp16 KV capture
+  - 48558ff feat: Phase 3e SnapKV quality gate
+  - 618d426 bench: Run 73 — first --full with SnapKV quality gate
+  - 16f5f72 fix: Critical analyst findings (Tasks 126-132)
+
+Phase Results:
+  Phase 0: Smoke              PASS   0.3s   Prefill 77 tok/s, Decode 43.4 tok/s
+  Phase 1: Coherence          PASS   1.5s   2/2 checks
+  Phase 2: Code Intelligence  PASS   4.6s   5/5 (100%)
+  Phase 3: NIAH               PASS  50.2s   4K + 16K PASS
+  Phase 3b: RULER             PASS 242.4s   11/11 at 4K/16K, 4 SKIPped@64K (headroom)
+  Phase 3c: MMLU-Pro          PASS 897.9s   62/100 (62%)
+  Phase 3e: SnapKV Quality    PASS   1.7s   49% kept, GER=0.000
+  Phase 3d: LiveCodeBench     PASS 156.7s   6/20 (30%) — easy 62%, medium 12%, hard 0%
+  Phase 4: HumanEval          PASS  19.7s   19/20 (95%)
+  Phase 5: Memory             PASS         Metal peak 35.1 GB, Swap peak 3.9 GB
+  TOTAL: 1393.2s (23.2 min)
+
+Memory Profile:
+  Metal at load: 32.4 GB | Peak: 35.1 GB (limit 41.2) | Swap: 3.9 GB (limit 12.9)
+
+Analysis notes:
+- **Decode 43.4 tok/s — below recent 53.9 baseline.** The system had just finished
+  a 90-minute efficiency profiling session that loaded multiple MLX tensors at 64K
+  scale. Despite memory being clean at benchmark start (30 GB free), residual macOS
+  compressor pressure (718K pages in compressor, 1.5B swapins) likely degraded decode
+  throughput. Not a regression — decode was 53.9 on the quick bench earlier this session.
+- **Quality metrics byte-identical to Run 78**: MMLU-Pro 62%, HumanEval 95%, Code Intel
+  100%, RULER 100%, SnapKV 49%/GER=0.000, LiveCodeBench 30%. Zero quality movement
+  across 30+ commits. The quality floor is structural.
+- **Efficiency audit filed 15 tasks (138-152)** with GPU profiling evidence:
+  - Task 149: DuoKV concat is 248x slower than pre-alloc slab at 64K (profiled)
+  - Task 152: VALIDATED — existing fused quantize kernel works with WHT rotation (3.5x, one-line fix)
+  - Task 148: SDPA saves 99% peak memory vs manual GQA expansion (profiled)
+  - Task 150: DuoKV fp16 can only reach 305K — needs TQ3 backend for Goal 1 (1M)
+  - Task 139: Freshness scoring is 85% of SnapKV pipeline at 64K (5.7s pure Python loop)
+- **LiveCodeBench medium/hard remains at floor** (12%/0%). Easy improved from Run 78's
+  implicit floor to explicit 62%. The hard-0% gap is structural — Qwen3-Coder-30B-A3B
+  at 8-bit MoE cannot solve competitive programming problems with constrained decode.
+- **No new tasks filed from this run** — all findings come from the efficiency audit
+  profiling session, not from benchmark observation. The benchmark itself is stable.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix

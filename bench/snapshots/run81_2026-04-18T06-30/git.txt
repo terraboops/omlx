@@ -1,0 +1,10 @@
+9bfd54c6f86c5eb2e95f17c674c01ae1860260e6
+ M TASKS.md
+?? bench/snapshots/analyst_efficiency_audit_2026-04-18.json
+?? bench/snapshots/run81_2026-04-18T06-30/console.txt
+?? bench/snapshots/run81_2026-04-18T06-30/git.txt
+?? bench/snapshots/run81_2026-04-18T06-30/profile.json
+?? bench/snapshots/run81_2026-04-18T06-30/results.json
+?? omlx/bench/efficiency_profile.py
+ TASKS.md | 200 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 200 insertions(+)
