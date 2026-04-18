@@ -131,7 +131,8 @@ def apply_adaptive_prefill(
         throughput_floor: If tok/s drops below this, shrink chunks.
         min_prompt_tokens: Minimum prompt length to activate adaptive mode.
     """
-    import mlx_lm.generate as gen_mod
+    import importlib
+    gen_mod = importlib.import_module("mlx_lm.generate")
     import mlx_lm.models.cache as cache_mod
 
     _original_generate_step = gen_mod.generate_step

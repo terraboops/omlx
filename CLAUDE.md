@@ -25,20 +25,33 @@ any of these — even to improve another — needs explicit justification.
 | 5 | **Swap pressure** | p90 sustained swap I/O < 100 MB/s (N≥8 runs) | Swap depth alone misses throughput; 100 MB/s leaves 4x headroom vs M4 Pro's ~430 MB/s floor |
 | 6 | **Machine fit** | Runs comfortably on the M4 Pro 48GB reference machine | Laptop stays usable while inference runs |
 
-### Current status against goals (as of 2026-04-16)
+### Current status against goals (as of 2026-04-17)
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | **VALIDATED TO 128K** — NIAH PASS with SnapKV+CAOTE (9 GB saved, 44.6→35.6 GB Metal). At 1M native 3-bit @25%: KV ~5.6 GB, total ~23 GB — fits 48 GB. | Validate 256K+ with native 3-bit KV mode |
-| 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62-64%** — **4 eval families, ALL GATES PASS** | Add tau-bench (agentic) for 5th eval family |
-| 3 | 50 tok/s decode constant | **52.7 tok/s with DuoKVCache — GOAL MET**. | Met in duo mode. Under co-tenancy drops proportionally. |
-| 4 | 500 tok/s prefill constant | **96 tok/s at 2K (duo), 803 at 4K, 501 at 16K — GOAL MET** in duo mode. | O(n²) attention still applies at 64K+. |
-| 5 | Swap p90 < 100 MB/s | **0.0 GB swap on clean system — GOAL MET**. Under co-tenancy: 7-8.5 GB swap (still under 12.9 GB limit). | Co-tenancy degrades swap but stays within limits. |
-| 6 | 48GB M4 Pro fit | Duo: 35.1 GB peak. — **PASS** | 6 GB headroom on clean system; needs ~45 GB free at launch for NIAH 16K. |
+| 1 | 1M context | **VALIDATED TO 128K** — NIAH PASS with SnapKV+CAOTE (9 GB saved). TQ3+SnapKV validated at 4K/16K. | 64K+ needs progressive mid-prefill eviction |
+| 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62%**, LiveCodeBench 30% — **5 eval families** | LiveCodeBench at floor (30%), room to improve |
+| 3 | 50 tok/s decode constant | **Duo: 53.6 tok/s — GOAL MET**. Native: 46.8 tok/s (below 50 target). | Goals 1+3 tension: duo meets G3, native meets G1 |
+| 4 | 500 tok/s prefill constant | **Duo: 817 tok/s at 4K — GOAL MET**. TQ3: ~3 tok/s (270× slower, WHT codec overhead). | TQ3 prefill impractical for agentic re-prefill |
+| 5 | Swap p90 < 100 MB/s | **0.0 GB swap on clean system — GOAL MET**. | Co-tenancy: 7-8.5 GB swap (within limits). |
+| 6 | 48GB M4 Pro fit | Duo: 35.1 GB peak. — **PASS** | 6 GB headroom on clean system. |
 
-**Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 64% vs 48% native), zero swap on clean system,
-52.7 tok/s decode. DuoKVCache uses fp16 for all heads with ring-buffer trimming for streaming
-heads (59%). Native 3-bit only preferred for very long context (64K+) where fp16 KV exhausts Metal.
+### Goal 1 practical cost progression (analyst Run 78, 2026-04-17)
+
+| Context | Metal Peak | Swap | Wall Clock | SnapKV Needed? |
+|--------:|----------:|---------:|----------:|:-------------|
+| 4K | 32.5 GB | 0 GB | 0.3s | No |
+| 16K | 33.9 GB | 0 GB | 50s | No |
+| 64K | 38.4 GB | 4.9 GB | 23 min | Recommended |
+| 128K | 44.6 GB | 6+ GB | 42 min | Required (chunked prefill) |
+| 256K | ~30 GB* | 0 GB* | ~3 hr | Required (fp16 + SnapKV@25%) |
+
+*256K with SnapKV@25% keep: model 17.2 + KV 3.1 = 20.3 GB after eviction.
+
+**Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 62%, HumanEval 95%), zero swap,
+53.6 tok/s decode. For long context (64K+): use fp16 mode with `--snapkv-keep` for eviction.
+TQ3 mode: good decode (50 tok/s) but prefill is 270× slower — use only for single-turn generation
+with session save/load (prefill once, reload via `/v1/sessions/load`).
 
 **5 of 6 goals MET** in duo mode. Full `--full` benchmark ALL 9 GATES PASS (HumanEval 95%, 1481s).
 **Goal 1 validated to 128K** with SnapKV+CAOTE eviction (9 GB Metal saved, NIAH PASS).

@@ -1335,8 +1335,9 @@ def apply_snapkv_to_generate(keep_count: int, obs_window: int = 64,
             later tokens) get exponentially penalized. Prevents stale entries
             from consuming cache budget in agentic multi-turn scenarios.
     """
+    import importlib
     import threading
-    import mlx_lm.generate as gen_mod
+    gen_mod = importlib.import_module("mlx_lm.generate")
     import mlx_lm.models.cache as cache_mod
 
     _logger = logging.getLogger("hypercar.snapkv")

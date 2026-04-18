@@ -512,6 +512,18 @@ _(none)_
 
 ## Completed
 
+- **Task 126: [CRITICAL FIX] SnapKV server crash** — importlib fix (2026-04-17)
+  - `mlx_lm.generate` is a function (from `__init__`), not a module
+  - Fix: `importlib.import_module("mlx_lm.generate")` in snapkv.py + adaptive_prefill.py
+  - `--snapkv-keep` now works on all KV modes (duo, tq3, native)
+- **Task 128: Server default model mismatch** — 4-bit→8-bit fix (2026-04-17)
+  - Server default was `Instruct-4bit`, bench uses `Instruct-8bit`
+  - All CLAUDE.md performance claims (MMLU 62%, HumanEval 95%) are for 8-bit
+  - Fixed: server now defaults to 8-bit to match bench
+- **Task 129+132: Goal 1/3 tension + cost docs** — honest status update (2026-04-17)
+  - Duo: 53.6 tok/s (meets G3), Native: 46.8 tok/s (misses G3)
+  - TQ3 prefill: 3 tok/s (270× slower than duo)
+  - Added Goal 1 cost progression table to CLAUDE.md
 - **Task 111: Streaming-head budget rebalancing** — retrieval 2×, streaming 0.5× (2026-04-17)
   - `head_types` parameter in `snapkv_select()`: reweights importance before pooling
   - Retrieval heads get 2× importance weight, streaming heads get 0.5×
