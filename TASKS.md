@@ -3904,3 +3904,39 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Prefill throughput at 4K context with staircase-aligned chunk size vs current heuristic. Expect 5-15% improvement from eliminating partial-tile waste.
 - **Effort**: S (profiling script + one constant change)
 - **Depends on**: None — standalone optimisation.
+
+---
+
+## Research-derived tasks (from LIT_REVIEW.md pass 38, 2026-04-18)
+
+### 173. Sparse covariance fitting eviction scorer for multi-head SnapKV
+- **Goal**: 1 (context window), 2 (intelligence)
+- **Derived from**: Robust Detection of Underwater Target Against Non-Uniform Noise (2512.11231)
+- **Change**: `omlx/snapkv.py` — add `score_sparse_covariance()` alongside existing CAOTE scorer. Formulate the multi-head attention score matrix (heads x tokens) as a sparse DOA estimation problem: the "steering vectors" are query projections per head, the "covariance matrix" is K^T K, and the L1-regularized fit selects the sparse set of tokens that best explain the observed attention pattern across all heads jointly. Use ADMM solver (10-50 iterations, convergent for 64-head arrays).
+- **Verify**: Run NIAH at 16K@25% keep with sparse-covariance scorer vs CAOTE scorer. The sparse-covariance scorer should match or beat CAOTE on NIAH PASS rate while being more robust to mixed retrieval/streaming head distributions (test by varying the retrieval/streaming head ratio via DuoAttention calibration).
+- **Effort**: M (ADMM solver implementation + SnapKV integration)
+- **Depends on**: SnapKV eviction pipeline (shipped), DuoAttention head classification (Task 12).
+
+### 174. Kalman-filtered importance tracker for SnapKV freshness decay
+- **Goal**: 1 (context window), 2 (intelligence — multi-turn quality)
+- **Derived from**: Kalman Linear Attention (2602.10743)
+- **Change**: `omlx/snapkv.py` — replace the heuristic freshness decay (Task 97) with a Kalman filter that tracks per-token importance as a latent state. State: importance estimate mu_t per token. Measurement: attention score from the latest query. Process noise Q: models importance drift between turns. Measurement noise R: models attention score noise. The Kalman gain K_t = P_t|t-1 / (P_t|t-1 + R) balances prior importance vs new evidence. Tokens with high posterior variance P_t|t are unpredictable and should be kept as insurance; tokens with low variance and low mean importance can be evicted. Use the information-form reparametrisation from the paper for vectorised computation across all tokens.
+- **Verify**: Multi-turn NIAH: prefill context, run 3 follow-up queries targeting different needles. Compare Kalman tracker vs current freshness decay on retrieval accuracy across turns. The Kalman tracker should maintain accuracy on turn 3 (where freshness decay currently over-evicts tokens that were important in turn 1 but not queried in turn 2).
+- **Effort**: M (Kalman filter implementation + SnapKV integration + multi-turn eval)
+- **Depends on**: SnapKV freshness decay (Task 97, shipped).
+
+### 175. Neural coordinator for per-layer KV memory budget allocation
+- **Goal**: 5 (swap pressure), 6 (48GB fit)
+- **Derived from**: Neural Coordination and Capacity Control for Inventory Management (2410.02817)
+- **Change**: `omlx/snapkv.py` + new `omlx/neural_coordinator.py` — train a small MLP (48-dim input: current KV memory per layer; 48-dim output: per-layer shadow prices / keep ratios) on existing benchmark trace data from `bench/snapshots/`. The coordinator replaces the current uniform `--snapkv-keep` ratio with per-layer adaptive ratios that respect the total Metal budget constraint. At eviction time, the coordinator takes current per-layer KV sizes and outputs per-layer keep ratios such that sum(layer_kv_size * keep_ratio) <= Metal budget - model_size - safety_margin. Layers with high shadow price (high marginal value of KV memory) get higher keep ratios.
+- **Verify**: Run NIAH at 64K@25% average keep with neural coordinator vs uniform 25% keep. Quality (NIAH PASS) should be maintained while total Metal peak should be within 2% of uniform (the coordinator redistributes, not inflates). Measure per-layer keep ratios and verify they correlate with the rate-distortion covariance determinant from Task 170 (layers with high covariance should get higher keep ratios).
+- **Effort**: M (MLP training on existing trace data + SnapKV integration)
+- **Depends on**: SnapKV eviction pipeline (shipped). Complementary to Task 170 (per-layer bit allocation).
+
+### 176. SSD-backed tiered KV cache with metadata-guided prefetch
+- **Goal**: 1 (context window — extend beyond 48GB Metal), 5 (swap pressure — controlled I/O)
+- **Derived from**: KVSwap: Disk-aware KV Cache Offloading (2511.11907)
+- **Change**: New `omlx/kv_tier.py` + modifications to `omlx/hypercar_server.py`. Implement a two-tier KV cache: tier 0 = Metal-resident (hot tokens selected by SnapKV), tier 1 = mmap'd file on Apple Silicon NVMe SSD (full KV cache). During decode, the tier-0 cache handles attention for most queries. When SnapKV detects a cache miss (query attends strongly to an evicted token), the tier manager fetches the relevant KV block from tier 1 with read-ahead. Use 2Q replacement policy: tokens seen only during prefill go to the "A1out" ghost queue; tokens re-accessed during decode are promoted to the "Am" hot queue. Group KV entries by layer to match SSD page size (4KB) and minimize read amplification.
+- **Verify**: Prefill 128K tokens, evict to 25% (32K hot in Metal, 96K cold on SSD). Run NIAH targeting a token in the cold tier. Measure: (1) NIAH PASS with tier-1 fetch, (2) fetch latency < 10ms for a single KV block, (3) total Metal memory stays below 40GB (model + 32K hot KV only). Compare vs current approach of re-prefilling the entire context (~42 min at 128K).
+- **Effort**: L (mmap infrastructure + tier manager + 2Q policy + SnapKV integration)
+- **Depends on**: SnapKV eviction pipeline (shipped). Complementary to Task 105 (NVMe KV materialisation with newsvendor policy).
