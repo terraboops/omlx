@@ -9780,4 +9780,590 @@ maritime navigation / dead reckoning, error accumulation theory,
 cognitive load theory, lexicography / dictionary compilation, textile
 engineering / weaving, fluid dynamics / turbulence cascades, and
 cartography / map projection.
+
+## Pass 34 (2026-04-18) — Image Compression Engineering, Differential Geometry, Harmonic Analysis
+
+Three papers from three genuinely untouched cross-field angles: (1) **image/video
+compression engineering** — the JPEG codec pipeline (decorrelate, quantize,
+entropy code) applied wholesale to KV cache compression, (2) **differential
+geometry / manifold curvature** — token eviction guided by geometric
+distinctiveness on the key manifold, where high-curvature keys are the ones
+worth keeping, (3) **harmonic analysis / Fourier spectral theory** — KV cache
+compression via frequency-domain transformation, where spectral coefficients
+replace raw token representations.
+
+### [KV Cache Transform Coding for Compact Storage in LLM Inference](https://arxiv.org/abs/2511.01815) — 2511.01815
+
+- **Why found**: KV cache compression via the classical transform coding
+  pipeline. The cross-field angle is **image/video compression engineering**.
+  The JPEG codec has three stages: (1) decorrelate via DCT, (2) quantize
+  adaptively (high-frequency coefficients get fewer bits), (3) entropy code
+  (Huffman/arithmetic). KVTC applies this exact pipeline to KV cache tensors:
+  (1) decorrelate via PCA, (2) quantize adaptively via dynamic programming,
+  (3) entropy code via DEFLATE. The structural parallel is exact:
+
+  | JPEG stage | KVTC stage | Purpose |
+  |-----------|-----------|---------|
+  | DCT (discrete cosine transform) | PCA (principal component analysis) | Remove statistical correlation between coefficients |
+  | Zig-zag scan + quantization matrix | DP bit allocation across PCA components | Assign more bits to high-variance (important) components |
+  | Huffman/arithmetic coding | DEFLATE (nvCOMP GPU-accelerated) | Lossless compression of the quantized symbols |
+  | JPEG quality factor (1-100) | Compression ratio target (8x-64x) | User-controlled quality-size tradeoff |
+
+  The codec engineering insight is that NO SINGLE STAGE achieves good
+  compression alone. Quantization without decorrelation wastes bits on
+  correlated coefficients. Decorrelation without adaptive quantization
+  assigns uniform precision where variance is non-uniform. And neither
+  achieves the theoretical entropy limit without entropy coding. The three
+  stages compose multiplicatively: PCA gives ~4-6x, adaptive quantization
+  gives ~2-3x additional, DEFLATE gives ~1.23x additional, totalling
+  10-20x. This is precisely how JPEG achieves 10-30x on natural images.
+
+- **Key idea**: Apply a one-time PCA calibration (200K tokens, 10 minutes
+  on H100) to learn a projection matrix V^T that decorrelates the KV cache
+  across all layers and heads. At inference, project each KV cache slice
+  into PCA space, apply dynamic-programming-optimised adaptive quantization
+  (assigning more bits to high-variance principal components and zero bits
+  to trailing components), then apply GPU-accelerated DEFLATE for lossless
+  entropy coding. Decompression reverses the pipeline: DEFLATE decode,
+  dequantize, inverse PCA projection.
+
+- **Methodology**: (1) **PCA decorrelation**: flatten the KV cache as
+  C in R^{n x p} where p = layers x heads x d_head. Compute randomised SVD
+  (Halko et al.) with rank 10K and 8 iterations. Store projection matrix V^T
+  once per model. Critical detail: RoPE is REMOVED before PCA (RoPE
+  position-dependent rotations destroy the low-rank structure that PCA
+  exploits; removing RoPE before compression and reapplying after
+  decompression significantly improves compression ratio). This echoes
+  RotateKV's pre-RoPE insight from pass 33.
+  (2) **Adaptive quantization via DP**: minimise Frobenius reconstruction
+  error ||D - D_q||_F^2 under a total bit budget. The DP has two tables:
+  minimum error for first i components using b bits, and backpointers.
+  Group sizes restricted to {1, 16, 64, 256, 1024} components, each group
+  sharing a 16-bit scale factor. The result is monotonically decreasing bit
+  allocation: leading PCA components get many bits, trailing components get
+  zero (automatic dimensionality reduction). This is the quantization
+  matrix from JPEG — high-frequency DCT coefficients get coarse
+  quantization, low-frequency get fine.
+  (3) **DEFLATE entropy coding**: GPU-accelerated via nvCOMP library.
+  Provides ~1.23x additional lossless compression on average. Can run on
+  GPU (affects TTFT) or CPU (for storage offloading).
+  (4) **Sink token + sliding window protection**: first s=4 attention sink
+  tokens and last w=128 recent tokens are NOT compressed (stored in full
+  precision). Ablation shows disabling this causes accuracy collapse at
+  64x compression. Compression applied every c=16 tokens.
+
+- **Key findings**:
+  1. **20x compression with <1 point accuracy loss**: on Llama 3.1-8B,
+     KVTC at 16x achieves GSM8K 56.9% vs 56.8% baseline, MMLU 60.1%
+     vs 60.5%, RULER-VT 99.1% vs 99.4%. At 8x: essentially lossless.
+  2. **100% NIAH at 20x on 70B**: Llama 3.3-70B with KVTC at 20x
+     achieves 100% NIAH and 100% LITM (lost-in-the-middle). Long-
+     context retrieval is preserved even at extreme compression because
+     PCA preserves the subspace structure that encodes positional
+     information.
+  3. **Beats KIVI, GEAR, H2O, TOVA at matched compression**: at 16x+
+     compression, KVTC substantially outperforms all baselines. KIVI
+     (2-bit per-channel quantization) degrades on LITM from 99.8% to
+     86.3-88.8%. KVTC at 16x: 99.3%. The PCA decorrelation is the key
+     differentiator — it removes the cross-channel correlations that
+     per-channel quantization cannot exploit.
+  4. **8.1x TTFT speedup via decompression vs recomputation**: at 8K
+     context on Mistral NeMo 12B, decompressing a stored KVTC cache
+     takes 380ms vs 3098ms for vanilla recomputation. This directly
+     addresses TQ3's prefill bottleneck (Task 127): store the KV cache
+     compressed, decompress instead of re-prefilling.
+  5. **Reasoning models robust at 8x**: on R1-Qwen-2.5-7B, KVTC at 8x
+     achieves AIME24 52.5% vs 50.9% baseline (within variance), and
+     LiveCodeBench 36.5% vs 36.7%. At 16x: AIME24 50.9% (equal),
+     LiveCodeBench 31.6% (5pp drop). Reasoning is more sensitive than
+     retrieval to compression.
+  6. **PCA calibration generalises**: a single V^T computed on 160K
+     tokens from RedPajama generalises across all inference tasks
+     without per-prompt SVD. Storage overhead: 2.4% of model parameters
+     for 70B.
+  7. **Composable with token eviction**: KVTC is orthogonal to H2O/
+     SnapKV — one can evict tokens first (reduce n), then compress the
+     remaining cache (reduce bits per token). The two compose
+     multiplicatively.
+
+- **Hypercar relevance — JPEG codec pipeline for KV cache storage**:
+  KVTC provides the missing piece for Hypercar's session save/load
+  infrastructure. Currently, TQ3 session save stores KV caches in 3-bit
+  WHT-compressed format (~5.3x). KVTC achieves 20x at comparable quality.
+  The composition is natural:
+
+  | Current TQ3 pipeline | KVTC-enhanced pipeline |
+  |---------------------|----------------------|
+  | WHT rotation | PCA decorrelation (one-time calibration) |
+  | 3-bit codebook quantization | DP-optimised adaptive quantization |
+  | Raw storage | DEFLATE entropy coding |
+  | 5.3x compression | 20x compression |
+  | Session file: ~4.2 GB at 1M | Session file: ~1.1 GB at 1M |
+
+  The most actionable insight is the **RoPE removal before compression**.
+  Both KVTC and RotateKV (pass 33) independently discovered that RoPE
+  disrupts the low-rank structure of keys. KVTC removes RoPE before PCA;
+  RotateKV applies WHT before RoPE. The convergence from two independent
+  groups confirms this is a fundamental property: RoPE position encoding
+  and channel decorrelation are incompatible operations. For Hypercar's
+  TQ3 mode, this means the pre-RoPE pipeline from RotateKV should be
+  validated ASAP — it would simultaneously improve quantization quality
+  AND enable PCA-style decorrelation for session storage.
+
+  The TTFT improvement (8.1x) is directly relevant to Task 127 (TQ3
+  prefill bottleneck). Instead of re-prefilling through the WHT codec at
+  3 tok/s, store the compressed KV cache and decompress at 8x faster than
+  recomputation. At 1M context, this could reduce session restore from
+  hours to minutes.
+
+  The **DP bit allocation** is a new technique for Hypercar. Currently,
+  TQ3 uses uniform 3-bit quantization across all channels. KVTC's DP
+  shows that adaptive allocation (more bits for high-variance components,
+  zero bits for trailing ones) achieves much better rate-distortion
+  tradeoff. This could be integrated into TQ3's codebook: instead of a
+  single 3-bit codebook, use a mixed-precision codebook where important
+  channels get 4-5 bits and unimportant channels get 1-2 bits, targeting
+  the same average 3 bits.
+
+- **Local PDF**: research/2511.01815_kvtc_transform_coding_kv_cache.pdf
+
+### [KeyDiff: Key Similarity-Based KV Cache Eviction for Long-Context LLM Inference in Resource-Constrained Environments](https://arxiv.org/abs/2504.15364) — 2504.15364
+
+- **Why found**: Attention-score-free KV cache eviction based on geometric
+  properties of keys. The cross-field angle is **differential geometry /
+  manifold curvature**. The key insight is that keys live on a manifold in
+  R^d, and the geometrically DISTINCTIVE keys — those with high angular
+  distance from the mean — are the ones that receive high attention scores.
+  In differential geometry terms:
+
+  | Differential geometry concept | KeyDiff analogue |
+  |-----------------------------|-----------------|
+  | **Curvature** (deviation from flatness) | Angular deviation of key from the anchor (mean key direction) |
+  | **Geodesic** (shortest path on manifold) | Cosine similarity trajectory as tokens accumulate |
+  | **Tangent space** (local linear approximation) | The PCA subspace of nearby keys |
+  | **Gaussian curvature** (intrinsic curvature at a point) | Inverse of local key density — isolated keys have high "curvature" |
+  | **Mean curvature** (extrinsic bending) | The anchor vector mu(K) — average direction of the manifold |
+
+  The geometric principle: points of high curvature on a manifold carry
+  the most information about the manifold's shape. Flat regions (keys
+  clustered near the mean) are redundant — they can be reconstructed from
+  the mean + a few bits of offset. High-curvature points (keys far from
+  the mean) are unique and cannot be reconstructed. Evicting high-
+  curvature keys destroys information; evicting flat-region keys does not.
+  This is precisely the CAOTE insight (pass 23) from the opposite
+  direction: CAOTE measures the OUTPUT error of eviction; KeyDiff measures
+  the INPUT distinctiveness that predicts high output error.
+
+- **Key idea**: Evict tokens whose keys have HIGH cosine similarity to
+  the mean key direction (the "anchor vector"), retaining tokens whose
+  keys are geometrically distinctive (LOW cosine similarity to the
+  anchor). The efficient O(n) algorithm: compute the anchor vector
+  mu(K) = (1/n) sum(k_hat_i) (normalised mean of keys), then score each
+  token as S_i = -CosSim(mu(K), k_hat_i). Retain the top-N scoring
+  tokens (most distinctive). No attention scores needed.
+
+- **Methodology**: (1) **Anchor vector computation**: normalise all keys
+  k_hat_i = k_i / ||k_i||, compute mu(K) = (1/n) sum(k_hat_i). This
+  is the "center of mass" on the unit sphere — the mean direction of the
+  key manifold. (2) **Scoring**: S_i = -CosSim(mu(K), k_hat_i). Keys
+  far from the anchor (low cosine similarity, high angular distance)
+  get high scores. (3) **Selection**: retain top-N keys by score.
+  (4) **Block processing**: for long prompts, process in blocks of B=128
+  tokens. After each block, evict to maintain strict memory budget N.
+  This enables processing arbitrarily long prompts within fixed memory.
+  (5) **Sliding window variant**: reserve 10-20% of budget for the most
+  recent tokens (important for reasoning tasks), allocate the rest to
+  geometric diversity.
+
+  Theoretical basis: Lemma 3.1 shows that attention weight w is bounded
+  below by the cosine similarity between key and query:
+  -log(1-w)/(2M) - 1 <= CosSim(k*, q). Theorem 3.2 then shows that keys
+  far from the anchor (low CosSim to mu) are more likely to have high
+  CosSim with SOME query — they span more of the query space. Keys near
+  the anchor are redundant because their attention patterns are similar
+  to the mean attention pattern.
+
+- **Key findings**:
+  1. **0.04% accuracy drop at 23% KV reduction**: on LongBench with
+     Llama 3.1-8B at 8K budget, KeyDiff achieves 49.03% vs 49.03%
+     baseline. The geometric distinctiveness criterion is remarkably
+     well-calibrated — almost no information is lost by evicting the
+     most common (anchor-aligned) keys.
+  2. **30% latency reduction vs attention-based eviction**: because
+     KeyDiff does not materialise attention scores, it is compatible
+     with FlashAttention. H2O and SnapKV require explicit attention
+     weight computation, which breaks FlashAttention's IO-aware
+     optimisation. KeyDiff avoids this entirely.
+  3. **Robust under extreme compression**: at 6K budget (~47% KV
+     reduction), KeyDiff scores 48.51% vs 49.03% baseline (1.5% drop).
+     H2O drops to 24% (!). The geometric criterion degrades gracefully
+     because it preserves the manifold's curvature structure even as
+     the number of sample points decreases.
+  4. **Near-baseline on reasoning**: DeepSeek-R1-Distill-Llama-8B on
+     Math500 with sliding window achieves near-baseline performance.
+     The sliding window variant ensures recent reasoning tokens are
+     preserved while geometric diversity covers the context.
+  5. **Cosine similarity beats L2 and other metrics**: ablation (Table
+     16) confirms that angular distance (cosine) outperforms Euclidean
+     distance for key distinctiveness scoring. This is consistent with
+     the attention mechanism's use of normalised dot-product — attention
+     cares about direction, not magnitude.
+  6. **Works per-head without tuning**: each attention head maintains
+     its own anchor vector and eviction policy. No cross-head or
+     cross-layer coordination needed. The independence is a strength
+     for implementation: the algorithm is embarrassingly parallel
+     across heads.
+  7. **Surprising: moderate eviction can IMPROVE reasoning**: on some
+     reasoning tasks, the evicted cache performs slightly better than
+     the full cache. The explanation: eviction acts as a regulariser,
+     removing distracting tokens and concentrating attention on
+     geometrically distinctive (informative) keys. This echoes
+     Adamas's finding (pass 33) that sparse attention can improve
+     perplexity over full attention.
+
+- **Hypercar relevance — manifold curvature for eviction scoring**:
+  KeyDiff's anchor-based scoring is structurally complementary to
+  Hypercar's CAOTE eviction (Task 100). CAOTE measures the OUTPUT
+  error of eviction (how much the attention output changes if a token
+  is removed). KeyDiff measures the INPUT geometry (how distinctive a
+  key is on the manifold). The two signals are correlated but capture
+  different information:
+
+  | Signal | Measures | Strength | Weakness |
+  |--------|---------|----------|----------|
+  | CAOTE | Output error of eviction | Directly predicts quality impact | Requires attention computation |
+  | KeyDiff | Input geometric distinctiveness | FlashAttention-compatible, O(n) | Misses value-dependent importance |
+
+  The composition is natural: use KeyDiff as a FAST PRE-FILTER to
+  eliminate the obviously redundant keys (high cosine similarity to
+  anchor), then apply CAOTE as a PRECISE SCORER on the remaining
+  candidates. This two-stage pipeline — geometric pre-filter + output-
+  error scorer — would reduce CAOTE's computational cost (it only scores
+  the non-obvious candidates) while preserving its quality (the final
+  selection still uses the output error signal).
+
+  For Hypercar's FlashAttention integration (if adopted), KeyDiff
+  provides the eviction mechanism that doesn't require attention weight
+  materialisation. The current SnapKV pipeline captures query projections
+  during attention (requiring hook injection). KeyDiff operates on keys
+  alone, which are available without any attention-internal hooks.
+
+  The **geometric regularisation** finding is directly relevant to
+  SnapKV's keep ratio tuning. Currently, the keep ratio is set by the
+  user (--snapkv-keep K). KeyDiff suggests there is an OPTIMAL eviction
+  level where performance is maximised (not just preserved). This optimal
+  level corresponds to the point where the remaining keys best span the
+  manifold — not too many (diluted attention), not too few (missing
+  coverage). Finding this optimal point automatically would eliminate the
+  need for manual keep-ratio tuning.
+
+  The manifold curvature framing provides a geometric interpretation of
+  attention sinks. Sink tokens (position 0, BOS) are geometrically
+  distinctive — they occupy unique directions on the key manifold that
+  no other token duplicates. This is WHY they receive high attention:
+  they are the high-curvature points that anchor the manifold's shape.
+  Evicting them collapses the manifold's structure, which is why all
+  methods protect them (KVTC's s=4 sink protection, RotateKV's massive
+  activation detection, SnapKV's initial token preservation).
+
+- **Local PDF**: research/2504.15364_keydiff_geometric_kv_eviction.pdf
+
+### [FAEDKV: Infinite-Window Fourier Transform for Unbiased KV Cache Compression](https://arxiv.org/abs/2507.20030) — 2507.20030
+
+- **Why found**: Frequency-domain KV cache compression via Fourier
+  transform. The cross-field angle is **harmonic analysis / Fourier
+  spectral theory**. The Fourier transform is the fundamental tool of
+  harmonic analysis: any signal can be decomposed into a sum of
+  sinusoidal components, and the Parseval theorem guarantees that energy
+  is preserved across domains. FAEDKV applies this to the KV cache:
+
+  | Harmonic analysis concept | FAEDKV analogue |
+  |--------------------------|----------------|
+  | **Fourier coefficients** | Spectral representation of KV cache entries |
+  | **Parseval's theorem** (energy preservation) | Information content preserved across transform |
+  | **Spectral truncation** (bandwidth limiting) | Keep important frequency components, zero others |
+  | **Nyquist-Shannon sampling** | Minimum spectral budget for faithful reconstruction |
+  | **Windowing** (Hann, Hamming) | Sink token + recent token protection |
+  | **Infinite-window DFT** (recursive update) | IWDFT: incremental frequency update as new tokens arrive |
+
+  The harmonic analysis principle: a signal's information content is
+  determined by its SPECTRAL SUPPORT (which frequencies are present),
+  not its TEMPORAL EXTENT (how many samples exist). A 1M-token KV cache
+  may have spectral support concentrated in only a few hundred frequency
+  bins — the rest are noise that can be zeroed without information loss.
+  This is the foundation of lossy audio compression (MP3), image
+  compression (JPEG), and now KV cache compression (FAEDKV).
+
+- **Key idea**: Transform the KV cache from the token domain to the
+  frequency domain via DFT. Identify important frequency components via
+  ablation (zero out each frequency chunk and measure perplexity
+  increase). Retain only the important frequencies. At decode time,
+  reconstruct the token-domain KV cache via inverse DFT (sparse IDFT
+  operating only on retained components). New tokens are incorporated
+  via the IWDFT recursive update, which modifies frequency coefficients
+  incrementally without recomputing the full DFT.
+
+- **Methodology**: (1) **Pre-fill**: exclude first S=10 sink tokens and
+  last R=50 recent tokens (stored in full precision). Transform the
+  middle segment of M = N - S - R tokens via standard FFT:
+  K^f = DFT(K[S:S+M-1]), V^f = DFT(V[S:S+M-1]).
+  (2) **Frequency importance scoring**: partition N frequency bins into
+  C=22 chunks. For each chunk c in each layer l, zero out that chunk's
+  coefficients and measure perplexity increase Delta_{l,c}. High Delta
+  = critical frequency. (3) **Greedy retention**: for target compression
+  ratio r, retain the top r*C most important chunks per layer.
+  (4) **Decode-time reconstruction**: at each decode step, reconstruct
+  token-domain KV via sparse IDFT on retained frequencies:
+  K_tilde = IDFT(K^f_retained). Assemble full cache:
+  K = [K_sink, K_tilde, K_recent]. (5) **Incremental update (IWDFT)**:
+  as tokens age from "recent" to "middle", incorporate them into the
+  frequency representation via:
+  S_{t+1}[k] = W_k * ((N-1)/N * S_t[k] + 1/N * x[t+1])
+  where W_k = exp(-j*2*pi*k/M). This avoids the sliding-window DFT
+  problem (fixed window size, complete loss of aged tokens). The IWDFT
+  gives each token decaying but non-zero influence on the spectral
+  representation, ensuring "unbiased information retention."
+
+- **Key findings**:
+  1. **22% improvement over H2O/SnapKV at tight budgets**: at
+     compression ratio 0.094 (768 cache size), FAEDKV achieves 25.21
+     avg on LongBench vs H2O's 17.83 and SnapKV's 19.91. At higher
+     budgets (0.25), the gap narrows: FAEDKV 33.24 vs H2O 32.95,
+     SnapKV 32.60.
+  2. **Position-independent retrieval**: on NIAH with Qwen2.5-7B at
+     8K-300K contexts, FAEDKV shows "markedly more consistent accuracy
+     irrespective of needle position" vs LoCoCo baseline. The DFT
+     inherently processes all token positions with equal weight — there
+     is no recency bias or primacy bias in the spectral domain.
+  3. **Low-frequency is important but NOT sufficient**: while low-
+     frequency components often dominate, "many high-frequency
+     components also yield significant Delta values." This means naive
+     low-pass filtering (keep only the first few frequencies) would
+     lose critical information. The per-layer importance scoring is
+     essential — different layers have different spectral profiles.
+  4. **C=22 chunks is optimal**: finer partitioning (C=44) provides
+     negligible improvement; coarser (C=11) loses important fine-
+     grained spectral structure. The sweet spot balances granularity
+     against scoring overhead.
+  5. **IWDFT approximation is stable**: the (N-1)/N decay factor
+     prevents numerical overflow while maintaining token influence.
+     For N > 1000, the approximation error is negligible. This means
+     FAEDKV can handle arbitrarily long contexts without numerical
+     instability.
+
+- **Hypercar relevance — spectral codec for KV cache compression**:
+  FAEDKV provides a fundamentally different compression axis from
+  Hypercar's current quantization-based approach. TQ3 compresses in the
+  CHANNEL dimension (reducing bits per channel via WHT + codebook).
+  KVTC compresses in the COMPONENT dimension (PCA reduces effective
+  dimensionality). FAEDKV compresses in the TOKEN dimension (DFT reduces
+  the number of effective tokens to a spectral summary). The three are
+  orthogonal and could compose:
+
+  | Compression axis | Method | What it reduces |
+  |-----------------|--------|----------------|
+  | Channel (bits per element) | TQ3 / KIVI | Storage per KV entry |
+  | Component (effective dimensions) | KVTC / PCA | Dimensionality of each entry |
+  | Token (effective sequence length) | FAEDKV / DFT | Number of entries in cache |
+
+  The most actionable insight is the **position-unbiased property**.
+  Hypercar's current SnapKV eviction has a known recency bias — recent
+  tokens are protected, old tokens are eviction candidates. This is
+  appropriate for some tasks (reasoning chains need recent context) but
+  harmful for others (NIAH requires uniform access to all positions).
+  FAEDKV's spectral representation treats all positions equally by
+  construction — the DFT is a rotation in the token-position space, not
+  a windowed view. For NIAH-heavy workloads (agentic code search across
+  a full repository), a spectral KV summary would be more robust than
+  position-biased eviction.
+
+  The IWDFT incremental update is structurally similar to an exponential
+  moving average (EMA) in the frequency domain. Each frequency bin
+  maintains a running weighted average of all past tokens' contributions,
+  with the weight decaying as (N-1)/N per step. This is the frequency-
+  domain analogue of the "freshness decay" in Task 97 — but operating on
+  spectral coefficients rather than raw attention scores. The two could
+  be composed: use freshness decay for the token-domain eviction decision,
+  and IWDFT for the spectral-domain summary of evicted tokens.
+
+  The connection to DynFormer (pass 33) is direct: DynFormer decomposes
+  PDE solutions into low-frequency (global attention) and high-frequency
+  (local multiplicative mixing) components. FAEDKV performs the same
+  decomposition on the KV cache itself — low-frequency spectral
+  components capture the global context structure, high-frequency
+  components capture token-level detail. The slaving principle from pass
+  33 predicts that the high-frequency KV components should be
+  reconstructable from the low-frequency ones via multiplicative mixing
+  with the current query. This composition — FAEDKV for the spectral
+  summary + DynFormer's LGM for on-demand reconstruction — would provide
+  lossy compression with spectral-theory-guided reconstruction.
+
+- **Local PDF**: research/2507.20030_faedkv_fourier_kv_compression.pdf
+
+**Cross-paper synthesis for pass 34.**
+
+Three papers. Three compression axes. The unifying insight: KV cache
+compression is a multi-axis optimisation problem, and the optimal strategy
+exploits ALL three axes simultaneously — channel compression (reduce bits),
+component compression (reduce dimensions), and token compression (reduce
+entries). No single axis reaches the theoretical limit alone.
+
+**The image compression engineering insight (KVTC).** The JPEG codec
+pipeline — decorrelate, quantize, entropy code — is the gold standard for
+lossy compression engineering. It has been refined over 30 years across
+images, video, and audio. KVTC demonstrates that this pipeline transfers
+directly to KV cache compression, achieving 20x compression with <1 point
+accuracy loss. The key engineering lesson: the stages compose
+MULTIPLICATIVELY (PCA ~4-6x * adaptive quantization ~2-3x * entropy coding
+~1.23x = 10-20x), and each stage is necessary. Skipping any one stage
+leaves 2-5x compression on the table. For Hypercar, this means TQ3's
+current pipeline (WHT + 3-bit codebook = ~5.3x) is leaving compression on
+the table because it skips entropy coding and uses uniform rather than
+adaptive quantization. Adding DEFLATE to TQ3's output and switching to
+adaptive bit allocation via DP could push TQ3 from 5.3x to 10-15x with
+no quality loss.
+
+**The differential geometry insight (KeyDiff).** The key manifold's
+curvature structure determines which tokens carry information. High-
+curvature points (geometrically distinctive keys) are the irreducible
+skeleton of the manifold — removing them collapses its structure. Low-
+curvature points (keys near the mean direction) are redundant samples of
+the flat regions — removing them preserves the manifold's topology. The
+geometric principle is dual to CAOTE's output-error principle: CAOTE asks
+"what happens if I remove this token?" (extrinsic, output-focused);
+KeyDiff asks "is this token unique on the manifold?" (intrinsic, input-
+focused). The two compose: KeyDiff pre-filters to the manifold's skeleton,
+CAOTE fine-tunes within the skeleton.
+
+The most immediately actionable finding is KeyDiff's FlashAttention
+compatibility. Hypercar's current eviction pipeline requires attention
+weight capture (via hooks during the attention computation). If Hypercar
+adopts a FlashAttention-compatible Metal kernel (which computes attention
+IO-efficiently without materialising the full attention matrix), the
+current eviction pipeline would break. KeyDiff provides the escape hatch:
+eviction based on key geometry alone, no attention weights needed.
+
+**The harmonic analysis insight (FAEDKV).** The KV cache is a TIME SERIES
+indexed by token position, and time series have spectral representations.
+The DFT converts the position-indexed cache into a frequency-indexed cache
+where compression is natural: keep the important frequencies, zero the
+rest. The critical property is POSITION UNBIASEDNESS — the DFT treats all
+positions equally, eliminating the recency bias that plagues eviction
+methods. For Hypercar's NIAH-critical workloads (agentic code search),
+a spectral KV summary would be more robust than the current position-
+biased eviction.
+
+**The three insights compose into a full codec stack.**
+
+1. **Component axis (KVTC/PCA)**: decorrelate the KV cache in the channel
+   dimension. Project onto principal components. This reveals the true
+   dimensionality of the cache — many components carry negligible variance.
+   Allocate bits adaptively: many bits to important components, zero to
+   trailing ones.
+
+2. **Channel axis (TQ3/WHT)**: within each retained component, quantize
+   to 2-3 bits via WHT rotation + codebook. The WHT suppresses outliers
+   that would otherwise waste quantization bins. RotateKV's pre-RoPE
+   pipeline (pass 33) and KVTC's RoPE removal both confirm that this
+   must happen BEFORE position encoding.
+
+3. **Token axis (FAEDKV/DFT)**: across the sequence of quantized entries,
+   transform to the frequency domain. Keep important spectral components,
+   discard the rest. The IWDFT enables incremental updates as new tokens
+   arrive.
+
+4. **Lossless finishing (DEFLATE)**: apply entropy coding to the final
+   bitstream. This captures any remaining statistical redundancy that the
+   transform stages didn't remove.
+
+5. **Eviction pre-filter (KeyDiff)**: before any compression, use
+   geometric distinctiveness to identify and evict the manifold's flat
+   regions. This reduces n BEFORE the compression pipeline runs, saving
+   compute on tokens that would compress to near-zero anyway.
+
+The combined pipeline — KeyDiff eviction -> PCA decorrelation -> WHT
+quantization -> DFT spectral compression -> DEFLATE entropy coding —
+would achieve compression ratios far beyond any single method. The
+theoretical limit is determined by the rate-distortion function of the
+attention mechanism (how much information the cache must preserve for
+accurate attention), and this multi-axis pipeline approaches that limit
+from three independent directions.
+
+**Gap status for pass 35**:
+1. **KVTC calibration for Qwen3-Coder**: run PCA calibration on 200K
+   tokens of code to learn V^T. Test whether the decorrelation generalises
+   to code-heavy workloads (KVTC was validated on RedPajama/general text).
+2. **KeyDiff as pre-filter for CAOTE**: implement the anchor-based scoring
+   as a fast O(n) pre-filter before CAOTE's more expensive output-error
+   scoring. Measure whether the two-stage pipeline preserves CAOTE quality
+   while reducing scoring cost.
+3. **FAEDKV spectral summary for evicted tokens**: instead of discarding
+   evicted tokens entirely, store their spectral summary (DFT of the
+   evicted chunk) and reconstruct on demand. Compare reconstruction quality
+   to DynFormer's multiplicative mixing (pass 33).
+4. **Adaptive bit allocation for TQ3**: replace TQ3's uniform 3-bit
+   codebook with DP-optimised mixed-precision allocation. Target the same
+   average 3 bits but distribute non-uniformly across channels based on
+   variance.
+5. **Pre-RoPE pipeline convergence**: KVTC and RotateKV independently
+   discovered that RoPE disrupts decorrelation. Validate the pre-RoPE
+   pipeline on TQ3 (carried from pass 33 gap #2).
+
+**Fresh weird angles for pass 35** (genuinely untouched across 34
+passes):
+- **Mycology / mycelial networks**: RETIRING — 4 passes with no arxiv
+  intersection. The stigmergic coordination angle is theoretically
+  strong but has no paper to anchor it.
+- **Origami / computational folding**: RETIRING — 4 passes, no leads.
+- **Astrodynamics / Hohmann transfer orbits**: RETIRED in pass 33.
+- **Immunology / T-cell repertoire selection**: RETIRING — 2 searches
+  found no 2024-2026 papers connecting immune clonal selection to
+  neural network/attention methods.
+- **Population genetics / drift vs selection**: RETIRING — search
+  returned no relevant 2024-2026 papers.
+- **Insurance / actuarial science**: RETIRING — no intersection with
+  KV cache or attention methods found.
+- **Music composition / counterpoint**: still open — the polyphonic
+  voice-leading analogy for multi-head attention remains structurally
+  strong. New search angle: "harmonic series" + attention heads.
+- **Seismology / earthquake prediction**: NEW — seismic event detection
+  uses STA/LTA (short-term average / long-term average) ratio to
+  trigger on transient signals in noisy backgrounds. This maps to
+  attention spike detection: a sudden increase in attention to a
+  token (STA) relative to its historical attention (LTA) signals a
+  semantically important event. The STA/LTA trigger is used in
+  real-time seismic monitoring; applying it to real-time KV cache
+  importance scoring would be a novel connection.
+- **Crystallography / X-ray diffraction**: NEW — crystal structure
+  determination from diffraction patterns is an inverse Fourier
+  transform problem (the diffraction pattern IS the Fourier transform
+  of the crystal lattice). FAEDKV's spectral KV cache is literally
+  the "diffraction pattern" of the attention lattice. Crystallographic
+  phase retrieval methods could improve FAEDKV's reconstruction quality.
+- **Typography / font rendering**: NEW — hinting in font rendering
+  adjusts glyph outlines to align with the pixel grid at small sizes,
+  sacrificing mathematical accuracy for perceptual quality at the
+  display resolution. This maps to quantization: adjust KV cache values
+  to align with the quantization grid, sacrificing numerical accuracy
+  for attention-level quality at the inference precision.
+
+Thirty-four passes. One hundred and forty-five papers. The cross-field
+surface now spans: systems, databases, game theory, TDA, streaming
+algorithms, neuroscience, complexity theory, queueing theory, network
+congestion, signal processing, optimal transport, compiler/PL, protein
+folding, audio diffusion, graphics, recommender systems, reservoir
+computing, psycholinguistics, rate-distortion, information theory,
+Huffman coding, radar/CFAR, statistical mechanics, associative memory,
+code analysis, phase transitions, fair division, hierarchical AR,
+cross-head reconstruction, semantic sponsorship, sleep hierarchy, NVMe
+inventory, entropy-TTT, Apple Silicon profiling, softmax gap, RL
+eviction, process rewards, conformal prediction, IR retrieval, feedback
+control theory, voting theory / social choice, multi-attribute decision
+making, archaeological stratigraphy, cognitive science / working memory,
+maritime navigation / dead reckoning, error accumulation theory,
+cognitive load theory, lexicography / dictionary compilation, textile
+engineering / weaving, fluid dynamics / turbulence cascades, cartography /
+map projection, image/video compression engineering, differential
+geometry / manifold curvature, and harmonic analysis / Fourier spectral
+theory.
 Curiosity never saturates. Meow, nyaa, meow.
