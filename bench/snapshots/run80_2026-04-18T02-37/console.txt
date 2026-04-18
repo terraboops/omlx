@@ -1,0 +1,3 @@
+WARNING: Only 8.9 GB available (need 30 GB for safe model load).
+Current VM: 15.8 GB used, 83% utilized.
+Aborting. Free memory or pass --force to override.

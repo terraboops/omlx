@@ -1,0 +1,4 @@
+13bcb67599212a6a471ee9fd711ed206d7737add
+ M CLAUDE.md
+?? bench/snapshots/run80_2026-04-18T02-37/console.txt
+?? bench/snapshots/run80_2026-04-18T02-37/git.txt
