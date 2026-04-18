@@ -377,20 +377,19 @@ def compute_freshness_scores(
             # Cosine similarities: (B, H_kv, chunk, j_len)
             sims = q @ k.swapaxes(-1, -2)
 
-            # For each query token i, check tokens j in [i+1, i+window]
+            # Vectorized: band mask for valid (query, key) pairs
             chunk_len = i_end - i_start
             j_len = j_end - j_start
 
-            for local_i in range(chunk_len):
-                global_i = i_start + local_i
-                # Valid comparisons: j > global_i and j < global_i + window
-                j_rel_start = max(0, global_i + 1 - j_start)
-                j_rel_end = min(j_len, global_i + 1 + window - j_start)
-                if j_rel_start >= j_rel_end:
-                    continue
-                local_sims = sims[:, :, local_i, j_rel_start:j_rel_end]
-                n_conflicts = mx.sum(local_sims > conflict_threshold, axis=-1)
-                supersession_count = supersession_count.at[:, :, global_i].add(n_conflicts)
+            # For query at local_i, valid keys are j in [local_i, local_i+window)
+            i_idx = mx.arange(chunk_len)[:, None]  # (chunk, 1)
+            j_idx = mx.arange(j_len)[None, :]      # (1, j_len)
+            valid = (j_idx >= i_idx) & (j_idx < i_idx + window)  # (chunk, j_len)
+
+            above_thresh = sims > conflict_threshold  # (B, H_kv, chunk, j_len)
+            masked = above_thresh & valid[None, None, :, :]
+            n_conflicts = mx.sum(masked, axis=-1)  # (B, H_kv, chunk)
+            supersession_count[:, :, i_start:i_end] = n_conflicts
 
         mx.eval(supersession_count)
         all_counts.append(supersession_count)
@@ -1002,11 +1001,11 @@ def snapkv_select(
     for pos in range(selectable, T):
         all_indices.add(pos)
 
-    # Build boolean mask
-    keep_mask = mx.zeros((B, T), dtype=mx.bool_)
+    # Build boolean mask — single scatter op instead of per-element loop
     sorted_indices = sorted(all_indices)
-    for pos in sorted_indices:
-        keep_mask = keep_mask.at[:, pos].add(mx.ones((B,), dtype=mx.bool_))
+    idx = mx.array(sorted_indices, dtype=mx.uint32)
+    keep_mask = mx.zeros((B, T), dtype=mx.bool_)
+    keep_mask[:, idx] = True
 
     return keep_mask
 
@@ -1240,8 +1239,7 @@ def compute_ger(importance: mx.array, keep_mask: mx.array,
     n_important = max(1, int(T * top_pct))
     threshold_idx = mx.argpartition(-pooled, kth=n_important)[:n_important]
     important_mask = mx.zeros(T, dtype=mx.bool_)
-    for idx in threshold_idx.tolist():
-        important_mask = important_mask.at[idx].add(mx.array(True))
+    important_mask[threshold_idx] = True
 
     # GER: fraction of important tokens that are evicted
     important_evicted = mx.sum(important_mask & evicted)

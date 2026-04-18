@@ -514,6 +514,10 @@ _(none)_
 
 ## Completed
 
+- **Task 140+147+139: Vectorize SnapKV scatter ops** — replace .at[].add() Python loops with single scatter/band-mask ops (2026-04-18)
+  - keep_mask: O(T) Python loop → single `keep_mask[:, idx] = True`
+  - GER safety: O(T) Python loop → single `important_mask[threshold_idx] = True`
+  - Freshness scoring: O(T) inner loop → vectorized band mask + mx.sum (85% of pipeline at 64K)
 - **Task 152+145: TQ3 fused quantize + fused dequantize** — use existing fused dense kernel for WHT path (2026-04-18)
   - WHT rotation matrix is symmetric (H.T = H), so fused dense kernel works directly
   - 15x short-context prefill speedup (validated: identical output, 99.67% packed index match)
