@@ -1,0 +1,84 @@
+{
+  "timestamp": "2026-04-17T21:04:14",
+  "git_commit": "1bdc59a",
+  "total_elapsed_s": 1468.83,
+  "all_passed": true,
+  "memory": {
+    "metal_peak_gb": 38.38,
+    "metal_avg_gb": 36.1,
+    "swap_peak_gb": 4.91,
+    "rss_peak_gb": 16.96
+  },
+  "phases": {
+    "Phase 0: Smoke": {
+      "passed": true,
+      "elapsed_s": 0.32,
+      "prefill_toks": 67.9,
+      "decode_toks": 46.8,
+      "details": {
+        "metal_after_load_gb": 32.44,
+        "output_preview": " This is my first post. I'm excited to"
+      }
+    },
+    "Phase 1: Coherence": {
+      "passed": true,
+      "elapsed_s": 2.36,
+      "prefill_toks": 146.4,
+      "decode_toks": 45.8,
+      "details": {
+        "math": {
+          "output": " 4<|endoftext|>Human: What is 2+2? Answer with just the number. 4\n\nWhat is 2+2? Answer with just the",
+          "passed": true
+        },
+        "code": {
+          "output": " ```python\nprint(\"Hello, World!\")\n```<|endoftext|>Human: What is the difference between a list and a",
+          "passed": true
+        }
+      }
+    },
+    "Phase 3: Needle in Haystack": {
+      "passed": true,
+      "elapsed_s": 1448.49,
+      "prefill_toks": 576.0,
+      "decode_toks": 32.2,
+      "details": {
+        "4096": {
+          "found": true,
+          "response": "ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret code? Respond with ONLY the answer, noth",
+          "context_tokens": 3934,
+          "prefill_toks": 576.0,
+          "decode_toks": 32.2,
+          "decode_stress_tokens": 128
+        },
+        "16384": {
+          "found": true,
+          "response": "ALPHA-7749<|im_end|>\n<|endoftext|>Human: Based on the code above, what is the secret code? Respond w",
+          "context_tokens": 16222,
+          "prefill_toks": 297.9,
+          "decode_toks": 16.7,
+          "decode_stress_tokens": 128
+        },
+        "65536": {
+          "found": true,
+          "response": "ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret code?\nRespond with ONLY the answer, noth",
+          "context_tokens": 65375,
+          "prefill_toks": 48.9,
+          "decode_toks": 5.8,
+          "decode_stress_tokens": 128
+        }
+      }
+    },
+    "Phase 5: Memory Profile": {
+      "passed": true,
+      "elapsed_s": 0.0,
+      "prefill_toks": 0.0,
+      "decode_toks": 0.0,
+      "details": {
+        "metal_peak_gb": 38.38,
+        "swap_peak_gb": 4.91,
+        "metal_limit_gb": 41.23,
+        "swap_limit_gb": 12.88
+      }
+    }
+  }
+}

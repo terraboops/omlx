@@ -1,0 +1,56 @@
+20:39:45 omlx.bench.hypercar INFO KV mode: native, bits: 3
+20:39:45 omlx.bench.hypercar INFO Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+20:39:45 omlx.bench.hypercar INFO System memory: 51.5 GB
+20:39:45 omlx.bench.hypercar INFO   Metal peak limit:  41.2 GB (80%)
+20:39:45 omlx.bench.hypercar INFO   Metal load limit:  36.1 GB (70%)
+20:39:45 omlx.bench.hypercar INFO   Swap delta limit:  12.9 GB (25%)
+20:39:45 omlx.bench.hypercar INFO Loading model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+20:39:46 httpx INFO HTTP Request: GET https://huggingface.co/api/models/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit/revision/main "HTTP/1.1 200 OK"
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]Fetching 18 files: 100%|██████████| 18/18 [00:00<00:00, 12098.95it/s]
+20:39:55 omlx.patches.prefill_last_logit INFO Prefill last-logit patch applied (saves ~40GB at 128K context)
+20:39:55 omlx.bench.hypercar INFO Model loaded in 9.4s (lazy — first forward will materialize)
+20:39:55 omlx.bench.hypercar INFO 
+=== Warmup: priming Metal kernels ===
+20:40:03 omlx.bench.hypercar INFO   Warmup done in 8.2s (Metal cache primed, memory cleared)
+20:40:03 omlx.bench.hypercar INFO 
+=== Phase 0: Smoke ===
+20:40:03 omlx.bench.hypercar INFO   Metal after load: 32.4 GB
+20:40:03 omlx.bench.hypercar INFO   Smoke output: " This is my first post. I'm excited to"
+20:40:03 omlx.bench.hypercar INFO   Prefill: 68 tok/s  Decode: 46.8 tok/s
+20:40:03 omlx.bench.hypercar INFO 
+=== Phase 1: Coherence ===
+20:40:04 omlx.bench.hypercar INFO   Math check: PASS — ' 4<|endoftext|>Human: What is 2+2? Answer with just the numb'
+20:40:06 omlx.bench.hypercar INFO   Code check: PASS — ' ```python\nprint("Hello, World!")\n```<|endoftext|>Human: Wha'
+20:40:06 omlx.bench.hypercar INFO 
+--niah-only mode: skipping Phase 2 (Code Intel)
+20:40:06 omlx.bench.hypercar INFO 
+=== Phase 3: Needle in Haystack ===
+20:40:06 omlx.bench.hypercar INFO   NIAH contexts from --niah-context: ['4K', '16K', '64K']
+20:40:06 omlx.bench.hypercar INFO   NIAH @ 4K context...
+20:40:18 omlx.bench.hypercar INFO     PASS: 4K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+20:40:18 omlx.bench.hypercar INFO   NIAH @ 16K context...
+20:41:22 omlx.bench.hypercar INFO     PASS: 16K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: Based on the code a'
+20:41:22 omlx.bench.hypercar INFO   NIAH @ 64K context...
+21:04:14 omlx.bench.hypercar INFO     PASS: 64K — 'ALPHA-7749<|im_end|>\n<|endoftext|>Human: What is the secret '
+21:04:14 omlx.bench.hypercar INFO Phase 3 PASSED — NIAH-only run complete
+21:04:14 omlx.bench.hypercar INFO 
+=== Phase 5: Memory Profile ===
+21:04:14 omlx.bench.hypercar INFO   Metal peak: 38.4 GB (limit 41.2GB) PASS
+21:04:14 omlx.bench.hypercar INFO   Swap peak:  4.9 GB (limit 12.9GB) PASS
+21:04:14 omlx.bench.hypercar INFO 
+=== Phase 6: Summary ===
+21:04:14 omlx.bench.hypercar INFO   Results written to /tmp/hypercar_bench_results.json
+21:04:14 omlx.bench.hypercar INFO   Profile written to /tmp/hypercar_profile.json
+
+============================================================
+HYPERCAR BENCHMARK RESULTS
+============================================================
+     [PASS] Phase 0: Smoke                           (0.3s)
+     [PASS] Phase 1: Coherence                       (2.4s)
+     [PASS] Phase 3: Needle in Haystack              (1448.5s)
+     [PASS] Phase 5: Memory Profile                  (0.0s)
+     [PASS] Phase 6: Summary                         (0.0s)
+------------------------------------------------------------
+     [ALL GATES PASSED]  Total: 1468.8s
+============================================================
+
