@@ -1560,6 +1560,60 @@ class TestStreamingAggressiveSource:
         assert "--streaming-aggressive" in server_src
 
 
+# ---- Task 109: TTT Layer Schedules ----
+
+class TestTTTSchedules:
+    """Tests for per-layer TTT learning rate schedules."""
+
+    @staticmethod
+    def _load():
+        spec = importlib.util.spec_from_file_location(
+            "ttt_schedules", "omlx/ttt_schedules.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_uniform_all_equal(self):
+        mod = self._load()
+        lrs = mod.compute_layer_lrs(1e-4, 48, "uniform")
+        assert all(lr == 1e-4 for lr in lrs)
+
+    def test_reservoir_monotonic(self):
+        """Reservoir schedule must be monotonically increasing."""
+        mod = self._load()
+        lrs = mod.compute_layer_lrs(1e-4, 48, "reservoir")
+        for i in range(1, len(lrs)):
+            assert lrs[i] >= lrs[i-1], f"Layer {i}: {lrs[i]} < {lrs[i-1]}"
+
+    def test_reservoir_deep_equals_base(self):
+        mod = self._load()
+        lrs = mod.compute_layer_lrs(1e-4, 48, "reservoir")
+        assert abs(lrs[-1] - 1e-4) < 1e-8
+
+    def test_reservoir_shallow_near_zero(self):
+        mod = self._load()
+        lrs = mod.compute_layer_lrs(1e-4, 48, "reservoir", gamma=1.5)
+        assert lrs[0] < 1e-8  # layer 0 should be near-zero
+
+    def test_cosine_u_shaped(self):
+        """Cosine schedule: edges > middle."""
+        mod = self._load()
+        lrs = mod.compute_layer_lrs(1e-4, 48, "cosine")
+        edge = (lrs[0] + lrs[-1]) / 2
+        mid = lrs[24]
+        assert edge > mid
+
+    def test_spectral_radius_exists(self):
+        src = Path("omlx/ttt_schedules.py").read_text()
+        assert "def spectral_radius_approx(" in src
+
+    def test_correct_length(self):
+        mod = self._load()
+        for n in [12, 24, 48]:
+            lrs = mod.compute_layer_lrs(1e-4, n, "reservoir")
+            assert len(lrs) == n
+
+
 # ---- Task 107: Fair Eviction ----
 
 class TestFairEvictionSource:

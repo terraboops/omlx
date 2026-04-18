@@ -514,6 +514,13 @@ _(none)_
 
 ## Completed
 
+- **Task 109: Per-layer TTT learning rates** — reservoir computing schedule (2026-04-18)
+  - `omlx/ttt_schedules.py`: compute_layer_lrs() with 3 schedules
+  - `reservoir`: alpha_l = base_lr × (l/L)^gamma — shallow frozen, deep adaptive
+  - `cosine`: U-shaped (high at edges, low in middle)
+  - `uniform`: current default (all layers equal)
+  - `spectral_radius_approx()`: power iteration monitor for echo state stability
+  - Ready for TTT engine integration via `--ttt-layer-schedule` flag
 - **Progressive mid-prefill eviction** — evict every 16K tokens during prefill (2026-04-18)
   - Keeps peak memory bounded at ~80K effective context per chunk
   - Reduces O(n²) attention: 4 × 80K² = 25B vs 256K² = 65B (2.6× speedup)
