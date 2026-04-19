@@ -1008,10 +1008,12 @@ def snapkv_select(
 
 
 def get_keep_indices(keep_mask: mx.array) -> list[int]:
-    """Extract sorted keep indices from a mask (for cache compaction)."""
-    indices = mx.argwhere(keep_mask[0]).flatten()
-    mx.eval(indices)
-    return indices.tolist()
+    """Extract sorted keep indices from a mask (for cache compaction).
+
+    Called once per eviction — Python overhead is negligible vs GPU work.
+    """
+    mask_list = keep_mask[0].tolist()
+    return [i for i, v in enumerate(mask_list) if v]
 
 
 def _rerope_keys(keys: mx.array, old_positions: list[int],

@@ -513,6 +513,7 @@ _(none)_
 
 
 
+
 ## Completed
 
 - **Task 163: SnapKV+DuoKV validated** — confirmed already wired, added 5 composition tests (2026-04-18)

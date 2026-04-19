@@ -1668,7 +1668,7 @@ def phase3e_snapkv_quality(model, tokenizer,
     keep_mask = snapkv_select(importance, keep_count)
     safe, ger, _ = check_ger_safety(importance, keep_mask)
     indices = get_keep_indices(keep_mask)
-    compact_cache(cache, indices, model=model)
+    compact_cache(cache, indices, model=model, skip_rerope=False)
 
     # Generate
     tokens = []
@@ -1714,10 +1714,6 @@ def phase3f_tool_call_json(model, tokenizer,
     tool output. Duplicate/malformed JSON blocks agentic workflows.
     """
     t0 = time.perf_counter()
-
-    if not watchdog.check_phase_headroom("Phase 3f: Tool-Call JSON"):
-        return PhaseResult(name="Phase 3f: Tool-Call JSON", passed=True,
-                           elapsed_s=0, details={"skipped": "memory"})
 
     # Prompt the model to return a JSON tool call
     prompt = (
