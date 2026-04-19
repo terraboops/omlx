@@ -194,16 +194,11 @@ class DuoKVCache:
             # heads. Two update_and_fetch calls instead of per-head loops.
             self._retrieval_head_indices = [h for h in range(n_kv_heads) if not self._is_streaming[h]]
             self._streaming_head_indices = [h for h in range(n_kv_heads) if self._is_streaming[h]]
-            # One shared TurboQuantKVCache for ALL retrieval heads
-            # TQ3: WHT decorrelation + fused decode_attention (no dequant needed)
-            # Quest page selection: attend to top-K pages instead of full context
-            # quest_topk=16: activates at offset > 2048 (16 × 128-token pages)
-            # At 40K: 312 pages, attend to top-16 = 5% → ~20x decode speedup
-            TQCache = _get_tq_cache_class()
-            self._retrieval_cache = TQCache(
-                bits=bits, seed=42,
-                min_quant_tokens=256,
-                quest_topk=16) if self._retrieval_head_indices else None
+            # One shared QuantizedKVCache for ALL retrieval heads
+            # Native MLX quantized attention is 2.5x faster than TQ3 fused SDPA
+            # (32.5 vs 13.2 tok/s at 4K — MLX's built-in flash handles quantized KV)
+            self._retrieval_cache = QuantizedKVCache(
+                bits=bits, group_size=group_size) if self._retrieval_head_indices else None
             # Per-head StreamingKVCache (ring buffer needs per-head offset)
             self._streaming_head_caches = {
                 h: StreamingKVCache(window, sink) for h in self._streaming_head_indices
@@ -321,27 +316,14 @@ class DuoKVCache:
             k_ret = keys[:, ret_idx, :, :]
             v_ret = values[:, ret_idx, :, :]
             ret_k, ret_v = self._retrieval_cache.update_and_fetch(k_ret, v_ret)
-            # TQ3 returns fp16 during warmup, quantized state after.
-            # During prefill we need fp16 for standard SDPA.
+            # QuantizedKVCache returns quantized tuples — dequantize for prefill SDPA
             if isinstance(ret_k, tuple):
-                # Quantized — dequantize for prefill SDPA
-                # (decode uses compute_attention which avoids this)
-                _dq = self._retrieval_cache._codec.dequantize_fused if (
-                    hasattr(self._retrieval_cache, '_codec') and
-                    self._retrieval_cache._codec is not None and
-                    hasattr(self._retrieval_cache._codec, 'dequantize_fused')
-                ) else None
-                if _dq:
-                    ret_k = _dq(
-                        self._retrieval_cache._k_norms[:, :, :self._retrieval_cache.offset],
-                        self._retrieval_cache._k_packed[:, :, :self._retrieval_cache.offset])
-                    ret_v = _dq(
-                        self._retrieval_cache._v_norms[:, :, :self._retrieval_cache.offset],
-                        self._retrieval_cache._v_packed[:, :, :self._retrieval_cache.offset])
-                else:
-                    # Fallback — should not normally hit this
-                    ret_k = ret_k if not isinstance(ret_k, tuple) else keys[:, ret_idx, :, :]
-                    ret_v = ret_v if not isinstance(ret_v, tuple) else values[:, ret_idx, :, :]
+                ret_k = mx.dequantize(
+                    *ret_k, group_size=self._retrieval_cache.group_size,
+                    bits=self._retrieval_cache.bits)
+                ret_v = mx.dequantize(
+                    *ret_v, group_size=self._retrieval_cache.group_size,
+                    bits=self._retrieval_cache.bits)
 
         # Update streaming heads (per-head ring buffers)
         str_k, str_v = None, None
@@ -426,20 +408,17 @@ class DuoKVCache:
 
         out = mx.zeros_like(queries)
 
-        # Retrieval: TQ3 fused decode attention (no dequant needed)
+        # Retrieval: native quantized SDPA (MLX built-in, 2.5x faster than TQ3)
         if ret_idx and self._retrieval_cache is not None:
             rc = self._retrieval_cache
             Q_ret = queries[:, ret_q_idx, :, :]
-            if (hasattr(rc, 'decode_attention') and rc._quantized
-                    and rc._k_norms is not None):
-                # Quantized — use TQ3's fused attention (no dequant)
-                ret_out = rc.decode_attention(Q_ret, scale=scale, mask=mask)
-                out[:, ret_q_idx] = ret_out
-            elif rc._fp16_keys is not None:
-                # Still in fp16 warmup — use standard SDPA
-                ret_out = mx.fast.scaled_dot_product_attention(
-                    Q_ret, rc._fp16_keys, rc._fp16_values,
-                    scale=scale, mask=mask)
+            ret_state = rc.state
+            if ret_state[0] is not None and isinstance(ret_state[0], tuple):
+                # Quantized state — use MLX's native quantized SDPA
+                from mlx_lm.models.base import quantized_scaled_dot_product_attention
+                ret_out = quantized_scaled_dot_product_attention(
+                    Q_ret, *ret_state, scale=scale, mask=mask,
+                    group_size=rc.group_size, bits=rc.bits)
                 out[:, ret_q_idx] = ret_out
             else:
                 # Fallback: use merged K/V from update_and_fetch
