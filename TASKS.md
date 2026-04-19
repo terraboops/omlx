@@ -516,6 +516,10 @@ _(none)_
 
 ## Completed
 
+- **Task 150 scaffolding: --duo-quantize flag** — wired through server→patches→DuoKVCache (2026-04-18)
+  - `--duo-quantize` flag on server, `quantize_retrieval` param on DuoKVCache and apply_hypercar_patches
+  - Implementation pending: actual QuantizedKVCache for retrieval heads (M effort, next cycle)
+  - At 1M: fp16 retrieval = 196 GB (impossible), 3-bit = 24.6 GB (fits in 48 GB budget)
 - **Run 86 ALL GATES PASSED** — post-efficiency-audit validation + analyst profiler committed (2026-04-18)
   - 10/10 phases pass: Smoke, Coherence, Code Intel 5/5, NIAH, RULER 100%, MMLU-Pro 64%, SnapKV Quality, Tool-Call JSON, Memory
   - Committed analyst efficiency_profile.py (431 lines) — micro-benchmark tool for profiling hot paths

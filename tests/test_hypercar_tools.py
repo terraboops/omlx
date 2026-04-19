@@ -1877,6 +1877,24 @@ class TestSkipReropeDefault:
         assert "skip_rerope: bool = True" in sig
 
 
+class TestDuoKVQuantizeRetrieval:
+    """Task 150: DuoKV must accept quantize_retrieval flag for Goal 1."""
+
+    def test_constructor_accepts_flag(self):
+        """DuoKVCache must accept quantize_retrieval parameter."""
+        assert "quantize_retrieval" in _duo_src
+
+    def test_server_flag_exists(self):
+        """Server must have --duo-quantize flag."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "--duo-quantize" in server_src
+
+    def test_flag_wired_to_patches(self):
+        """apply_hypercar_patches must accept quantize_retrieval."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        assert "quantize_retrieval" in server_src
+
+
 class TestToolCallGate:
     """Task 161: Benchmark must have tool-call JSON validity phase."""
 

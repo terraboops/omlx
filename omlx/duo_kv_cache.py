@@ -143,13 +143,15 @@ class DuoKVCache:
         group_size: int = 64,
         window: int = 256,
         sink: int = 4,
+        quantize_retrieval: bool = False,
     ):
         self.layer_idx = layer_idx
         self.n_kv_heads = n_kv_heads
         # NOTE: do NOT set self.bits — mlx-lm SDPA checks hasattr(cache, 'bits')
         # and routes to quantized_matmul which is incompatible with fp16 KV.
-        self._quant_bits = bits  # stored for potential future QuantizedKVCache use
+        self._quant_bits = bits  # stored for QuantizedKVCache retrieval heads
         self.group_size = group_size
+        self._quantize_retrieval = quantize_retrieval
         self.window = window
         self.sink = sink
         self.offset = 0

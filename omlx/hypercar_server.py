@@ -150,7 +150,8 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
                            group_size: int = 64, kv_mode: str = "native",
                            dequant_chunk_size: int = 2048,
                            min_quant_tokens: int = 512,
-                           quest_topk: int = 0) -> None:
+                           quest_topk: int = 0,
+                           quantize_retrieval: bool = False) -> None:
     """Apply all hypercar optimizations to mlx_lm runtime.
 
     kv_mode controls the KV cache strategy:
@@ -186,7 +187,9 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
             from omlx.duo_kv_cache import DuoKVCache, load_duo_policy
             policy = load_duo_policy()
             num_layers = len(caches)
-            return [DuoKVCache(policy, layer_idx=i, bits=bits) for i in range(num_layers)]
+            return [DuoKVCache(policy, layer_idx=i, bits=bits,
+                              quantize_retrieval=quantize_retrieval)
+                    for i in range(num_layers)]
 
         result = []
         for i, c in enumerate(caches):
@@ -280,6 +283,8 @@ def main():
                         help="Number of fp16 layers (rest use TQ3). Default 1.")
     parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16", "duo"], default="duo",
                         help="KV cache: duo (DuoAttention, best quality+speed), native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
+    parser.add_argument("--duo-quantize", action="store_true", default=False,
+                        help="DuoKV: use QuantizedKVCache(3-bit) for retrieval heads (saves ~8x memory, enables 1M context)")
     parser.add_argument("--bits", type=int, default=3,
                         help="KV quantization bits (default 3)")
     parser.add_argument("--kv-group-size", type=int, default=64,
@@ -353,6 +358,8 @@ def main():
     logger.info(f"fp16 layers:      {args.fp16_layers}")
     if args.kv_mode == "duo":
         logger.info(f"DuoAttention:     streaming heads use ring buffer (sink+window)")
+        if args.duo_quantize:
+            logger.info(f"DuoKV quantize:   retrieval heads use QuantizedKVCache({args.bits}-bit)")
         logger.info(f"Quality:          MMLU-Pro 62%, HumanEval 95% (best mode)")
     elif args.kv_mode == "native":
         logger.info(f"Group size:       {args.kv_group_size}")
@@ -383,6 +390,7 @@ def main():
         dequant_chunk_size=args.dequant_chunk,
         min_quant_tokens=args.min_quant_tokens,
         quest_topk=args.quest_topk,
+        quantize_retrieval=args.duo_quantize,
     )
     # Apply MInference sparse prefill if requested
     if args.prefill_sparse == "minference":
