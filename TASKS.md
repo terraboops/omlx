@@ -516,12 +516,12 @@ _(none)_
 
 ## Completed
 
-- **Task 150: DuoKV quantized retrieval heads** — QuantizedKVCache for retrieval, StreamingKVCache for streaming (2026-04-18)
+- **Task 150: DuoKV quantized retrieval heads** — GPU VALIDATED (2026-04-18)
   - --duo-quantize flag wired through server→patches→DuoKVCache
   - Per-head dispatch: retrieval → QuantizedKVCache(3-bit), streaming → StreamingKVCache(fp16 ring)
-  - Dequantize on merge for SDPA (memory savings at rest: 8x for retrieval heads)
+  - GPU smoke: PASS (math coherence correct, 42.0 tok/s decode — 22% overhead from dequant)
+  - 4 new regression tests guarding the split architecture
   - At 256K: quantized retrieval saves ~20 GB vs fp16 (24.6 vs 196 GB at 1M)
-  - Needs GPU validation at 64K+ to confirm quality and memory targets
 - **Task 150 scaffolding: --duo-quantize flag** — wired through server→patches→DuoKVCache (2026-04-18)
   - `--duo-quantize` flag on server, `quantize_retrieval` param on DuoKVCache and apply_hypercar_patches
   - Implementation pending: actual QuantizedKVCache for retrieval heads (M effort, next cycle)

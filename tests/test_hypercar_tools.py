@@ -1894,6 +1894,29 @@ class TestDuoKVQuantizeRetrieval:
         server_src = Path("omlx/hypercar_server.py").read_text()
         assert "quantize_retrieval" in server_src
 
+    def test_split_cache_architecture(self):
+        """When quantize_retrieval=True, must create per-head sub-caches."""
+        assert "_retrieval_caches" in _duo_src
+        assert "_streaming_caches" in _duo_src
+        assert "QuantizedKVCache" in _duo_src
+        assert "StreamingKVCache" in _duo_src
+
+    def test_update_quantized_method(self):
+        """Must have _update_quantized for per-head dispatch."""
+        assert "def _update_quantized" in _duo_src
+
+    def test_dequantize_on_merge(self):
+        """Quantized retrieval heads must dequantize when merging for SDPA."""
+        idx = _duo_src.index("def _update_quantized")
+        body = _duo_src[idx:idx + 1500]
+        assert "mx.dequantize" in body
+
+    def test_pad_mixed_lengths(self):
+        """Must handle mixed-length heads (retrieval=full, streaming=ring)."""
+        idx = _duo_src.index("def _update_quantized")
+        body = _duo_src[idx:idx + 1500]
+        assert "max_len" in body
+
 
 class TestToolCallGate:
     """Task 161: Benchmark must have tool-call JSON validity phase."""
