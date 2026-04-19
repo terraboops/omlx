@@ -516,6 +516,13 @@ _(none)_
 
 ## Completed
 
+- **DuoKV+quantize 40K deep validation** — THREE FAILURES found (2026-04-18)
+  - NIAH: **FAIL** — "GAMMA-552" (truncated 1 char, quality degrades at long context)
+  - Metal peak: **44.0 GB** — breaches 41.2 GB limit by 2.8 GB during prefill
+  - Decode: **2.9 tok/s** — catastrophic at 40K (quantized SDPA doesn't scale)
+  - Prefill: 95 tok/s (7 min for 40K tokens)
+  - **Conclusion**: DuoKV+quantize works at short context but breaks at Goal 1 scale.
+    fp16+SnapKV at 128K remains the most validated path. Need profiling to find root causes.
 - **Task 150: DuoKV quantized retrieval + split-SDPA** — NIAH PASS at 4K+16K (2026-04-18)
   - --duo-quantize flag wired through server→patches→DuoKVCache
   - Per-head dispatch: retrieval → QuantizedKVCache(3-bit), streaming → StreamingKVCache(fp16 ring)
