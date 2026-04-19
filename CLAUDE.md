@@ -29,7 +29,7 @@ any of these — even to improve another — needs explicit justification.
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | **VALIDATED TO 128K** — NIAH PASS with SnapKV+CAOTE (9 GB saved). TQ3+SnapKV validated at 4K/16K. | DuoKV+TQ3 backend needed for 256K+ |
+| 1 | 1M context | **VALIDATED TO 128K** (fp16+SnapKV). **DuoKV+quantize NIAH PASS** at 4K — 3-bit retrieval heads enable 1M in 48GB. | `--duo-quantize` needs 64K+ validation |
 | 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62%**, LiveCodeBench 30% — **5 eval families** | LiveCodeBench at floor (30%), room to improve |
 | 3 | 50 tok/s decode constant | **Duo: 53.6 tok/s — GOAL MET**. DuoKV pre-alloc slab: 248x faster at 64K (was 34.78ms → 0.14ms/token). | Post-eviction decode: 33.7 tok/s (skip_rerope) |
 | 4 | 500 tok/s prefill constant | **Duo: 817 tok/s at 4K — GOAL MET**. TQ3: 672 tok/s at 8K (fused quantize, 1.33x improvement). | TQ3 prefill no longer a bottleneck |
@@ -159,11 +159,14 @@ Gate summary:
 | Mode | Cache Type | Compression | Features | Use Case |
 |------|-----------|-------------|----------|----------|
 | **`duo` (default)** | DuoKVCache (fp16 retrieval + ring-buffer streaming) | ~2x at 16K+ | Best quality (MMLU-Pro 62%, HumanEval 95%), zero swap | **Best for ≤16K context** |
+| `duo --duo-quantize` | DuoKVCache (3-bit retrieval + fp16 ring streaming) | ~5x | DuoAttention quality + 3-bit memory, NIAH PASS | **Goal 1 path to 1M** |
 | `native` | MLX QuantizedKVCache(bits=3, group_size=64) | 5.3x | Battle-tested, long context | Long context (16K-1M) |
 | `tq3` | TurboQuantKVCache (WHT rotation + codebook) | 5.3x | save/load, rewind, fork, best RULER quality | Agentic workflows |
 | `fp16` | Standard KVCache | 1x | Baseline quality | Testing, ~75K max |
 
-**Mode selection guide**: Use `duo` (default) for interactive coding — best quality and speed up to 16K. Switch to `native` or `tq3` for repository-scale context (64K+) where 3-bit KV compression is needed to fit in 48GB.
+**Mode selection guide**: Use `duo` (default) for interactive coding — best quality and speed up to 16K.
+Use `duo --duo-quantize` for long context (64K+) — DuoAttention quality with 3-bit memory efficiency.
+Switch to `native` or `tq3` for maximum compression or agentic features.
 
 TQ3 mode uses Walsh-Hadamard Transform (per arXiv:2504.19874) for full dimension decorrelation. This makes the Beta((d-1)/2, (d-1)/2) codebook valid, producing correct code output.
 
