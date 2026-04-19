@@ -196,10 +196,14 @@ class DuoKVCache:
             self._streaming_head_indices = [h for h in range(n_kv_heads) if self._is_streaming[h]]
             # One shared TurboQuantKVCache for ALL retrieval heads
             # TQ3: WHT decorrelation + fused decode_attention (no dequant needed)
+            # Quest page selection: attend to top-K pages instead of full context
+            # quest_topk=16: activates at offset > 2048 (16 × 128-token pages)
+            # At 40K: 312 pages, attend to top-16 = 5% → ~20x decode speedup
             TQCache = _get_tq_cache_class()
             self._retrieval_cache = TQCache(
                 bits=bits, seed=42,
-                min_quant_tokens=256) if self._retrieval_head_indices else None
+                min_quant_tokens=256,
+                quest_topk=16) if self._retrieval_head_indices else None
             # Per-head StreamingKVCache (ring buffer needs per-head offset)
             self._streaming_head_caches = {
                 h: StreamingKVCache(window, sink) for h in self._streaming_head_indices

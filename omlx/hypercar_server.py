@@ -180,6 +180,12 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
             return _orig_sdpa(queries, keys, values, cache, scale, mask, sinks=sinks)
 
         base_mod.scaled_dot_product_attention = _duo_split_sdpa
+        # Also patch any model modules that imported SDPA at module load time
+        try:
+            import mlx_lm.models.qwen3_moe as qwen_mod
+            qwen_mod.scaled_dot_product_attention = _duo_split_sdpa
+        except (ImportError, AttributeError):
+            pass
         logging.getLogger("hypercar").info("Split-SDPA patch applied for duo-quantize")
 
     # 2. Monkey-patch make_prompt_cache based on kv_mode

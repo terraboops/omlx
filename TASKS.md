@@ -506,7 +506,7 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-- DuoKV+TQ3 40K re-validation — proper warmup, honest decode speed, NIAH retry
+_(none)_
 
 
 
