@@ -4023,3 +4023,37 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Phase 3e SnapKV Quality gate must PASS: `SNAPKV-BENCH-9921` in output at 49% keep, 4K context.
 - **Effort**: S (bisect + fix — the regression is in one of 3 suspect commits)
 - **Depends on**: None. BLOCKING — this must be fixed before any further perf work.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 39, 2026-04-18)
+
+### 178. Channel-dimension sparse attention for post-eviction KV reconstruction (EchoKV improvement)
+- **Goal**: 1 (context window), 2 (intelligence — reconstruction quality after eviction)
+- **Derived from**: Efficient Seismic Data Interpolation via Sparse Attention Transformer (2506.07923)
+- **Change**: `omlx/snapkv.py` — modify the EchoKV reconstruction path (Task 108) to compute sparse attention along the head/channel dimension (64 heads) rather than the token dimension (potentially 100K+ tokens). Use negative squared Euclidean distance for the sparse affinity matrix (replacing dot-product similarity) and adaptive ReLU thresholding to discard irrelevant cross-head correlations. The seismology insight: channel-first attention is O(H^2 T) vs token-first O(T^2 H), which is dramatically cheaper when T >> H (always true for Hypercar: T can be 1M, H is 64).
+- **Verify**: Run SnapKV at 64K context with 25% keep, then reconstruct 10 randomly selected evicted tokens using both current token-first EchoKV and new channel-first approach. Measure: (1) reconstruction MSE should be within 10% of token-first baseline, (2) reconstruction wall-clock should be at least 5x faster at 64K context, (3) NIAH PASS after reconstruction.
+- **Effort**: M (sparse attention refactor + benchmark comparison)
+- **Depends on**: EchoKV reconstruction layer (Task 108).
+
+### 179. NMI independence test for DuoAttention head classification validation
+- **Goal**: 2 (intelligence — validate head factorisation), 3 (decode speed — justify two-cache architecture)
+- **Derived from**: Mathematical Foundations of Polyphonic Music Generation (2601.03612)
+- **Change**: New diagnostic in `omlx/duo_kv_cache.py` or `omlx/bench/hypercar_bench.py` — compute Normalized Mutual Information (NMI) between retrieval-head and streaming-head attention score distributions across a calibration corpus. The counterpoint insight: if NMI < 0.2 (as found for pitch vs hand in Beethoven sonatas), the two-cache factorisation is information-theoretically justified with bounded loss (< 0.153 bits per the paper's bound). Also compute Rademacher complexity for the retrieval-only and streaming-only subnetworks to verify that the factored generalization bound is tighter than the joint bound.
+- **Verify**: Run NMI measurement on 100 coding prompts from the HumanEval corpus. Report NMI value. If NMI < 0.2, DuoAttention's head split is validated. If NMI > 0.4, investigate which head pairs have high mutual information and consider merging them.
+- **Effort**: S (diagnostic measurement — no architecture changes)
+- **Depends on**: DuoAttention head calibration (Task 12, shipped).
+
+### 180. Wright-Fisher equilibrium computation for optimal streaming/retrieval head ratio
+- **Goal**: 1 (context window), 3 (decode speed), 6 (48GB fit)
+- **Derived from**: A Two-Size Wright-Fisher Model (2502.03056)
+- **Change**: New analysis notebook or script `omlx/bench/head_ratio_equilibrium.py` — model the streaming/retrieval head ratio as a Wright-Fisher SDE with resource constraint R = Metal budget (48GB), theta = compression ratio (3-bit/fp16 = 0.19), drift from quality loss (measured via NIAH at different head splits), and diffusion from input variation (measured across HumanEval prompts). Solve the SDE numerically to compute the equilibrium frequency of streaming heads at each context length (4K, 16K, 64K, 128K). Compare against DuoAttention's empirically calibrated ratio.
+- **Verify**: The Wright-Fisher equilibrium ratio should be within 10% of DuoAttention's calibrated ratio at 4K and 16K. At 64K+, the model should predict that more heads should be streaming (to fit in Metal budget), validating the empirical observation that aggressive compression is needed at long context.
+- **Effort**: S (numerical SDE solution + comparison — no model changes)
+- **Depends on**: DuoAttention calibration data (Task 12, shipped).
+
+### 181. Maynard-Cross evolutionary head weighting for SnapKV eviction scoring
+- **Goal**: 2 (intelligence — adaptive eviction quality across turns)
+- **Derived from**: The Hive Mind is a Single Reinforcement Learning Agent (2410.17517)
+- **Change**: `omlx/snapkv.py` — replace the static head rebalancing weights (Task 111: retrieval 2x, streaming 0.5x) with Maynard-Cross Learning, an evolutionary bandit algorithm derived from replicator dynamics. Each head maintains a "fitness" score that is updated after each decode step: if the head's eviction recommendations were validated (the model attended to kept tokens, not evicted ones), its fitness increases; otherwise it decreases. The replicator dynamics update rule: w_h(t+1) = w_h(t) * f_h(t) / mean(f(t)), where f_h is head h's fitness at step t. This amplifies reliable heads and suppresses unreliable ones, with provable convergence from evolutionary game theory.
+- **Verify**: Multi-turn NIAH at 64K with 25% keep: prefill, evict, run 5 follow-up queries. Compare Maynard-Cross adaptive weighting vs static Task 111 weights. The adaptive approach should maintain NIAH PASS across all 5 turns (current static weights may degrade on turn 4-5 as the optimal head weighting shifts). Measure per-head weight evolution to verify convergence.
+- **Effort**: M (replicator dynamics implementation + multi-turn eval)
+- **Depends on**: Head rebalancing (Task 111, shipped). SnapKV eviction pipeline (shipped).
