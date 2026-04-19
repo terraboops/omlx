@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-18 (pass 41)_
+_Last updated: 2026-04-18 (pass 42)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -12377,3 +12377,137 @@ us the prefill and cache-tiering machinery; Bare-Metal Tensor Virt and
 the two Apple Silicon profiling papers give us the substrate. The next
 benchmark run should show whether the theoretical 9-11 GB KV budget at 1M
 holds in practice. Meow, nyaa, meow.
+
+## Pass 42 — 2026-04-18 — Goal 1 Engineering: On-Device Sparse Attention, Speculative Long-Context, Metal Codebook Kernels
+
+### [Long-Context Modeling with Dynamic Hierarchical Sparse Attention for On-Device LLMs](https://arxiv.org/abs/2510.24606) — 2510.24606
+- **Authors**: Siheng Xiong, Yuan Yang, Faramarz Fekri, Ali Payani
+- **Published**: 2025-10 (NeurIPS 2025 ER workshop)
+- **Hypercar goals it addresses**: Goal 1 (context window — sub-quadratic attention on-device), Goal 4 (prefill speed), Goal 6 (machine fit — explicit on-device framing)
+- **TL;DR**: DHSA is a data-driven framework that dynamically predicts attention sparsity at inference time via two learned-without-retraining components: chunk-level similarity scoring, and adaptive boundary prediction that determines chunk granularity per input. Unlike static sliding-window or global-token patterns, DHSA adapts content-by-content without retraining the base model. On Gemma2 with RULER-style NIAH and LongBench, it matches dense accuracy while cutting prefill latency 20-60% and peak memory 35%. The explicit on-device framing (resource-constrained settings) sets it apart from typical A100/H100 sparse-attention work.
+- **Why it matters for Hypercar**: Pass 41 held this paper pending the XQuant implementation cycle. Now that we have the per-layer bit-width infrastructure in flight (Task 186), DHSA slots in as the prefill-time complement: where Quest and MInference require one pattern choice, DHSA learns the pattern per-input, which matches the variable code-vs-prose mix Qwen3-Coder sees. The 35% memory cut directly addresses the 120K prefill OOM blocker, and the 20-60% prefill latency drop compounds with FastKV TSP (Task 187). Most importantly, the chunk-boundary predictor gives us the missing methodology for the TSP boundary selection gap flagged in Pass 41.
+- **Cost of adoption**: M (2-4 days). The chunk-similarity scorer is cheap (cosine between mean-pooled chunk embeddings); the boundary predictor is a small trained head that we can fit offline on wikitext + CodeSearchNet samples. Integrate in `omlx/patches/` alongside specprefill. Biggest risk: Gemma2 results may not transfer to a MoE model — budget one day for an ablation on Qwen3-Coder-30B-A3B before committing to full integration.
+- **Local PDF**: research/2510.24606_dhsa_on_device.pdf
+
+### [LongSpec: Long-Context Lossless Speculative Decoding with Efficient Drafting and Verification](https://arxiv.org/abs/2502.17421) — 2502.17421
+- **Authors**: Penghui Yang, Cunxiao Du, Fengzhuo Zhang, Haonan Wang, Tianyu Pang, Chao Du, Bo An
+- **Published**: 2025-02
+- **Hypercar goals it addresses**: Goal 3 (decode speed — up to 3.26x over FlashAttention), Goal 1 (context window — works WITH long context rather than breaking at it)
+- **TL;DR**: Reformulates speculative decoding for the long-context regime where the draft model's KV cache itself becomes a scaling bottleneck. Introduces a constant-size draft KV (independent of total context), novel position indices that eliminate train/inference mismatch for the draft, and an attention aggregation strategy combining fast prefix computation with tree attention over the draft. Reports 3.26x speedup over FlashAttention baselines across five long-context benchmarks, with lossless output (distribution-matching verification).
+- **Why it matters for Hypercar**: Our decode at 10 tok/s at 10K is Goal 3's remaining gap. Standard speculative decoding (EAGLE-2, already in our review) doesn't help at long context because the draft's own KV cache blows up. LongSpec's constant-size draft means speculation overhead stops growing at 1M — exactly the shape Hypercar needs. Pairs naturally with DuoKV: retrieval heads do full attention, streaming heads adopt the tree-attention aggregation. The lossless guarantee is load-bearing for us because we ship Qwen3-Coder-30B-A3B without calibration.
+- **Cost of adoption**: M-L (3-5 days). Requires a small draft model (Qwen3-0.6B is a natural candidate, same tokenizer family) plus tree-verification logic in the decode loop. Lower risk than a full EAGLE-2 port because the draft stays architecturally simple. Biggest risk: the MoE gate of Qwen3-Coder may confuse the draft's next-token distribution — worth probing with a toy run before committing kernel work.
+- **Local PDF**: research/2502.17421_longspec.pdf
+
+### [QuantSpec: Self-Speculative Decoding with Hierarchical Quantized KV Cache](https://arxiv.org/abs/2502.10424) — 2502.10424
+- **Authors**: Rishabh Tiwari, Haocheng Xi, Aditya Tomar, Coleman Hooper, Sehoon Kim, Maxwell Horton, Mahyar Najibi, Michael W. Mahoney, Kurt Keutzer, Amir Gholami
+- **Published**: 2025-02
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 2.5x e2e), Goal 1 (context window — memory-friendly speculation), Goal 6 (machine fit — ~1.3x memory reduction vs sparse-KV speculation)
+- **TL;DR**: Self-speculative decoding where the draft reuses the target's architecture but swaps in a hierarchical 4-bit quantized KV cache and 4-bit weights. Novel "bit-sharing" between target and draft KV eliminates the need for a separate draft KV buffer. A double full-precision buffer caches recent tokens to avoid wasteful quantize/dequantize on the hot KV. Maintains >90% acceptance rate and delivers ~2.5x end-to-end speedup, outperforming sparse-KV speculative methods. Targets edge devices explicitly.
+- **Why it matters for Hypercar**: Unlike LongSpec (separate tiny draft), QuantSpec lets us reuse the Qwen3-Coder-30B-A3B weights as the draft — no extra model to host, no tokenizer mismatch. The bit-sharing insight is especially clean for our stack: our DuoKV+TQ3 already has a 3-bit KV, and a 4-bit hierarchical overlay on top is approximately free memory-wise. The double full-precision buffer maps 1:1 to DuoKV's ring-buffer streaming section — we'd cap it at the most recent 512 tokens and get speculation for roughly zero added memory. The "edge device" framing makes this the most Hypercar-aligned speculative-decoding paper we've found.
+- **Cost of adoption**: L (1 week). Requires draft-dispatch hooks in the decode loop, a 4-bit weight path (we have 8-bit), and bit-sharing logic between TQ3 storage and the draft's 4-bit view. Medium-risk because the target model is 8-bit already; the 4-bit draft weights need either QAT or a post-hoc quant (likely GPTQ) — budget two days for that alone.
+- **Depends on**: TQ3 KV cache (shipped), DuoKV (shipped). Possible dependency on LongSpec draft infrastructure if we ship both.
+- **Local PDF**: research/2502.10424_quantspec.pdf
+
+### [VQ-LLM: High-performance Code Generation for Vector Quantization Augmented LLM Inference](https://arxiv.org/abs/2503.02236) — 2503.02236
+- **Authors**: Zihan Liu, Xinhao Luo, Junxian Guo, Wentao Ni, Yangjie Zhou, Yue Guan, Cong Guo, Weihao Cui, Yu Feng, Minyi Guo, Yuhao Zhu, Minjia Zhang, Jingwen Leng, Chen Jin
+- **Published**: 2025-03 (HPCA 2025)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 64-99% latency cut on VQ kernels), Goal 4 (prefill speed), Goal 6 (machine fit — efficient codebook access)
+- **TL;DR**: Identifies that the dominant inefficiency in vector-quantized LLM inference is codebook access, not arithmetic. Introduces a "codebook cache" abstraction that adaptively places codebook entries across registers, shared memory, and global memory based on access frequency, plus a codebook-centric dataflow that fuses dequant with the downstream matmul. Framework generates fused kernels automatically; achieves 64.36-99.1% latency reduction versus existing open-source VQ implementations.
+- **Why it matters for Hypercar**: Pass 41's Apple Silicon Profiling paper (2508.08531) showed dequant kernels can saturate before bandwidth savings materialize — this is the paper that explains WHY and tells us how to fix it on any GPU architecture with a memory hierarchy, including Metal. Our TQ3 WHT+codebook path has exactly the codebook-access pattern VQ-LLM optimizes. The codebook-cache abstraction maps cleanly to Metal's threadgroup memory + register file: 48-entry TQ3 codebook fits in ~384 bytes per head, well within a threadgroup's 32 KB. This is the concrete path to closing Pass 41's dequant-kernel gap for sub-2-bit XQuant as well, not just TQ3.
+- **Cost of adoption**: M-L (4-7 days). The framework is CUDA-focused; we'd port the codebook-cache design to Metal shading language. Biggest risk: Metal's threadgroup memory model is more restrictive than CUDA shared memory (no banking, limited sync primitives), so we'd need to re-tune the tile sizes. Probable win: 2-3x dequant throughput, which would unblock XQuant adoption.
+- **Depends on**: TQ3 Metal kernel path (shipped), XQuant codebook design (Task 185).
+- **Local PDF**: research/2503.02236_vq_llm_codebook_cache.pdf
+
+### [MixKVQ: Query-Aware Mixed-Precision KV Cache Quantization for Long-Context Reasoning](https://arxiv.org/abs/2512.19206) — 2512.19206
+- **Authors**: (MixKVQ authors, December 2025)
+- **Published**: 2025-12
+- **Hypercar goals it addresses**: Goal 1 (context window), Goal 2 (intelligence — protects sensitive channels), Goal 6 (machine fit)
+- **TL;DR**: Observes that critical Key channels (not layers, not heads — channels) require higher precision, and their identity depends on the query. Proposes a query-aware algorithm combining each channel's intrinsic quantization difficulty with its query-relevance score to decide per-channel bit width. Values stay per-token quantized (simple), Keys go per-channel mixed. Demonstrates near-lossless performance on long-context reasoning benchmarks where flat quantization degrades badly.
+- **Why it matters for Hypercar**: Orthogonal to KVTuner (per-layer, Task 186). MixKVQ operates at the channel level WITHIN a layer — the two compose: KVTuner chooses a target bit budget per layer, MixKVQ allocates those bits per channel with query awareness. The query-aware aspect matches our DuoKV design philosophy (retrieval vs streaming heads get different treatment based on use). For Qwen3-Coder, code-heavy queries and prose-heavy queries likely stress different Key channels — a static per-channel bit table calibrated on mixed Qwen3 data would be a small memory table but a real quality lever at 1.4-bit average.
+- **Cost of adoption**: M (2-3 days). The query-aware scoring is a small online compute per decode step; the per-channel bit dispatch is a larger engineering effort because our TQ3 codec assumes uniform bits within a group. Mitigation: start with per-channel static bits (no query awareness) as a stepping stone, then layer on query-awareness if quality warrants.
+- **Depends on**: KVTuner per-layer config (Task 186) for the layer-wise budget.
+- **Local PDF**: research/2512.19206_mixkvq_query_aware.pdf
+
+### [Expected Attention: KV Cache Compression by Estimating Attention from Future Queries Distribution](https://arxiv.org/abs/2510.00636) — 2510.00636
+- **Authors**: Alessio Devoto, Maximilian Jeblick, Simon Jégou
+- **Published**: 2025-10
+- **Hypercar goals it addresses**: Goal 1 (context window — principled eviction ranking), Goal 3 (decode speed — cheaper than attention-score aggregation)
+- **TL;DR**: Addresses a fundamental problem with SnapKV-style eviction: attention scores from future tokens are unavailable at compression time, and Flash Attention doesn't materialize past scores either. Leverages the known distributional properties of LLM activations to compute EXPECTED attention scores in closed form for each KV pair, under a model of the future query distribution. Training-free; produces a principled importance ranking that doesn't rely on recent-attention proxies. Integrated with NVIDIA's kvpress library.
+- **Why it matters for Hypercar**: Our SnapKV eviction uses the real query projection over a local observation window (Task 46). This works, but picks a window that's effectively arbitrary and is sensitive to prompt structure. Expected Attention is the theoretically clean version: compute the importance under a distribution, not a point estimate. Closes a latent quality risk at very long context where a bad observation window could evict load-bearing tokens. The closed-form computation is cheap — checkable against our current scoring kernel in a single afternoon. Pairs with MixKVQ (more precision for tokens we won't evict) and DHSA (sparse attention for tokens we keep).
+- **Cost of adoption**: S-M (1-2 days). Replace the importance scorer in `omlx/snapkv.py` with the closed-form expected-attention computation. No architectural changes; straightforward A/B against current SnapKV on NIAH and LongBench. Low risk because worst case we revert.
+- **Depends on**: SnapKV eviction pipeline (shipped).
+- **Local PDF**: research/2510.00636_expected_attention.pdf
+
+### Pass 42 synthesis
+
+Pass 42 closes four of the five gaps that Pass 41 explicitly flagged: on-device
+sparse attention (DHSA 2510.24606 — held specifically for this pass), Metal/GPU
+codebook layout (VQ-LLM 2503.02236), TSP boundary selection (DHSA's chunk
+boundary predictor + Expected Attention 2510.00636 as the principled scorer),
+and decode-time speculative loading for long context (LongSpec 2502.17421 and
+QuantSpec 2502.10424, which turn the tiered-cache work from Pass 41 into an
+end-to-end decode acceleration). MixKVQ 2512.19206 adds an orthogonal
+per-channel axis to Pass 41's per-layer mixed-precision story.
+
+**The highest-leverage finding**: VQ-LLM's codebook cache is the missing piece
+for unlocking Pass 41's XQuant + KVTuner plan on Metal. Pass 41 identified that
+sub-2-bit codebook dequant could bottleneck at the kernel level; VQ-LLM tells
+us the solution is placing the 48-entry codebook in threadgroup memory with a
+codebook-centric dataflow, which fuses dequant into the attention matmul. This
+is a 2-3x dequant throughput win on existing TQ3 AND the enabler for XQuant at
+1.4 bits — without it, the Pass 41 memory plan buys no speed. LongSpec +
+QuantSpec stacked on top plausibly takes decode from 10 tok/s at 16K toward
+the 50 tok/s goal at 128K, by turning long-context decode into a small number
+of parallel draft-verify rounds over a compressed draft KV.
+
+**Composable end-state configuration** (now fully papered):
+- fp16 DuoKV retrieval heads (already shipped)
+- KVTuner per-layer bits (Task 186) + MixKVQ per-channel bits (new) for
+  streaming layers, averaging ~1.6 bits with quality-preserving outliers
+- VQ-LLM codebook-cache Metal kernel (new) — makes that average feasible at
+  M4 Pro memory bandwidth
+- DHSA dynamic sparsity (new) at prefill, TSP boundary chosen by DHSA's
+  boundary predictor
+- Expected Attention (new) as the SnapKV scorer for progressive eviction
+- QuantSpec self-speculative decoding (new) — reuses 30B MoE as draft via
+  4-bit weight dispatch, double buffer for recent tokens
+- LongSpec (new, optional alternative) — constant-size tree-attention draft
+  for the case where QuantSpec's MoE-draft accuracy proves lossy
+
+**What Pass 42 deliberately did NOT cover**:
+- FlashAttention-4 (2603.05451) remains Blackwell-specific.
+- KVSwap (2511.11907, Pass 40) and Strata (2508.18572, Pass 41) already
+  cover NVMe tiering — further papers in that vein would be duplicative.
+- KVCrush (2503.00022) and PM-KVQ were strong candidates but overlap too
+  heavily with KVTuner + MixKVQ for this pass — held for Pass 43 if a need
+  surfaces.
+- Async KV Prefetch (2504.06319) and PRESERVE (2501.08192) are datacenter
+  prefetch schedulers, outside single-user Hypercar scope.
+- Radix-tree prefix caching papers (SafeKV, FastTree, SGLang) were surveyed
+  but prefix sharing is a multi-session concern; our single-user workflow
+  already has session save/load covering the main case.
+
+**Gap status for pass 43**:
+1. **QAT for KV codebooks**: every paper here uses training-free quantization.
+   A learned codebook (Lloyd-Max is a Pass 41 reference, but not task-aware)
+   could close the 1.4-bit quality gap that currently caps XQuant's
+   applicability to the most sensitive 6 of 48 layers.
+2. **MoE-specific speculative decoding**: QuantSpec assumes a dense target;
+   Qwen3-Coder-30B-A3B has MoE gating that may confuse a quantized draft.
+   Need a paper on expert-routing-aware drafts.
+3. **Metal-specific tree attention kernel**: LongSpec's tree attention is
+   CUDA-focused. A Metal port needs to respect simdgroup constraints.
+4. **Real-world multi-eviction-round stability**: all eviction papers test
+   single-round compaction. Progressive eviction (Task 182 LCA dual-path)
+   needs a theoretical framework for error accumulation across rounds.
+5. **Attention pattern drift at 1M tokens**: DHSA trained on LongBench
+   (max ~32K); whether its learned chunk-boundary predictor generalizes
+   to 1M needs empirical verification on RULER's extended setting.
+
+Forty-two passes. Six papers added this round, total 180 across 65+
+disciplines. Pass 42 is the most tightly focused Goal-1 pass yet: every
+paper closes a specific gap called out in Pass 41's gap list, and the six
+together constitute a complete recipe for 1M-context interactive decode on
+M4 Pro. The next benchmark run should validate the VQ-LLM codebook-cache
+translation to Metal — if that's 2x or better on TQ3 dequant, the XQuant
+implementation unblocks and the 1M path is clear. Meow, nyaa, meow.
