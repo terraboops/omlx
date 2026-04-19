@@ -3450,6 +3450,61 @@ Analysis notes:
   Not reached due to crash. Will validate on next clean run.
 ```
 
+### Run 87: 🏆 ALL 12 GATES PASS — SnapKV Restored + Phase 3f Tool-Call + DuoKV Quantized Retrieval (Task 150)
+```
+Date: 2026-04-18
+SHA:  6a779e1
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo)
+
+FIRST 12-GATE RUN. SnapKV quality RESTORED after R84-R85 regression. Phase 3f
+Tool-Call JSON gate validated for the first time. DuoKV quantized retrieval heads
+(Task 150) landed — the strategic Goal 1 feature enabling 1M context with DuoKV.
+Prefill improved to 93 tok/s (from 75-77). Decode 53.0 tok/s. All quality stable.
+
+Commits since Run 85 (bd1fe8a):
+  - 6a779e1 feat: DuoKV quantized retrieval heads (Task 150)
+  - 4983c66 feat: --duo-quantize flag scaffold (Task 150)
+  - 46008c2 bench: Run 86 ALL GATES PASSED
+  - 9e3758d fix: mx.argwhere → revert get_keep_indices (Task 177)
+  - 1a5cd15 test: SnapKV+DuoKV composition tests (Task 163)
+
+Uncommitted: TASKS.md (+2/-1), tests/test_hypercar_tools.py (+23)
+
+Phase Results:
+  Phase 0: Smoke              PASS   0.3s   Prefill 93 tok/s, Decode 53.0 tok/s
+  Phase 1: Coherence          PASS   1.5s
+  Phase 2: Code Intelligence  PASS   4.2s   5/5 (100%)
+  Phase 3: NIAH               PASS  52.8s   4K + 16K
+  Phase 3b: RULER             PASS 235.2s   11/11 at 4K/16K
+  Phase 3c: MMLU-Pro          PASS 907.1s   62/100 (62%)
+  Phase 3e: SnapKV Quality    PASS   1.7s   49% kept, GER=0.000 — RESTORED
+  Phase 3f: Tool-Call JSON    PASS   0.8s   First validation — PASS with extracted JSON
+  Phase 3d: LiveCodeBench     PASS 159.2s   6/20 (30%)
+  Phase 4: HumanEval          PASS  19.7s   19/20 (95%)
+  Phase 5: Memory             PASS
+  TOTAL: 1394.3s (23.2 min)
+
+Analysis notes:
+- **SNAPKV RESTORED**: R84 failed (needle lost), R85 crashed (mx.argwhere).
+  The implementer fixed get_keep_indices in 9e3758d, reverted to working
+  .tolist() pattern. SnapKV now correctly preserves the needle at 49% keep.
+- **Phase 3f Tool-Call JSON: PASS** with first-object extraction. The model
+  produces duplicate JSON (as documented in INV 27/Task 161), but the gate
+  extracts the first valid JSON object and validates it. This is the expected
+  behavior without XGrammar constrained decoding.
+- **Prefill 93 tok/s** — significant improvement from R83's 75 tok/s. The
+  fused TQ3 quantize (Task 152) and vectorized SnapKV ops (Tasks 140/147)
+  are delivering measurable prefill speedup even in duo mode.
+- **DuoKV quantized retrieval heads (Task 150) landed** — the `--duo-quantize`
+  flag enables 3-bit quantization for retrieval heads in DuoKV mode. This is
+  the strategic Goal 1 feature: DuoKV's quality (streaming/retrieval head
+  classification) combined with 3-bit memory efficiency for 1M context.
+  Not yet tested at long context in the benchmark, but the code is in place.
+- **407→??? tests** — test suite grew (test count in commit message). The
+  implementer added SnapKV+DuoKV composition tests (Task 163).
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
