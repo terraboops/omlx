@@ -521,8 +521,13 @@ _(none)_
   - Metal peak: **44.0 GB** — breaches 41.2 GB limit by 2.8 GB during prefill
   - Decode: **2.9 tok/s** — catastrophic at 40K (quantized SDPA doesn't scale)
   - Prefill: 95 tok/s (7 min for 40K tokens)
-  - **Conclusion**: DuoKV+quantize works at short context but breaks at Goal 1 scale.
-    fp16+SnapKV at 128K remains the most validated path. Need profiling to find root causes.
+  - **Profiling**: 2.9 tok/s was contaminated by 2.8s Metal JIT cold start. Steady-state: 24 tok/s at 3.5K.
+    eval=36.5ms/step dominates (forward is lazy at 4-5ms). Root causes:
+    (1) Cold start: warmup doesn't prime quantized SDPA kernel
+    (2) Memory breach: fp16→quantize transient during prefill
+    (3) NIAH almost-pass: precision issue (off by 1 digit)
+  - **Conclusion**: DuoKV+quantize has potential but needs engineering work at scale.
+    fp16+SnapKV at 128K remains the most validated path.
 - **Task 150: DuoKV quantized retrieval + split-SDPA** — NIAH PASS at 4K+16K (2026-04-18)
   - --duo-quantize flag wired through server→patches→DuoKVCache
   - Per-head dispatch: retrieval → QuantizedKVCache(3-bit), streaming → StreamingKVCache(fp16 ring)
