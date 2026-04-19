@@ -174,29 +174,54 @@ class DuoKVCache:
             )
             self.head_types.append("streaming" if all_streaming else "retrieval")
 
-        # All heads use a single shared KVCache (fp16). After update,
-        # streaming heads' KV is trimmed to sink + window tokens.
-        # This avoids mixed-type and mixed-length issues while still
-        # saving memory on streaming heads at long contexts.
         self.capacity = sink + window  # streaming heads' max KV length
         self._is_streaming = [t == "streaming" for t in self.head_types]
         self._n_streaming = sum(self._is_streaming)
-        self._keys: Optional[mx.array] = None
-        self._values: Optional[mx.array] = None
         self._step = 256  # pre-allocation headroom
-        self._kv_len = 0  # actual tokens stored (vs buffer capacity)
+
+        if quantize_retrieval:
+            # Split architecture: QuantizedKVCache per retrieval head,
+            # StreamingKVCache per streaming head. Saves ~8x memory for
+            # retrieval heads (3-bit vs fp16), enabling 1M context.
+            self._retrieval_caches = {}  # head_idx → QuantizedKVCache
+            self._streaming_caches = {}  # head_idx → StreamingKVCache
+            for h in range(n_kv_heads):
+                if self._is_streaming[h]:
+                    self._streaming_caches[h] = StreamingKVCache(window, sink)
+                else:
+                    self._retrieval_caches[h] = QuantizedKVCache(
+                        bits=bits, group_size=group_size)
+            self._keys = None
+            self._values = None
+            self._kv_len = 0
+        else:
+            # Original: single fp16 buffer for all heads, streaming trim
+            self._retrieval_caches = None
+            self._streaming_caches = None
+            self._keys: Optional[mx.array] = None
+            self._values: Optional[mx.array] = None
+            self._kv_len = 0
 
         n_streaming = sum(1 for t in self.head_types if t == "streaming")
-        logger.debug(f"Layer {layer_idx}: {n_streaming}/{n_kv_heads} streaming KV heads")
+        mode = "quantized-retrieval" if quantize_retrieval else "fp16-all"
+        logger.debug(f"Layer {layer_idx}: {n_streaming}/{n_kv_heads} streaming KV heads ({mode})")
 
     def update_and_fetch(self, keys: mx.array, values: mx.array):
         """Store new KV, trim streaming heads to sink + window.
 
-        Uses pre-allocated slab with headroom to avoid per-token concat.
-        Slice assignment is O(1) vs concat's O(context) copy.
+        When quantize_retrieval=True: dispatches per-head to QuantizedKVCache
+        (retrieval) or StreamingKVCache (streaming), then merges dequantized
+        results. Memory savings: 8x for retrieval heads at rest.
+
+        When quantize_retrieval=False (default): uses pre-allocated fp16 slab
+        with headroom. Slice assignment is O(1) vs concat's O(context) copy.
         """
         B, H_kv, T_new, D = keys.shape
         self.offset += T_new
+
+        # Quantized retrieval mode: per-head dispatch
+        if self._quantize_retrieval and self._retrieval_caches is not None:
+            return self._update_quantized(keys, values, B, H_kv, T_new, D)
 
         if self._keys is None:
             # First call — pre-allocate with headroom
@@ -259,6 +284,56 @@ class DuoKVCache:
             return out_k, out_v
 
         return self._keys[:, :, :T_total], self._values[:, :, :T_total]
+
+    def _update_quantized(self, keys, values, B, H_kv, T_new, D):
+        """Per-head dispatch for quantized retrieval mode.
+
+        Retrieval heads → QuantizedKVCache (3-bit, full context)
+        Streaming heads → StreamingKVCache (fp16, ring buffer)
+
+        Returns merged fp16 K/V for SDPA. The memory savings come from
+        storage (retrieval heads are 8x smaller at rest), not from avoiding
+        dequantization during attention.
+        """
+        out_k_heads = []
+        out_v_heads = []
+        max_len = 0
+
+        for h in range(H_kv):
+            k_h = keys[:, h:h+1, :, :]   # (B, 1, T_new, D)
+            v_h = values[:, h:h+1, :, :]
+
+            if h in self._streaming_caches:
+                k_out, v_out = self._streaming_caches[h].update_and_fetch(k_h, v_h)
+            elif h in self._retrieval_caches:
+                k_out, v_out = self._retrieval_caches[h].update_and_fetch(k_h, v_h)
+                # QuantizedKVCache returns quantized tuples — dequantize for SDPA
+                if isinstance(k_out, tuple):
+                    k_out = mx.dequantize(
+                        *k_out, group_size=self._retrieval_caches[h].group_size,
+                        bits=self._retrieval_caches[h].bits)
+                    v_out = mx.dequantize(
+                        *v_out, group_size=self._retrieval_caches[h].group_size,
+                        bits=self._retrieval_caches[h].bits)
+            else:
+                continue
+
+            out_k_heads.append(k_out)
+            out_v_heads.append(v_out)
+            max_len = max(max_len, k_out.shape[2])
+
+        # Pad all heads to same length and concatenate
+        padded_k = []
+        padded_v = []
+        for k, v in zip(out_k_heads, out_v_heads):
+            if k.shape[2] < max_len:
+                pad = max_len - k.shape[2]
+                k = mx.concatenate([k, mx.zeros((B, 1, pad, D), dtype=k.dtype)], axis=2)
+                v = mx.concatenate([v, mx.zeros((B, 1, pad, D), dtype=v.dtype)], axis=2)
+            padded_k.append(k)
+            padded_v.append(v)
+
+        return mx.concatenate(padded_k, axis=1), mx.concatenate(padded_v, axis=1)
 
     @property
     def state(self):
