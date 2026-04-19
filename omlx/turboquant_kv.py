@@ -695,6 +695,14 @@ def _tq_sdpa_2pass_1_kernel():
         auto q_batch_head = batch_idx * num_kv_heads * gqa_factor + q_head;
         auto total_tokens = k_norms_shape[2];
 
+        // Cache codebooks in registers (only 8 entries for 3-bit)
+        constexpr int n_levels = 1 << KBits;
+        float k_cb[n_levels], v_cb[n_levels];
+        for (int i = 0; i < n_levels; i++) {
+            k_cb[i] = static_cast<float>(k_codebook[i]);
+            v_cb[i] = static_cast<float>(v_codebook[i]);
+        }
+
         auto q_ptr = queries + q_batch_head * Dim;
         float q[QK_PER_THREAD];
         for (int i = 0; i < QK_PER_THREAD; i++)
@@ -710,6 +718,9 @@ def _tq_sdpa_2pass_1_kernel():
         auto kn_base = k_norms + kv_bh * total_tokens;
         auto vn_base = v_norms + kv_bh * total_tokens;
 
+        // Pre-compute bit extraction constants
+        constexpr uint mask = (1u << KBits) - 1u;
+
         for (int t = block_idx; t < total_tokens; t += Blocks) {
             auto k_ptr = k_base + t * KPackedWidth;
             float score = 0.0f;
@@ -718,11 +729,10 @@ def _tq_sdpa_2pass_1_kernel():
                 int bit_off = d * KBits;
                 int word = bit_off / 32;
                 int off = bit_off % 32;
-                uint val = k_ptr[word] >> off;
+                uint val = (k_ptr[word] >> off) & mask;
                 int spill = off + KBits - 32;
-                if (spill > 0) val |= k_ptr[word + 1] << (KBits - spill);
-                val &= ((1u << KBits) - 1u);
-                score += q[j] * k_codebook[val];
+                if (spill > 0) val |= (k_ptr[word + 1] << (KBits - spill)) & mask;
+                score += q[j] * k_cb[val];
             }
             score = simd_sum(score) * static_cast<float>(kn_base[t]);
 
@@ -739,11 +749,10 @@ def _tq_sdpa_2pass_1_kernel():
                 int bit_off = d * VBits;
                 int word = bit_off / 32;
                 int off = bit_off % 32;
-                uint val = v_ptr[word] >> off;
+                uint val = (v_ptr[word] >> off) & mask;
                 int spill = off + VBits - 32;
-                if (spill > 0) val |= v_ptr[word + 1] << (VBits - spill);
-                val &= ((1u << VBits) - 1u);
-                o[j] = o[j] * factor + exp_score * v_codebook[val] * v_norm;
+                if (spill > 0) val |= (v_ptr[word + 1] << (VBits - spill)) & mask;
+                o[j] = o[j] * factor + exp_score * v_cb[val] * v_norm;
             }
         }
 
