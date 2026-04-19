@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-18 (pass 40)_
+_Last updated: 2026-04-18 (pass 41)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -12256,3 +12256,124 @@ Forty passes. One hundred and sixty-seven papers. Pass 40 returns the
 literature review to its engineering roots: six papers, zero cross-field
 detours, all directly targeting the 128K-to-1M gap on Apple Silicon.
 The path is clear. Meow, nyaa, meow.
+
+## Pass 41 — 2026-04-18 — Goal 1 Engineering: Sub-2-Bit KV, Apple Silicon Profiling, Mixed-Precision Layers
+
+### [XQuant: Achieving Ultra-Low Bit KV Cache Quantization with Cross-Layer Compression](https://arxiv.org/abs/2510.11236) — 2510.11236
+- **Authors**: Haoqi Yang, Yao Yao, Zuchao Li, Baoyuan Qi, Guoming Liu, Hai Zhao
+- **Published**: 2025-10 (EMNLP 2025)
+- **Hypercar goals it addresses**: Goal 1 (context window — sub-1.4 bit KV enables 1M on 48 GB), Goal 6 (machine fit)
+- **TL;DR**: Training-free, data-free quantization framework that compresses KV cache to sub-1.4-bit equivalents via cross-layer compression that exploits quantization-enhanced layer similarities. Outperforms KIVI-2bit and AsymKV-1.5bit on TruthfulQA and LongBench while maintaining model accuracy. The plug-and-play design does not require calibration data, removing the biggest barrier to adopting extreme KV compression in a production inference path.
+- **Why it matters for Hypercar**: Pass 40 explicitly flagged sub-2-bit KV as an unexplored gap. TQ3 today gives 5.3x at 3 bits, yielding a 22.5 GB KV cache at 1M tokens. XQuant's cross-layer compression at 1.4 bits would take that to ~10.5 GB — enough headroom on 48 GB to keep full decode quality while supporting 1M+ with a heavily fp16-biased retrieval layer 0. Data-free is load-bearing: Hypercar runs Qwen3-Coder-30B-A3B without a calibration pipeline, so any scheme that needs labeled activations is unworkable.
+- **Cost of adoption**: M — need to design a 1.4-bit codebook compatible with our WHT rotation path, ideally replacing TQ3's codebook for layers that tolerate it. DuoKV's retrieval heads would remain fp16; streaming heads would adopt the XQuant cross-layer scheme.
+- **Local PDF**: research/2510.11236_xquant_ultra_low_bit.pdf
+
+### [Bare-Metal Tensor Virtualization: Overcoming the Memory Wall in Edge-AI Inference on ARM64](https://arxiv.org/abs/2601.03324) — 2601.03324
+- **Authors**: Bugra Kilictas, Faruk Alpay
+- **Published**: 2026-01
+- **Hypercar goals it addresses**: Goal 3 (decode speed, constant across context), Goal 4 (prefill speed), Goal 6 (machine fit — M-series specific)
+- **TL;DR**: Introduces a software "Virtual Tensor Core" that bypasses libc containers in favor of direct mmap and hand-tuned NEON SIMD kernels on ARM64. The Tensor Virtualization Layout (TVL) guarantees 100% cache-line utilization for weight matrices, and a zero-copy loader eliminates initialization latency. Delivers over 60 tok/s on M2 hardware with deterministic, reproducible timings — the first paper to explicitly engineer against the ARM64 memory wall for LLM inference rather than treating Apple Silicon as a CUDA substitute.
+- **Why it matters for Hypercar**: Our 22.5 GB KV cache at 1M means every load/store pattern that isn't cache-line aligned pays a ~3-4x penalty on the M4 Pro's unified memory. TVL gives us a blueprint for laying out the DuoKV slab and TQ3 codebook so that decode-time gathers stream through LLC without pollution. Zero-copy mmap for the ~22 GB compressed KV fits directly into our session save/load path — we could resume a 1M context in <1 s instead of the current ~2 s.
+- **Cost of adoption**: M — requires replacing MLX's default tensor allocator for KV with an mmap-backed arena, plus NEON intrinsics in the decode hot path (MLX currently relies on Metal for this). Validate the cache-line alignment hypothesis with Instruments before committing.
+- **Local PDF**: research/2601.03324_bare_metal_tensor_virt.pdf
+
+### [Production-Grade Local LLM Inference on Apple Silicon: A Comparative Study of MLX, MLC-LLM, Ollama, llama.cpp, and PyTorch MPS](https://arxiv.org/abs/2511.05502) — 2511.05502
+- **Authors**: Varun Rajesh, Om Jodhpurkar, Pooja Anbuselvan, Mantinder Singh, Ashok Jallepali, Shantanu Godbole, Pradeep Kumar Sharma, Hritvik Shrivastava
+- **Published**: 2025-11
+- **Hypercar goals it addresses**: Goal 3 (decode speed), Goal 4 (prefill speed), Goal 6 (machine fit)
+- **TL;DR**: Empirical evaluation of five local LLM runtimes on M2 Ultra, benchmarking TTFT, steady-state throughput, latency percentiles, long-context behavior, and quantization. Finds MLX has highest sustained throughput, MLC-LLM has lowest TTFT at moderate prompts, and is strongest for 64k-128k workloads because of its paged KV design. Surfaces specific Apple Silicon weaknesses in PyTorch MPS (operator coverage, cold start) and llama.cpp (throughput cap above 8K context).
+- **Why it matters for Hypercar**: We're betting the whole project on MLX, but this paper warns that MLC-LLM's paged-KV layout dominates at 64K-128K — exactly where we're stuck. Either we import that design into our DuoKV slab, or we at least copy the eviction policy. The TTFT breakdown also gives us target numbers for benchmark regressions: if MLC-LLM hits <1 s TTFT at 64K on M2 Ultra, our 42-minute 128K prefill is 2500x off and we need to know why.
+- **Cost of adoption**: S (adopt their benchmark methodology) to M (port paged-KV into DuoKVCache).
+- **Local PDF**: research/2511.05502_production_apple_silicon.pdf
+
+### [Profiling Large Language Model Inference on Apple Silicon: A Quantization Perspective](https://arxiv.org/abs/2508.08531) — 2508.08531
+- **Authors**: Afsara Benazir, Felix Xiaozhu Lin
+- **Published**: 2025-08
+- **Hypercar goals it addresses**: Goal 3 (decode speed, why 3-bit isn't 2x of 6-bit), Goal 4 (prefill speed), Goal 6 (machine fit)
+- **TL;DR**: First comprehensive profile of LLM inference on M2 Ultra, M2 Max, and M4 Pro across 14 quantization schemes and models from 8B to 405B. Debunks the assumption that lower bit precision always means faster inference: dequantization overhead and memory bandwidth constraints create regimes where 4-bit is slower than 8-bit on M4 Pro because the dequant kernel saturates before the bandwidth savings materialize. Provides hardware-counter-level evidence that unified memory makes Apple Silicon cost-effective for 405B-class inference despite per-op throughput deficits.
+- **Why it matters for Hypercar**: This is the closest thing in the literature to ground truth for our target machine (M4 Pro appears explicitly). TQ3 decode is 50 tok/s — this paper lets us answer whether dequantization overhead is the ceiling, or whether we're leaving throughput on the table. If dequant kernel is saturated, sub-2-bit (XQuant) offers no speed win without a better dequant kernel. Pairs directly with the Bare-Metal Tensor Virt work above.
+- **Cost of adoption**: S — pure instrumentation. Add their Metal counter methodology to `omlx/bench/hypercar_bench` so every run reports dequant vs attention vs MLP time breakdown.
+- **Local PDF**: research/2508.08531_profiling_apple_silicon_quant.pdf
+
+### [KVTuner: Sensitivity-Aware Layer-Wise Mixed-Precision KV Cache Quantization for Efficient and Nearly Lossless LLM Inference](https://arxiv.org/abs/2502.04420) — 2502.04420
+- **Authors**: Xing Li, Zeyu Xing, Yiming Li, Linping Qu, Hui-Ling Zhen, Wulong Liu, Yiwu Yao, Sinno Jialin Pan, Mingxuan Yuan
+- **Published**: 2025-02 (ICML 2025)
+- **Hypercar goals it addresses**: Goal 1 (context window), Goal 2 (intelligence — nearly lossless), Goal 6 (machine fit)
+- **TL;DR**: Theoretically establishes that key caches require higher precision than value caches and that sensitivity varies dramatically across layers. KVTuner uses offline multi-objective optimization to assign per-layer bit widths, yielding nearly lossless 3.25-bit on Llama-3.1-8B and 4.0-bit on Qwen2.5-7B (a sensitive model) with 21.25% throughput improvement. The methodology is model-agnostic: run sensitivity analysis once, then ship a per-layer bit-width table.
+- **Why it matters for Hypercar**: We already run TQ3 with `--fp16-layers 1` because layer 0 obviously matters more. KVTuner says this is wrong as a heuristic — the sensitive layers are scattered across the stack, not concentrated at the boundary. Applied to Qwen3-Coder-30B-A3B: the paper's Qwen2.5-7B result (4.0-bit needed for math reasoning) suggests our current flat TQ3 across layers 1-47 is leaving accuracy on the floor at 64K+. Pairs with XQuant for an end-state configuration: retrieval heads fp16, streaming heads 1.4-bit (XQuant) except on KVTuner-identified sensitive layers which get 3-bit.
+- **Cost of adoption**: M — need a one-time sensitivity sweep per target model (Qwen3-Coder), then store the bit-width table. DuoKVCache and TurboQuantKVCache both need a per-layer config path.
+- **Depends on**: XQuant codebook (for the low-bit tier)
+- **Local PDF**: research/2502.04420_kvtuner_layer_wise.pdf
+
+### [FastKV: Decoupling of Context Reduction and KV Cache Compression for Prefill-Decoding Acceleration](https://arxiv.org/abs/2502.01068) — 2502.01068
+- **Authors**: Dongwon Jo, Jiwon Song, Yulhwa Kim, Jae-Joon Kim
+- **Published**: 2025-02 (ACL Findings 2026)
+- **Hypercar goals it addresses**: Goal 1 (context window — progressive), Goal 3 (decode speed — 2.87x), Goal 4 (prefill speed — 1.82x)
+- **TL;DR**: Observes that token importance stabilizes in later transformer layers. Runs full-context attention in early layers, then at a designated Token-Selective Propagation (TSP) layer forwards only informative tokens to subsequent layers. Decouples prefill compute reduction from KV compression — you can tune each independently. Achieves 1.82x prefill and 2.87x decoding speedup while matching baseline accuracy.
+- **Why it matters for Hypercar**: Directly addresses Pass 40's identified blocker: "120K+ single-pass exceeds 48 GB Metal." FastKV's TSP layer is a natural progressive-compression boundary: run full 128K prefill in layers 0-N, then shrink to 32K in layers N+1..47. This sidesteps the re-RoPE accumulation problem because compression happens once per layer, not iteratively across prefill chunks. Also subsumes our current `prefill_last_logit_patch` — TSP is a strict superset.
+- **Cost of adoption**: M — requires a hook at one layer boundary in `omlx/patches/` plus per-layer head dimension bookkeeping. Lower-risk than full progressive eviction because the drop is pre-determined, not content-driven.
+- **Local PDF**: research/2502.01068_fastkv_decouple.pdf
+
+### [Strata: Hierarchical Context Caching for Long Context Language Model Serving](https://arxiv.org/abs/2508.18572) — 2508.18572
+- **Authors**: Zhiqiang Xie, Ziyi Xu, Mark Zhao, Yuwei An, Vikram Sharma Mailthody, Scott Mahlke, Michael Garland, Christos Kozyrakis
+- **Published**: 2025-08
+- **Hypercar goals it addresses**: Goal 1 (context window, tiered storage), Goal 4 (prefill speed, cached), Goal 6 (machine fit)
+- **TL;DR**: Hierarchical KV cache framework spanning GPU HBM, CPU memory, and disk. Uses GPU-assisted I/O to combat KV cache fragmentation that previously prevented full bandwidth utilization during retrieval. Cache-aware request scheduling overlaps I/O latency with compute. Delivers up to 5x lower TTFT versus vLLM + LMCache in production, without sacrificing short-context performance.
+- **Why it matters for Hypercar**: Pass 40 called out the NVMe tiering gap explicitly. Strata is Strata on GPUs, but the core insight — GPU-assisted I/O with cache-aware scheduling — maps directly to our Metal + unified memory + NVMe architecture. We have the bonus that "GPU memory" and "CPU memory" are the same pool on M4 Pro, so only the disk tier is a separate address space. The fragmentation fix is especially valuable: our SnapKV eviction creates holes that currently waste KV slab capacity; Strata's defragmenter is a drop-in pattern.
+- **Cost of adoption**: M — implement a tiered cache layer in `omlx/kv_cache/` with warm (unified memory) and cold (mmap'd NVMe) tiers. Leverage the Bare-Metal Tensor Virt paper's TVL layout for the cold tier.
+- **Depends on**: Bare-Metal Tensor Virt (for TVL layout)
+- **Local PDF**: research/2508.18572_strata_hierarchical.pdf
+
+### Pass 41 synthesis
+
+Pass 41 extends Pass 40's engineering focus along the three dimensions the
+prior pass explicitly flagged as gaps: sub-2-bit KV compression (XQuant
+2510.11236), Apple Silicon-specific memory engineering (Bare-Metal Tensor
+Virtualization 2601.03324, Apple Silicon Profiling 2508.08531, Production-Grade
+Apple Silicon 2511.05502), and NVMe-tiered KV (Strata 2508.18572 as the
+Metal-adjacent complement to KVSwap 2511.11907 from Pass 40). Two tactical
+compression advances — layer-wise mixed-precision (KVTuner 2502.04420) and
+prefill/decoding decoupling (FastKV 2502.01068) — give us composable wins
+within the DuoKV + TQ3 framework without requiring architectural rewrites.
+
+**The highest-leverage finding**: XQuant's 1.4-bit KV compression combined with
+KVTuner's sensitivity-aware per-layer bit-width tuning points to a practical
+configuration for 1M context on 48 GB M4 Pro: fp16 retrieval heads (DuoKV),
+3-bit on KVTuner-identified sensitive layers (roughly 6 of 48 by analogy to
+published Qwen2.5 results), and 1.4-bit XQuant on the remaining 42 streaming
+layers. Estimated KV budget at 1M tokens: ~9-11 GB (vs 22.5 GB today) —
+enough to fit the full model, KV, and session metadata inside 48 GB with
+working headroom for batch=1 interactive decode. This is the concrete
+engineering path forward that Pass 40 gestured at but could not quantify.
+
+**What Pass 41 deliberately did NOT cover**: FlashAttention-4 (2603.05451) is
+Blackwell-GPU-specific and irrelevant on M4 Pro; LMCache (2510.09665) is
+enterprise-scale infrastructure outside our single-user scope; generic
+sparse-attention papers (2602.03216, 2510.21270) were skipped in favor of
+Dynamic Hierarchical Sparse Attention which would have been an 8th paper —
+held for Pass 42 pending the XQuant + KVTuner implementation cycle.
+
+**Gap status for pass 42**:
+1. **Metal-specific XQuant codebook**: papers on quantization codebook layout
+   optimized for Apple GPU memory hierarchy, ideally with symbolic Metal
+   shader generation.
+2. **Prefetch-aware decoding schedulers**: once Strata-style tiered cache
+   is in place, which prefetch heuristics minimize stalls on M4 Pro's ~7 GB/s
+   NVMe? Need papers on decode-time speculative KV loading.
+3. **On-device sparse attention (2510.24606)**: Dynamic Hierarchical Sparse
+   Attention already found, held for next pass.
+4. **TSP boundary selection**: FastKV says "pick a TSP layer" — no clear
+   methodology for choosing the boundary in a long-context code model.
+   Need papers on attention pattern evolution across depth in code LLMs.
+5. **M4 Pro cache-line behavior under unified memory contention**: the
+   Instruments data we'd collect per Bare-Metal Tensor Virt has no published
+   peer — this might be an opportunity for an internal tech note rather
+   than a literature find.
+
+Forty-one passes. Seven papers added, total 174 across 65+ disciplines.
+Pass 41 is the most implementation-ready pass to date: XQuant + KVTuner
+gives us a parameter-level design for 1M context; FastKV and Strata give
+us the prefill and cache-tiering machinery; Bare-Metal Tensor Virt and
+the two Apple Silicon profiling papers give us the substrate. The next
+benchmark run should show whether the theoretical 9-11 GB KV budget at 1M
+holds in practice. Meow, nyaa, meow.

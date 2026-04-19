@@ -4102,3 +4102,38 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Decode throughput at 64K and 128K context with layer-ahead prediction enabled vs disabled. The prediction should: (a) improve decode tok/s by >= 20% at 128K (converting random access to sequential), (b) add < 0.5ms overhead per layer for the W_Q prediction matmul, (c) maintain NIAH PASS (the prediction is only for prefetching, not for attention computation). Profile Metal GPU utilization to verify that the prefetch reduces memory stalls.
 - **Effort**: M (2-3 days — W_Q prediction, block digest scoring, command buffer pipelining)
 - **Depends on**: BUZZ segmented eviction with block digests (Task 98, shipped). Decode loop in hypercar_server.py.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 41, 2026-04-18)
+
+### 185. XQuant sub-2-bit KV codebook for streaming heads
+- **Goal**: 1 (context window — halve KV budget at 1M)
+- **Derived from**: XQuant: Ultra-Low Bit KV Cache Quantization with Cross-Layer Compression (2510.11236)
+- **Change**: `omlx/kv_cache/turbo_quant.py` and `omlx/kv_cache/duo_kv.py` — add a 1.4-bit codebook path alongside the existing 3-bit TQ3. The cross-layer compression term exploits that adjacent layers share quantization residuals: store the full 1.4-bit codes for layer L, then for layer L+1 store only the delta in a smaller table. Hypercar integration: retrieval heads stay fp16 (DuoKV invariant); streaming heads adopt the 1.4-bit XQuant codebook. Add `--kv-bits 1.4` flag to `omlx/hypercar_server.py`. The WHT rotation that makes TQ3 work should also help XQuant because it decorrelates across the d dimension; verify this hypothesis with a rank plot of the rotated KV before committing.
+- **Verify**: NIAH at 4K, 16K, 64K with 1.4-bit streaming KV. Memory delta: KV at 1M tokens should drop from 22.5 GB (TQ3) toward ~10.5 GB. Quality gate: HumanEval >= 90% (vs 95% TQ3 baseline — modest degradation acceptable for the 2.1x memory win). Dequant throughput: sub-1.4-bit kernel must not be slower than TQ3 dequant (Task 145 baseline) — if it is, hold this task pending Task 188 (dequant kernel audit).
+- **Effort**: M (codebook design + cross-layer delta table + WHT compatibility check)
+- **Depends on**: TQ3 WHT rotation (shipped). KV cache capture hooks (Task 46, shipped).
+
+### 186. KVTuner-style per-layer sensitivity sweep for Qwen3-Coder
+- **Goal**: 1 (context window — mixed precision shrinks total KV), Goal 2 (intelligence — protect sensitive layers)
+- **Derived from**: KVTuner: Sensitivity-Aware Layer-Wise Mixed-Precision KV Cache Quantization (2502.04420)
+- **Change**: New file `omlx/bench/kv_sensitivity_sweep.py` that, for each of the 48 Qwen3-Coder layers, measures perplexity delta when only that layer's KV is quantized to 3-bit (others fp16). Output a per-layer sensitivity score and a recommended bit-width table in `omlx/kv_cache/qwen3_coder_bits.py`. Update `DuoKVCache` and `TurboQuantKVCache` to consume the per-layer bit table. This makes `--fp16-layers 1` obsolete — it becomes a special case of the general per-layer config.
+- **Verify**: Run the sweep (~4 hours on M4 Pro, per-layer perplexity on wikitext-103 sample). Produce a sensitivity plot; confirm sensitivity is NOT monotonic with layer depth (paper predicts it's scattered). With the recommended per-layer config applied, NIAH at 64K and HumanEval must match or beat the flat TQ3 baseline. Benchmark decode tok/s — per-layer dispatch cost should be < 2% overhead.
+- **Effort**: M (sweep harness + per-layer config path + validation run)
+- **Depends on**: TQ3 KV cache (shipped). Optional: XQuant codebook (Task 185) for 1.4-bit tier.
+
+### 187. FastKV Token-Selective Propagation for progressive prefill
+- **Goal**: 1 (context window — removes 120K single-pass blocker), Goal 4 (prefill speed)
+- **Derived from**: FastKV: Decoupling of Context Reduction and KV Cache Compression (2502.01068)
+- **Change**: New file `omlx/patches/token_selective_propagation.py` — install a hook at a chosen TSP layer N (paper suggests around layer 15 for 32-layer models; for Qwen3-Coder's 48 layers, start with N=22). At that boundary, compute attention scores over the accumulated KV, select the top-K most important tokens (K configurable via `--tsp-keep`), and propagate only those to layers N+1..47. Early layers see full context; late layers see compressed. Unlike SnapKV eviction, TSP is purely a prefill-time decision — there's no re-RoPE because we never modify K vectors in the early layers. Add `--tsp-layer` and `--tsp-keep` flags to `omlx/hypercar_server.py`.
+- **Verify**: Prefill 128K and 256K on M4 Pro with TSP enabled (N=22, keep=32K). Memory ceiling should stay under 40 GB Metal throughout (the key claim: late-layer KV scales with `keep`, not total context). Prefill throughput >= 500 tok/s (Goal 4). Decode tok/s >= 30 at 128K (late-layer KV is the dominant decode cost). NIAH must PASS at 128K — the paper's claim is "matches baseline accuracy," and anything less is a red flag. Compare against our current chunked-prefill-then-evict pipeline for tokens-per-second-of-effective-context.
+- **Effort**: M (hook + boundary selection + validation)
+- **Depends on**: SnapKV attention scoring (Task 46, shipped) for the top-K selection.
+
+### 188. Strata-style tiered KV with NVMe cold tier and GPU-assisted I/O
+- **Goal**: 1 (context window — effective context beyond Metal ceiling), Goal 6 (machine fit)
+- **Derived from**: Strata: Hierarchical Context Caching (2508.18572) + Bare-Metal Tensor Virtualization (2601.03324)
+- **Change**: New file `omlx/kv_cache/tiered_cache.py` — a two-tier KV layer: warm tier in unified memory (current behavior), cold tier in mmap'd NVMe files with the Tensor Virtualization Layout (cache-line aligned). During decode, a prefetcher looks at the attention pattern from the previous step and preloads likely-needed cold blocks (per Strata, overlap I/O with compute). Add defragmenter that runs after SnapKV eviction to coalesce holes in the warm tier. Integrate with session save/load: saved sessions ARE the cold tier, so `/v1/sessions/load` becomes zero-copy for contexts > warm tier capacity.
+- **Verify**: With warm tier capped at 8 GB (forcing cold tier usage for >200K context), measure decode tok/s at 256K. Must maintain >= 15 tok/s (acceptable with NVMe hit). TTFT on session reload must drop from ~2 s (current) to < 500 ms (zero-copy mmap). Fragmentation test: prefill 256K, evict to 25%, prefill 64K more. The defragmenter should produce a contiguous warm slab with no wasted capacity. Instrument NVMe read bandwidth with `iostat` — should approach 5 GB/s during prefetch bursts.
+- **Verify-against: Apple Silicon profiling (2508.08531)**: use the counter methodology to confirm the prefetch is actually overlapping with compute (not just serial).
+- **Effort**: L (tiered allocator + prefetcher + defragmenter + session integration)
+- **Depends on**: Bare-Metal Tensor Virt layout (reference only, 2601.03324). Session save/load (shipped).
