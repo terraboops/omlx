@@ -506,7 +506,7 @@ _(All high-priority tasks completed. Task 22 resolved via DuoKVCache — zero sw
 
 ## In Progress
 
-_(none)_
+- DuoKV+TQ3 40K re-validation — proper warmup, honest decode speed, NIAH retry
 
 
 
@@ -4071,3 +4071,29 @@ _streaming instead of reading whole, or using memory more efficiently._
 - **Verify**: Multi-turn NIAH at 64K with 25% keep: prefill, evict, run 5 follow-up queries. Compare Maynard-Cross adaptive weighting vs static Task 111 weights. The adaptive approach should maintain NIAH PASS across all 5 turns (current static weights may degrade on turn 4-5 as the optimal head weighting shifts). Measure per-head weight evolution to verify convergence.
 - **Effort**: M (replicator dynamics implementation + multi-turn eval)
 - **Depends on**: Head rebalancing (Task 111, shipped). SnapKV eviction pipeline (shipped).
+
+## Research-derived tasks (from LIT_REVIEW.md pass 40, 2026-04-18)
+
+### 182. LCA dual-path eviction: anchor selection + value pooling to eliminate re-RoPE
+- **Goal**: 1 (context window — remove the progressive eviction blocker)
+- **Derived from**: Latent-Condensed Transformer (2604.12452) + Stateful KV Cache Management (2511.04686)
+- **Change**: `omlx/snapkv.py` — replace the current gather + re-RoPE + re-quantize eviction pipeline with a dual-path approach inspired by LCA. For each BUZZ segment during compaction: (1) compute query-aware importance scores for all tokens in the segment, (2) select the highest-importance token as the positional anchor — keep its K vector with original RoPE position untouched, (3) compute a weighted average of all V vectors in the segment using importance scores as weights, storing the pooled result as the anchor's V. This eliminates re-RoPE entirely because positions are never corrected, only selected. The stateful KV paper (2511.04686) provides the empirical justification: scattered eviction + re-RoPE is fundamentally fragile, contiguous anchor selection preserves positional coherence.
+- **Verify**: NIAH at 64K and 96K with 25% keep using the new dual-path eviction. Compare against current SnapKV re-RoPE path. The dual-path should: (a) PASS NIAH at both lengths, (b) produce identical or better quality than re-RoPE on coherence checks, (c) be faster than re-RoPE (no scatter-gather-reRoPE-requantize chain). Run progressive eviction test: prefill 128K, evict to 25%, prefill 32K more, evict again to 25%. The dual-path should survive multiple eviction rounds without the re-RoPE accumulation error that currently blocks progressive eviction.
+- **Effort**: M (2-3 days — modify compact_cache, add value pooling, remove re-RoPE path)
+- **Depends on**: SnapKV eviction pipeline (shipped), BUZZ segmented eviction (Task 98, shipped).
+
+### 183. InfiniteHiP-style dynamic KV pruning for decode-time token selection on Metal
+- **Goal**: 1 (context window — 1M tokens without permanent eviction), Goal 3 (decode speed — sub-quadratic attention)
+- **Derived from**: InfiniteHiP (2502.08910)
+- **Change**: `omlx/hypercar_server.py`, new file `omlx/hierarchical_prune.py` — implement a 3-stage hierarchical pruning kernel for decode-time KV token selection. Stage 0: partition the KV cache into chunks of size C (e.g., 256 tokens), compute a per-chunk representative key (max attention score across chunk tokens), select top-K0 chunks. Stage 1: within selected chunks, compute per-token attention scores, select top-K1 tokens. Stage 2: compute full attention over the K1 selected tokens. The pruning never removes tokens from the KV cache — it only selects which tokens to attend to per query. Add per-layer RoPE strategy switching: layers 0-3 use chunk-indexed RoPE (single position ID per chunk), layers 4+ use relative-style RoPE for pruning then sequential assignment for final attention. On Apple Silicon, the entire KV cache (22.5 GB at 1M TQ3) lives in unified memory; the pruning kernel accesses only ~5% per query.
+- **Verify**: NIAH at 256K and 512K tokens with dynamic pruning (no static eviction). The pruning should: (a) PASS NIAH at both lengths, (b) decode at >= 30 tok/s (pruning reduces attention from O(n) to O(sqrt(n)) per step), (c) fit within 48 GB Metal (model 17.2 + KV 5.6 GB at 256K + working 4 GB = 26.8 GB). Measure pruning overhead: the 3-stage top-K computation should take < 1ms per layer per decode step on M4 Pro.
+- **Effort**: L (1 week — Metal kernel for hierarchical top-K, per-layer RoPE switching, integration with server)
+- **Depends on**: TQ3 KV cache (shipped). Metal kernel infrastructure (existing in MLX).
+
+### 184. Layer-ahead query prediction for decode-time KV block prefetching
+- **Goal**: 3 (decode speed — convert random KV access to sequential), Goal 1 (context window — enable efficient 1M decode)
+- **Derived from**: ScoutAttention (2603.27138)
+- **Change**: `omlx/hypercar_server.py` decode loop — during decode step at layer i, apply W_Q^(i+1) to the current layer's input to predict the next layer's query (0.93-0.97 cosine similarity per the paper). Use the predicted query to pre-identify which KV blocks layer i+1 will need (dot product with per-block key digests, same as BUZZ segmented scoring). Maintain a per-layer "hot block set" that persists across decode steps; the temporal locality finding (85% overlap between consecutive tokens) means only ~15% of the hot set changes per step. On Metal, encode the next layer's KV block fetch into the current layer's command buffer, enabling pipelined access.
+- **Verify**: Decode throughput at 64K and 128K context with layer-ahead prediction enabled vs disabled. The prediction should: (a) improve decode tok/s by >= 20% at 128K (converting random access to sequential), (b) add < 0.5ms overhead per layer for the W_Q prediction matmul, (c) maintain NIAH PASS (the prediction is only for prefetching, not for attention computation). Profile Metal GPU utilization to verify that the prefetch reduces memory stalls.
+- **Effort**: M (2-3 days — W_Q prediction, block digest scoring, command buffer pipelining)
+- **Depends on**: BUZZ segmented eviction with block digests (Task 98, shipped). Decode loop in hypercar_server.py.
