@@ -1,0 +1,8 @@
+WARNING: GPU-heavy processes detected:
+  PID 93151: .venv/bin/python -c 
+import time, gc, os
+import mlx.core as mx
+
+print('=== DuoKV+quantize 64K Deep V
+Running the benchmark concurrently with these may cause catastrophic swap pressure on 48GB.
+Aborting. Kill the above processes first, or pass --force to override.
