@@ -517,6 +517,11 @@ _(none)_
 
 ## Completed
 
+- **DuoKV 40K NIAH root cause: DuoAttention head classification, NOT quantization** (2026-04-18)
+  - fp16 all heads: PASS | native 3-bit all: PASS | DuoKV (59% streaming): FAIL
+  - Streaming heads discard context beyond 260 tokens — loses needle at 40K
+  - Calibration was at short context; some "streaming" heads need full context for NIAH
+  - Fix: recalibrate at longer context OR reduce streaming fraction
 - **DuoKV+quantize 40K deep validation** — THREE FAILURES found (2026-04-18)
   - NIAH: **FAIL** — "GAMMA-552" (truncated 1 char, quality degrades at long context)
   - Metal peak: **44.0 GB** — breaches 41.2 GB limit by 2.8 GB during prefill
