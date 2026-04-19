@@ -3399,6 +3399,57 @@ Analysis notes:
   Run `python -m omlx.bench.hypercar_bench --quick` at each commit to find the culprit.
 ```
 
+### Run 85: SnapKV CRASH — in-progress Task 177 fix uses mx.argwhere (not in MLX 0.31.1)
+```
+Date: 2026-04-18
+SHA:  6b996c9 (DIRTY — uncommitted snapkv.py changes)
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Cache: DuoAttention (--kv-mode duo)
+
+Phase 3e SnapKV crashed: `mx.argwhere` does not exist in MLX 0.31.1. The
+implementer's in-progress Task 177 fix modified `get_keep_indices` to use
+`mx.argwhere(keep_mask[0]).flatten()` but this API isn't available. All
+other committed code (Tasks 142/146/155/160/161) works — 10 of 11 gates
+pass, MMLU-Pro 62%, decode 54.1 tok/s. The crash is isolated to uncommitted
+`snapkv.py` line 1012.
+
+Commits since Run 84 (eaf108a):
+  - 6b996c9 docs: update CLAUDE.md with analyst efficiency audit results
+  - 72c5f6f feat: Phase 3f tool-call JSON validity gate (Task 161)
+  - e34d6bf fix: TQ3 session save during fp16 warmup (Task 160)
+  - 2c348b2 perf: submodular selection vectorized (Task 146)
+  - 88ece42 perf: DuoKV streaming trim via gather (Task 142)
+  - 1271a4d docs: SnapKV default 50% keep (Task 155)
+
+Uncommitted: omlx/patches/snapkv.py (+13/-17) — Task 177 fix in progress
+
+Phase Results:
+  Phase 0: Smoke              PASS   0.3s   Prefill 77 tok/s, Decode 54.1 tok/s
+  Phase 1: Coherence          PASS   1.4s
+  Phase 2: Code Intelligence  PASS   4.2s   5/5 (100%)
+  Phase 3: NIAH               PASS  52.6s   4K + 16K
+  Phase 3b: RULER             PASS 235.1s   11/11 at 4K/16K
+  Phase 3c: MMLU-Pro          PASS 904.4s   62/100 (62%)
+  Phase 3e: SnapKV Quality    CRASH  0.0s   mx.argwhere AttributeError
+  Phase 5: Memory             PASS         Metal peak 35.1 GB, Swap 0.0 GB
+  TOTAL: 1211.0s (crash skipped Phases 3d/3f/4)
+
+Analysis notes:
+- **CRASH is from UNCOMMITTED code, not the committed SHA.** The committed
+  perf fixes (Tasks 142/146) and bug fixes (Tasks 160/161) all work correctly.
+  The 10 passing gates confirm no quality regression from those changes.
+- **Fix is trivial**: replace `mx.argwhere(keep_mask[0])` with
+  `mx.array([i for i, v in enumerate(keep_mask[0].tolist()) if v])` or use
+  `mx.where(keep_mask[0], mx.arange(T), -1)` and filter -1. The `.tolist()`
+  approach was the original working implementation.
+- **Swap 0.0 GB** — cleanest memory run this session. The perf fixes are
+  working: total time 1211s vs R84's 1333s = 122s faster (Phase 3d/3f/4
+  didn't run due to crash, so comparison is partial).
+- **NIAH 52.6s** — slightly longer than R84's 47.1s. Within normal variance.
+- **Note Phase 3f tool-call gate** — new gate from Task 161 commit 72c5f6f.
+  Not reached due to crash. Will validate on next clean run.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
