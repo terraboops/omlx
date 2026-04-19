@@ -239,7 +239,7 @@ class DuoKVCache:
         B, H_kv, T_new, D = keys.shape
         self.offset += T_new
 
-        # Quantized retrieval mode: per-head dispatch
+        # Quantized retrieval mode: TQ3 storage + fused decode_attention
         if self._quantize_retrieval and self._retrieval_caches is not None:
             return self._update_quantized(keys, values, B, H_kv, T_new, D)
 
