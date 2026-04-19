@@ -1905,11 +1905,9 @@ class TestDuoKVQuantizeRetrieval:
         """Must have _update_quantized for per-head dispatch."""
         assert "def _update_quantized" in _duo_src
 
-    def test_dequantize_on_merge(self):
-        """Quantized retrieval heads must dequantize when merging for SDPA."""
-        idx = _duo_src.index("def _update_quantized")
-        body = _duo_src[idx:idx + 1500]
-        assert "mx.dequantize" in body
+    def test_tq3_decode_attention(self):
+        """Retrieval heads must use TQ3 decode_attention (no dequant)."""
+        assert "decode_attention" in _duo_src
 
     def test_pad_mixed_lengths(self):
         """Must handle mixed-length heads (retrieval=full, streaming=ring)."""

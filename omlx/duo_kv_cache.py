@@ -25,6 +25,15 @@ from typing import Optional
 import mlx.core as mx
 from mlx_lm.models.cache import _BaseCache, KVCache, QuantizedKVCache
 
+# Lazy import to avoid circular dependency
+_TurboQuantKVCache = None
+def _get_tq_cache_class():
+    global _TurboQuantKVCache
+    if _TurboQuantKVCache is None:
+        from omlx.turboquant_kv import TurboQuantKVCache
+        _TurboQuantKVCache = TurboQuantKVCache
+    return _TurboQuantKVCache
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLICY_DIR = Path(__file__).parent / "patches" / "duoattention_policies"
@@ -185,9 +194,12 @@ class DuoKVCache:
             # heads. Two update_and_fetch calls instead of per-head loops.
             self._retrieval_head_indices = [h for h in range(n_kv_heads) if not self._is_streaming[h]]
             self._streaming_head_indices = [h for h in range(n_kv_heads) if self._is_streaming[h]]
-            # One shared QuantizedKVCache for ALL retrieval heads (multi-head)
-            self._retrieval_cache = QuantizedKVCache(
-                bits=bits, group_size=group_size) if self._retrieval_head_indices else None
+            # One shared TurboQuantKVCache for ALL retrieval heads
+            # TQ3: WHT decorrelation + fused decode_attention (no dequant needed)
+            TQCache = _get_tq_cache_class()
+            self._retrieval_cache = TQCache(
+                bits=bits, seed=42,
+                min_quant_tokens=256) if self._retrieval_head_indices else None
             # Per-head StreamingKVCache (ring buffer needs per-head offset)
             self._streaming_head_caches = {
                 h: StreamingKVCache(window, sink) for h in self._streaming_head_indices
@@ -290,31 +302,42 @@ class DuoKVCache:
         return self._keys[:, :, :T_total], self._values[:, :, :T_total]
 
     def _update_quantized(self, keys, values, B, H_kv, T_new, D):
-        """Batched dispatch for quantized retrieval mode.
+        """Dispatch to TQ3 (retrieval) and StreamingKV (streaming).
 
-        Uses ONE shared QuantizedKVCache for all retrieval heads and
-        ONE shared StreamingKVCache for all streaming heads. Two ops
-        instead of per-head loops — eliminates the 4x Python overhead.
-
-        Returns merged fp16 K/V for SDPA.
+        TQ3 handles quantization internally. Returns fp16 K/V for the
+        standard SDPA path during prefill. During decode (T_new=1),
+        compute_attention uses TQ3's fused decode_attention instead.
         """
         ret_idx = self._retrieval_head_indices
         str_idx = self._streaming_head_indices
 
-        # Update retrieval heads (all at once via multi-head QuantizedKVCache)
+        # Update retrieval heads via TurboQuantKVCache
         ret_k, ret_v = None, None
         if ret_idx and self._retrieval_cache is not None:
-            k_ret = keys[:, ret_idx, :, :]   # (B, n_retrieval, T_new, D)
+            k_ret = keys[:, ret_idx, :, :]
             v_ret = values[:, ret_idx, :, :]
             ret_k, ret_v = self._retrieval_cache.update_and_fetch(k_ret, v_ret)
-            # Dequantize if quantized tuples returned
+            # TQ3 returns fp16 during warmup, quantized state after.
+            # During prefill we need fp16 for standard SDPA.
             if isinstance(ret_k, tuple):
-                ret_k = mx.dequantize(
-                    *ret_k, group_size=self._retrieval_cache.group_size,
-                    bits=self._retrieval_cache.bits)
-                ret_v = mx.dequantize(
-                    *ret_v, group_size=self._retrieval_cache.group_size,
-                    bits=self._retrieval_cache.bits)
+                # Quantized — dequantize for prefill SDPA
+                # (decode uses compute_attention which avoids this)
+                _dq = self._retrieval_cache._codec.dequantize_fused if (
+                    hasattr(self._retrieval_cache, '_codec') and
+                    self._retrieval_cache._codec is not None and
+                    hasattr(self._retrieval_cache._codec, 'dequantize_fused')
+                ) else None
+                if _dq:
+                    ret_k = _dq(
+                        self._retrieval_cache._k_norms[:, :, :self._retrieval_cache.offset],
+                        self._retrieval_cache._k_packed[:, :, :self._retrieval_cache.offset])
+                    ret_v = _dq(
+                        self._retrieval_cache._v_norms[:, :, :self._retrieval_cache.offset],
+                        self._retrieval_cache._v_packed[:, :, :self._retrieval_cache.offset])
+                else:
+                    # Fallback — should not normally hit this
+                    ret_k = ret_k if not isinstance(ret_k, tuple) else keys[:, ret_idx, :, :]
+                    ret_v = ret_v if not isinstance(ret_v, tuple) else values[:, ret_idx, :, :]
 
         # Update streaming heads (per-head ring buffers)
         str_k, str_v = None, None
@@ -331,10 +354,9 @@ class DuoKVCache:
                 str_k = mx.concatenate(str_k_heads, axis=1)
                 str_v = mx.concatenate(str_v_heads, axis=1)
 
-        # Merge: interleave retrieval and streaming heads back to original order
+        # Merge for standard SDPA (prefill path)
         if ret_k is not None and str_k is not None:
             max_len = max(ret_k.shape[2], str_k.shape[2])
-            # Pad shorter to max_len
             if ret_k.shape[2] < max_len:
                 pad = max_len - ret_k.shape[2]
                 ret_k = mx.concatenate([ret_k, mx.zeros((B, len(ret_idx), pad, D), dtype=ret_k.dtype)], axis=2)
@@ -343,8 +365,6 @@ class DuoKVCache:
                 pad = max_len - str_k.shape[2]
                 str_k = mx.concatenate([str_k, mx.zeros((B, len(str_idx), pad, D), dtype=str_k.dtype)], axis=2)
                 str_v = mx.concatenate([str_v, mx.zeros((B, len(str_idx), pad, D), dtype=str_v.dtype)], axis=2)
-
-            # Reassemble in original head order
             out_k = mx.zeros((B, H_kv, max_len, D), dtype=keys.dtype)
             out_v = mx.zeros((B, H_kv, max_len, D), dtype=values.dtype)
             out_k[:, ret_idx] = ret_k
@@ -380,6 +400,12 @@ class DuoKVCache:
                 queries, keys_out, values_out, scale=scale, mask=mask)
 
         B, H_q, T_q, D = queries.shape
+
+        # Only use split-SDPA during decode (T_q=1). During prefill,
+        # use standard SDPA on the merged fp16 K/V from update_and_fetch.
+        if T_q > 1:
+            return mx.fast.scaled_dot_product_attention(
+                queries, keys_out, values_out, scale=scale, mask=mask)
         gqa = H_q // self.n_kv_heads
 
         # Split Q heads by type
@@ -396,16 +422,27 @@ class DuoKVCache:
 
         out = mx.zeros_like(queries)
 
-        # Retrieval: quantized SDPA (no dequant needed)
+        # Retrieval: TQ3 fused decode attention (no dequant needed)
         if ret_idx and self._retrieval_cache is not None:
-            ret_state = self._retrieval_cache.state
-            if ret_state[0] is not None:
-                from mlx_lm.models.base import quantized_scaled_dot_product_attention
-                Q_ret = queries[:, ret_q_idx, :, :]
-                ret_out = quantized_scaled_dot_product_attention(
-                    Q_ret, *ret_state, scale=scale, mask=mask,
-                    group_size=self._retrieval_cache.group_size,
-                    bits=self._retrieval_cache.bits)
+            rc = self._retrieval_cache
+            Q_ret = queries[:, ret_q_idx, :, :]
+            if (hasattr(rc, 'decode_attention') and rc._quantized
+                    and rc._k_norms is not None):
+                # Quantized — use TQ3's fused attention (no dequant)
+                ret_out = rc.decode_attention(Q_ret, scale=scale, mask=mask)
+                out[:, ret_q_idx] = ret_out
+            elif rc._fp16_keys is not None:
+                # Still in fp16 warmup — use standard SDPA
+                ret_out = mx.fast.scaled_dot_product_attention(
+                    Q_ret, rc._fp16_keys, rc._fp16_values,
+                    scale=scale, mask=mask)
+                out[:, ret_q_idx] = ret_out
+            else:
+                # Fallback: use merged K/V from update_and_fetch
+                K_ret = keys_out[:, ret_idx, :, :]
+                V_ret = values_out[:, ret_idx, :, :]
+                ret_out = mx.fast.scaled_dot_product_attention(
+                    Q_ret, K_ret, V_ret, scale=scale, mask=mask)
                 out[:, ret_q_idx] = ret_out
 
         # Streaming: fp16 SDPA
