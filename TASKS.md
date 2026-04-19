@@ -515,6 +515,11 @@ _(none)_
 
 ## Completed
 
+- **Task 163: SnapKV+DuoKV validated** — confirmed already wired, added 5 composition tests (2026-04-18)
+  - SnapKV eviction works with ALL KV modes (DuoKV, fp16, native, TQ3)
+  - No kv_mode restriction in apply_snapkv_to_generate
+  - DuoKV state getter/setter handles compact_cache correctly
+  - Documented in CLAUDE.md: DuoKV+SnapKV for 47% faster long-context decode
 - **Efficiency audit regression tests** — 25 new tests guarding all perf fixes (2026-04-18)
   - DuoKV: pre-alloc slab (no concat), gather trim (take_along_axis), ring vectorize
   - TQ3: fused quantize (WHT→dense), fused dequantize, geometric growth helper

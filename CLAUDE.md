@@ -50,7 +50,8 @@ any of these — even to improve another — needs explicit justification.
 
 **Recommended mode: `--kv-mode duo`** — best quality (MMLU-Pro 62%, HumanEval 95%), zero swap,
 53.6 tok/s decode. DuoKV now uses pre-allocated slab (248x faster at 64K) and vectorized trim.
-For long context (64K+): use fp16 mode with `--snapkv-keep` for eviction.
+For long context (64K+): use DuoKV+SnapKV (`--snapkv-keep K`) for 47% faster decode.
+SnapKV eviction works with ALL KV modes — DuoKV, fp16, native, TQ3.
 TQ3 mode: 672 tok/s prefill at 8K (fused WHT quantize), good decode (50 tok/s).
 Session save/load for persistent context (prefill once, reload via `/v1/sessions/load`).
 

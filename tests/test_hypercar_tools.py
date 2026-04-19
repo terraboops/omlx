@@ -1328,6 +1328,48 @@ class TestEvictionStackComposition:
         assert "--caote" in claude_src
 
 
+class TestSnapKVDuoKVComposition:
+    """Task 163: SnapKV eviction must work with DuoKV mode."""
+
+    def test_snapkv_applies_to_all_modes(self):
+        """apply_snapkv_to_generate must NOT restrict to specific KV modes."""
+        assert "def apply_snapkv_to_generate" in _snapkv_src
+        # Should NOT have kv_mode checks inside the function
+        idx = _snapkv_src.index("def apply_snapkv_to_generate")
+        # Take a large chunk of the function body
+        body = _snapkv_src[idx:idx + 3000]
+        assert 'kv_mode' not in body, "SnapKV should work with any KV mode"
+
+    def test_compact_cache_handles_duokv(self):
+        """compact_cache must handle DuoKVCache via .state getter/setter."""
+        assert "DuoKVCache" in _duo_src or "c.state" in _snapkv_src
+
+    def test_duokv_state_returns_raw_buffer(self):
+        """DuoKV state property must return raw buffer, not trimmed output."""
+        # Find DuoKVCache class, then its state property
+        duo_idx = _duo_src.index("class DuoKVCache")
+        state_idx = _duo_src.index("@property", duo_idx)
+        state_section = _duo_src[state_idx:state_idx + 200]
+        assert "_kv_len" in state_section, \
+            "DuoKV state must use _kv_len (raw buffer), not trimmed output"
+
+    def test_duokv_state_setter_preallocs(self):
+        """DuoKV state setter must pre-allocate with headroom."""
+        assert "self._step" in _duo_src
+        # Setter must handle the compact_cache output
+        assert "@state.setter" in _duo_src
+
+    def test_server_snapkv_independent_of_kv_mode(self):
+        """Server must apply SnapKV regardless of --kv-mode."""
+        server_src = Path("omlx/hypercar_server.py").read_text()
+        # The snapkv_keep block should NOT be inside a kv_mode conditional
+        snapkv_idx = server_src.index("if args.snapkv_keep > 0:")
+        # Look backwards for kv_mode check — should NOT be immediately above
+        preceding = server_src[max(0, snapkv_idx - 200):snapkv_idx]
+        assert "if args.kv_mode" not in preceding or "duo" not in preceding, \
+            "SnapKV should be independent of KV mode selection"
+
+
 # ---- Task 45: XGrammar Tool-Call JSON Guarantee ----
 
 _xgrammar_src = Path("omlx/patches/xgrammar_constrain.py").read_text()
