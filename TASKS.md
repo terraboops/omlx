@@ -516,6 +516,9 @@ _(none)_
 
 ## Completed
 
+- **Run 86 ALL GATES PASSED** — post-efficiency-audit validation + analyst profiler committed (2026-04-18)
+  - 10/10 phases pass: Smoke, Coherence, Code Intel 5/5, NIAH, RULER 100%, MMLU-Pro 64%, SnapKV Quality, Tool-Call JSON, Memory
+  - Committed analyst efficiency_profile.py (431 lines) — micro-benchmark tool for profiling hot paths
 - **Task 163: SnapKV+DuoKV validated** — confirmed already wired, added 5 composition tests (2026-04-18)
   - SnapKV eviction works with ALL KV modes (DuoKV, fp16, native, TQ3)
   - No kv_mode restriction in apply_snapkv_to_generate
