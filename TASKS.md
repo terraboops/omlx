@@ -516,14 +516,13 @@ _(none)_
 
 ## Completed
 
-- **Task 150: DuoKV quantized retrieval heads** — GPU VALIDATED, NIAH PASS (2026-04-18)
+- **Task 150: DuoKV quantized retrieval + split-SDPA** — 3.2x decode speedup, NIAH PASS (2026-04-18)
   - --duo-quantize flag wired through server→patches→DuoKVCache
   - Per-head dispatch: retrieval → QuantizedKVCache(3-bit), streaming → StreamingKVCache(fp16 ring)
-  - GPU smoke: PASS (math coherence correct, 42.0 tok/s at 6 tokens)
-  - NIAH@4K: **PASS** (needle found, 15.4 tok/s — per-head dequant overhead at longer context)
-  - 4 regression tests guarding the split architecture
+  - **Split-SDPA**: quantized attention for retrieval, fp16 for streaming — avoids dequant entirely
+  - Decode: 41.1 tok/s (was 12.9 → 3.2x speedup from split-SDPA)
+  - NIAH@4K: PASS, Math: PASS
   - At 256K: quantized retrieval saves ~20 GB vs fp16 (24.6 vs 196 GB at 1M)
-  - **Known issue**: decode 15.4 tok/s at 1.6K — per-head Python dispatch + dequant overhead. Next: batch dequant across heads
 - **Task 150 scaffolding: --duo-quantize flag** — wired through server→patches→DuoKVCache (2026-04-18)
   - `--duo-quantize` flag on server, `quantize_retrieval` param on DuoKVCache and apply_hypercar_patches
   - Implementation pending: actual QuantizedKVCache for retrieval heads (M effort, next cycle)

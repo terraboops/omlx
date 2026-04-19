@@ -169,6 +169,19 @@ def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
         from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
         apply_turboquant_attention_patch()
 
+    # 1b. Apply split-SDPA patch for duo-quantize (avoids dequantize overhead)
+    if kv_mode == "duo" and quantize_retrieval:
+        import mlx_lm.models.base as base_mod
+        _orig_sdpa = base_mod.scaled_dot_product_attention
+
+        def _duo_split_sdpa(queries, keys, values, cache, scale, mask, sinks=None):
+            if hasattr(cache, 'compute_attention') and cache._quantize_retrieval:
+                return cache.compute_attention(queries, keys, values, scale, mask)
+            return _orig_sdpa(queries, keys, values, cache, scale, mask, sinks=sinks)
+
+        base_mod.scaled_dot_product_attention = _duo_split_sdpa
+        logging.getLogger("hypercar").info("Split-SDPA patch applied for duo-quantize")
+
     # 2. Monkey-patch make_prompt_cache based on kv_mode
     import mlx_lm.models.cache as cache_mod
     from mlx_lm.models.cache import KVCache, QuantizedKVCache

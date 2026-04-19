@@ -359,6 +359,67 @@ class DuoKVCache:
         else:
             return keys, values
 
+    def compute_attention(self, queries, keys_out, values_out, scale, mask):
+        """Split-SDPA: quantized attention for retrieval, fp16 for streaming.
+
+        When quantize_retrieval=True, runs two separate SDPA calls to avoid
+        dequantizing retrieval heads on every decode step.
+
+        Args:
+            queries: (B, H_q, T_q, D)
+            keys_out, values_out: merged K/V from update_and_fetch
+            scale: attention scale factor
+            mask: causal mask
+
+        Returns:
+            (B, H_q, T_q, D) attention output
+        """
+        if not self._quantize_retrieval or self._retrieval_cache is None:
+            # Default: standard fp16 SDPA on merged K/V
+            return mx.fast.scaled_dot_product_attention(
+                queries, keys_out, values_out, scale=scale, mask=mask)
+
+        B, H_q, T_q, D = queries.shape
+        gqa = H_q // self.n_kv_heads
+
+        # Split Q heads by type
+        ret_idx = self._retrieval_head_indices
+        str_idx = self._streaming_head_indices
+
+        # Map KV head indices to Q head indices
+        ret_q_idx = []
+        for kv_h in ret_idx:
+            ret_q_idx.extend(range(kv_h * gqa, (kv_h + 1) * gqa))
+        str_q_idx = []
+        for kv_h in str_idx:
+            str_q_idx.extend(range(kv_h * gqa, (kv_h + 1) * gqa))
+
+        out = mx.zeros_like(queries)
+
+        # Retrieval: quantized SDPA (no dequant needed)
+        if ret_idx and self._retrieval_cache is not None:
+            ret_state = self._retrieval_cache.state
+            if ret_state[0] is not None:
+                from mlx_lm.models.base import quantized_scaled_dot_product_attention
+                Q_ret = queries[:, ret_q_idx, :, :]
+                ret_out = quantized_scaled_dot_product_attention(
+                    Q_ret, *ret_state, scale=scale, mask=mask,
+                    group_size=self._retrieval_cache.group_size,
+                    bits=self._retrieval_cache.bits)
+                out[:, ret_q_idx] = ret_out
+
+        # Streaming: fp16 SDPA
+        if str_idx and self._streaming_head_caches:
+            Q_str = queries[:, str_q_idx, :, :]
+            # Gather streaming K/V from the merged output (already fp16)
+            K_str = keys_out[:, str_idx, :, :]
+            V_str = values_out[:, str_idx, :, :]
+            str_out = mx.fast.scaled_dot_product_attention(
+                Q_str, K_str, V_str, scale=scale, mask=mask)
+            out[:, str_q_idx] = str_out
+
+        return out
+
     @property
     def state(self):
         if self._keys is None:
