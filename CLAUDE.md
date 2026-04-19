@@ -29,7 +29,7 @@ any of these — even to improve another — needs explicit justification.
 
 | # | Goal | Current | Gap |
 |---|------|---------|-----|
-| 1 | 1M context | **VALIDATED TO 128K** (fp16+SnapKV). **DuoKV+quantize NIAH PASS** at 4K — 3-bit retrieval heads enable 1M in 48GB. | `--duo-quantize` needs 64K+ validation |
+| 1 | 1M context | **VALIDATED TO 128K** (fp16+SnapKV). **DuoKV+quantize: NIAH PASS at 4K+16K**, 41 tok/s short / 10 tok/s at 10K. | `--duo-quantize` needs 64K validation |
 | 2 | 4 independent evals beating GPT-4 | **HumanEval 95%**, Code Intel 5/5, RULER 100%, **MMLU-Pro 62%**, LiveCodeBench 30% — **5 eval families** | LiveCodeBench at floor (30%), room to improve |
 | 3 | 50 tok/s decode constant | **Duo: 53.6 tok/s — GOAL MET**. DuoKV pre-alloc slab: 248x faster at 64K (was 34.78ms → 0.14ms/token). | Post-eviction decode: 33.7 tok/s (skip_rerope) |
 | 4 | 500 tok/s prefill constant | **Duo: 817 tok/s at 4K — GOAL MET**. TQ3: 672 tok/s at 8K (fused quantize, 1.33x improvement). | TQ3 prefill no longer a bottleneck |

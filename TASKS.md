@@ -516,12 +516,12 @@ _(none)_
 
 ## Completed
 
-- **Task 150: DuoKV quantized retrieval + split-SDPA** — 3.2x decode speedup, NIAH PASS (2026-04-18)
+- **Task 150: DuoKV quantized retrieval + split-SDPA** — NIAH PASS at 4K+16K (2026-04-18)
   - --duo-quantize flag wired through server→patches→DuoKVCache
   - Per-head dispatch: retrieval → QuantizedKVCache(3-bit), streaming → StreamingKVCache(fp16 ring)
   - **Split-SDPA**: quantized attention for retrieval, fp16 for streaming — avoids dequant entirely
-  - Decode: 41.1 tok/s (was 12.9 → 3.2x speedup from split-SDPA)
-  - NIAH@4K: PASS, Math: PASS
+  - Decode: 41 tok/s short, 10 tok/s at 10K — quantized SDPA scales with context
+  - **NIAH@4K: PASS, NIAH@16K (10K tokens): PASS** — needle found at both contexts
   - At 256K: quantized retrieval saves ~20 GB vs fp16 (24.6 vs 196 GB at 1M)
 - **Task 150 scaffolding: --duo-quantize flag** — wired through server→patches→DuoKVCache (2026-04-18)
   - `--duo-quantize` flag on server, `quantize_retrieval` param on DuoKVCache and apply_hypercar_patches
