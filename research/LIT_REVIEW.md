@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-20 (pass 44)_
+_Last updated: 2026-04-20 (pass 45)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -12897,3 +12897,174 @@ a strictly more general objective than any selection or quantization
 scheme, and the first time in 44 passes the compression stack has a
 coherent "what to store + how much per layer + how to encode + how to
 verify" decomposition rather than overlapping heuristics. Meow, nyaa, purr.
+
+## Pass 45 — 2026-04-20 — Goal 1 Engineering: Entropy-Corrected Eviction, Global Scoring, MoE-Sharded KV, Adversarial Robustness
+
+### [AhaKV: Adaptive Holistic Attention-Driven KV Cache Eviction for Efficient Inference of Large Language Models](https://arxiv.org/abs/2506.03762) — 2506.03762
+- **Authors**: Yifeng Gu, Zicong Jiang, Jianxiu Jin, Kailing Guo, Ziyang Zhang, Xiangmin Xu
+- **Published**: 2025-06
+- **Hypercar goals it addresses**: Goal 1 (quality-preserving eviction at 1M — eliminates a position bias that systematically evicts late-context tokens), Goal 2 (retrieval quality — directly targets the NIAH failure mode where retained tokens "cluster at initial positions")
+- **TL;DR**: Identifies and corrects a fundamental bias in attention-score-based eviction (SnapKV, H2O, PyramidKV all share it): accumulated attention scores are mathematically biased *downward* as token position increases, so eviction retains tokens near the start even when they are less task-relevant. AhaKV (a) adaptively tunes the softmax temperature per-head using the *expectation of information entropy* of that head's attention distribution, (b) augments the score with value-vector magnitude (previous methods ignore V entirely), and (c) provides a theoretical analysis that the entropy-corrected score is unbiased with respect to position. Reports SOTA on LongBench under fixed cache budgets, particularly strong on retrieval-style tasks where the key fact lives mid-to-late context.
+- **Why it matters for Hypercar**: This is the correct diagnosis for our "NIAH@40K failure is DuoAttention head classification" finding (commit bb522f8). The bias AhaKV identifies is present in *every* eviction scorer currently shipped in Hypercar's SnapKV stack. Unlike the accumulated-score-patching in the observation window hack (current SnapKV behavior), AhaKV's correction is *mathematical* — it removes the bias rather than reducing it. The entropy-tuned temperature is a small per-head scalar computed once at prefill end; it composes cleanly with CAOTE (Task 100), BUZZ (Task 98), and Expected Attention (Task 190). The V-magnitude augmentation is a strict superset of CAOTE's `||V_mean - v_j||` scorer: CAOTE measures distance to the mean V, AhaKV uses raw V magnitude — run both and ablate. Closes Pass 43 gap #4 and Pass 44 gap #3 ("Attention-entropy / spectral eviction") cleanly.
+- **Cost of adoption**: S — 2 days. Two files: `omlx/patches/snapkv_entropy.py` (per-head entropy estimation over observation window, temperature scaling of softmax) and a modification to the existing scorer to fold in V-magnitude. The estimator is O(n_obs · h · d) at prefill end, dominated by an `mx.mean(mx.log(p + eps) * p)` call — single kernel on Metal. Biggest risk: MoE models have bursty per-expert activation patterns that may give misleading entropy estimates on rarely-activated expert channels; mitigation is to clamp entropy-adjusted temperature to `[0.5, 2.0]` so the correction can't explode.
+- **Local PDF**: research/2506.03762_ahakv.pdf
+
+### [G-KV: Decoding-Time KV Cache Eviction with Global Attention](https://arxiv.org/abs/2512.00504) — 2512.00504
+- **Authors**: Mengqi Liao, Lu Wang, Chaoyun Zhang, Zekai Shen, Xiaowei Mao, Si Qin, Qingwei Lin, Saravan Rajmohan, Dongmei Zhang, Huaiyu Wan
+- **Published**: 2025-11
+- **Hypercar goals it addresses**: Goal 1 (long-context retention — evicts at *decode* time, not just prefill end, for continuous compression during agentic 1M sessions), Goal 2 (reasoning quality — co-trained with RL+distillation to preserve reasoning-chain tokens)
+- **TL;DR**: Unlike prefill-time eviction methods (SnapKV, AhaKV), G-KV runs *during decoding* and combines local and historical attention scores into a global importance measure that captures long-range token dependencies. Includes a post-training step (RL + distillation) that fine-tunes the base model to be robust under the compressed cache, which is a departure from training-free work. Microsoft-affiliated; code public on GitHub. Demonstrates that tokens important for reasoning-chain completion are not selected well by prefill-end scorers because their utility only becomes evident once generation is underway.
+- **Why it matters for Hypercar**: Hypercar's current eviction pipeline runs once at prefill end and is immutable for the rest of the session. For a multi-turn agentic workflow (OpenCode editing a repo across hours), the "what's important" distribution shifts across turns — G-KV's global/historical combination is exactly the adaptation we need. The training-required component (RL + distillation) is a *blocker* for us: we cannot retrain Qwen3-Coder-30B-A3B. However, the *scoring function itself* (local + historical) is training-free and can be lifted directly. The pass 44 Task 192 (QuantSpec) and Task 200 (SpecPV) already assume periodic decode-time correction passes — G-KV provides the eviction-time analog, so they compose into a single "re-score at every N-th decode step" pipeline. Combined with AhaKV's bias correction, we get an entropy-corrected, globally-scored eviction run continuously during decode. Partially closes Pass 44 gap #3 (entropy/spectral eviction) from the decode-time angle that AhaKV alone doesn't cover.
+- **Cost of adoption**: M — 3-5 days for the training-free scoring part. The local+historical score fusion is a running EMA over per-token attention stored per-head (one extra fp16 buffer per head, ~1.5 MB total at 128K context). Decode-time eviction integration needs a scheduler that triggers re-scoring every N tokens (default: 256) and coordinates with the ring-buffer streaming heads. Biggest risk: the paper's accuracy numbers assume post-training; without it, the scoring function is still useful but we should expect 2-3 pp accuracy regression vs the reported numbers. Recommended ablation: G-KV scoring + AhaKV temperature vs SnapKV baseline at 64K, 128K, 256K on HumanEval + NIAH.
+- **Local PDF**: research/2512.00504_g_kv.pdf
+
+### [PiKV: KV Cache Management System for Mixture of Experts](https://arxiv.org/abs/2508.06526) — 2508.06526
+- **Authors**: Dong Liu, Yanxuan Yu, Ben Lengerich, Ying Nian Wu, Xuhong Wang
+- **Published**: 2025-08 (v2 2026-02)
+- **Hypercar goals it addresses**: Goal 1 (MoE-aware KV compression — Qwen3-Coder-30B-A3B has 128 experts, currently compressed uniformly), Goal 3 (query-aware streaming scheduler reduces decode-time memory pressure), Goal 6 (expert-sharded layout fits unified memory better than the current monolithic layout)
+- **TL;DR**: First paper to treat KV compression as an MoE-co-designed problem rather than retrofitting dense-model eviction onto MoE. Four co-designed modules: (1) expert-sharded KV storage partitions the cache across experts so rarely-activated experts don't consume proportional KV memory, (2) PiKV routing directs queries to KV shards based on expert activation, (3) adaptive scheduling retains query-relevant KV entries at the shard level, (4) modular compression integrates with existing quantizers. Integrates with NVIDIA kvpress. Reports that expert-sharded KV reduces peak memory by 30-60% on Mixtral-class models by exploiting the sparsity inherent in MoE routing — a signal that is currently *completely unexploited* in Hypercar's dense per-layer compression pipeline.
+- **Why it matters for Hypercar**: This is the specific paper Pass 44 identified as missing — "MoE-specific KV compression sensitivity" (gap #4). Qwen3-Coder-30B-A3B is a 3B-active / 30B-total MoE with 128 experts; the activation pattern on code is heavily skewed (a few experts handle syntax, a few handle semantics, many handle rare patterns). PiKV's insight is that KV memory currently scales with *total* experts, not *active* experts, and an expert-sharded layout scales with active experts only. The "publicly available as open-source software library" status means we can read the reference implementation against mlx conventions. Partial composition with KVSculpt (Task 197): PiKV tells us *how to partition* the cache, KVSculpt tells us *what to store in each partition*. Also composes with our existing Task 194 (MoE-Spec) naturally: both exploit the same per-expert activation signal, so running PiKV's shard classifier inside MoE-Spec's expert budgeter is free.
+- **Cost of adoption**: L — 1-2 weeks. Expert-sharded KV is an architectural change to how KV cache is allocated (currently a single per-layer tensor; PiKV wants one-per-active-expert). The query-aware scheduler needs integration with the existing streaming / retrieval head split, and the shard classifier needs a profiling pass on Qwen3-Coder to measure real expert activation skew on codebase data. Biggest risk: MLX's unified-memory advantage partially nullifies PiKV's sharding benefit — on NVIDIA, sharding across GPUs saves cross-device transfer, but on M4 Pro there is no transfer to save; the only remaining benefit is the reduced active-memory footprint, which is still real but smaller than the paper's headline numbers. Recommend a scoping experiment (profile Qwen3-Coder expert activation on 100K context) *before* the full integration.
+- **Local PDF**: research/2508.06526_pikv_moe.pdf
+
+### [Malicious Token Injection: Investigating Cache-Side Vulnerabilities in LLM Inference](https://arxiv.org/abs/2510.17098) — 2510.17098
+- **Authors**: Elias Hossain, Swayamjit Saha, Somshubhra Roy, Ravi Prasad
+- **Published**: 2025-10 (v2 2026-01)
+- **Hypercar goals it addresses**: Goal 2 (robustness — failure modes that don't show up on benchmarks but show up in production), Goal 6 (the laptop-stability story — a sandbox-escape prompt shouldn't be able to corrupt the user's session)
+- **TL;DR**: First systematic treatment of the KV cache itself as an adversarial attack surface. The MTI (Malicious Token Injection) framework formalizes three perturbation techniques applied to cached key vectors at chosen layers/timesteps: additive Gaussian noise, vector zeroing, and orthogonal rotations. Provides a theoretical bound relating Frobenius-norm KV corruption to logit deviation, then empirically shows that cache corruption induces distributional shift, miscalibration, and task failure across GPT-2, LLaMA-2, Gemma — affecting LM, QA, summarization, RAG, and agentic pipelines. Specifically identifies that existing eviction methods (H2O) are *vulnerable* to attacks that inject tokens that shift the eviction priority, so the attacker controls what gets kept.
+- **Why it matters for Hypercar**: Closes Pass 44 gap #5 ("Adversarial robustness of eviction"). Hypercar's threat model so far has assumed benign inputs — an assumption that is flatly wrong for a code-agent running tool calls on untrusted repository content. A malicious file that ends up in the context at 900K can (per this paper's analysis) steer the eviction policy so that *the actual user query* gets evicted, and the model responds as if the malicious file were the user instruction. The Frobenius-norm-to-logit bound gives us a *measurable* robustness criterion: we can compute ||K_actual - K_expected||_F on suspicious segments (e.g., retrieved tool output) and reject eviction decisions that depend on them. More broadly, this is the paper that should shift Hypercar's benchmarking from "quality under benign input" to "quality under adversarial input" — a dimension none of the 6 goals currently measure.
+- **Cost of adoption**: M — 3-5 days for a defensive layer. The concrete fix is a KV-integrity monitor that maintains a rolling distribution summary (per-layer mean + cov estimate) of KV entries, and flags segments whose KV statistics deviate by more than K·σ. Cheap to run (one pass over the observation window). The hard part is *responding* to a flag: either re-run eviction excluding the flagged segment, or refuse to serve the response. Biggest risk: false-positive rate — legitimate code with unusual structure (e.g., ASCII-art comments, minified JS) may trigger the detector. Need an adversarial eval harness in the benchmark before shipping.
+- **Local PDF**: research/2510.17098_mti_kv_adversarial.pdf
+
+### Pass 45 synthesis
+
+Pass 45 deliberately targeted four of the six gaps carried from Pass 44:
+gap #3 (attention-entropy / spectral eviction), gap #4 (MoE-specific KV
+compressibility), gap #5 (adversarial robustness), and — tangentially —
+gap #2 (multi-round eviction stability) via G-KV's decode-time re-scoring
+which *operationalizes* a stability-checking pass even without formal
+Lyapunov analysis.
+
+- Gap #3 (attention-entropy / spectral eviction): **closed by AhaKV
+  2506.03762 + G-KV 2512.00504**. AhaKV gives the prefill-time entropy
+  correction; G-KV gives the decode-time global/historical re-score. The
+  two are strict complements, not substitutes.
+- Gap #4 (MoE-specific KV compressibility): **closed by PiKV 2508.06526**.
+  First paper in 45 passes to co-design KV compression with MoE routing.
+  Expert-sharded storage + activation-frequency-aware scheduling directly
+  addresses Qwen3-Coder-30B-A3B's 128-expert structure.
+- Gap #5 (adversarial robustness): **closed by MTI 2510.17098**. Theory +
+  empirical framework for cache-side attacks, including the specific
+  attack where adversarial content steers eviction priorities.
+- Gap #2 (multi-round eviction stability theory): **partially closed by
+  G-KV**. G-KV's decode-time re-scoring is an *empirical* stability
+  mechanism — the historical+local fusion acts as a low-pass filter on
+  importance-score drift. Formal Lyapunov analysis still open.
+
+**Highest-leverage finding**: AhaKV's identification that accumulated
+attention scores are *mathematically biased* toward early positions, not
+just empirically noisy. Every eviction scorer shipped in Hypercar's
+SnapKV stack (SnapKV, CAOTE, BUZZ, PyramidKV, Expected Attention) shares
+this bias. The entropy-tuned temperature is a 1-line scorer correction
+that, per the paper, closes most of the retrieval-at-depth gap on
+LongBench. This is the most credible root-cause candidate for
+Hypercar's NIAH@40K failure (currently attributed to DuoAttention head
+classification) — and it is test-ably wrong within 2 days of
+implementation work.
+
+**Revised composable end-state configuration v45**:
+- fp16 DuoKV retrieval heads (shipped)
+- KVSculpt-distilled KV on streaming heads (Task 197), budget by KV-CoRE's
+  NER (Task 198), encoded with CommVQ (Task 193)
+- **AhaKV entropy-corrected scorer** replacing the accumulated-score
+  basis of all existing eviction methods (NEW, Task 201)
+- **G-KV decode-time re-scoring** every N=256 decode steps (NEW, Task
+  202) composed with QuantSpec (Task 192) + SpecPV (Task 200) — all
+  three share the re-score trigger
+- **PiKV expert-sharded KV layout** under `--kv-mode duo --moe-shard`
+  (NEW, Task 203) composed with MoE-Spec (Task 194): the shard
+  classifier is shared
+- DeltaKV residual dedup (Task 199) at 256K+
+- **MTI integrity monitor** (NEW, Task 204) as a hard gate in the
+  benchmark suite — an adversarial-robustness phase added to
+  hypercar_bench before any long-context result ships
+- VQ-LLM Metal codebook-cache kernel (Task 189)
+- RocketKV two-stage eviction (Task 195)
+- DHSA prefill sparsity (Task 191)
+- LongRoPE position schedule (Task 196)
+- MoE-Spec + QuantSpec + SpecPV speculative verify (Tasks 192, 194, 200)
+
+**Memory budget (revised at 1M, v45)**: PiKV's expert-sharded layout on
+Qwen3-Coder-30B-A3B's 3B-active architecture suggests a further
+~30-40% KV-memory reduction on top of Pass 44's 5-10 GB KV estimate,
+bringing code-heavy 1M sessions to a projected 3-6 GB KV. Still within
+the 48 GB budget with 15+ GB headroom.
+
+**What Pass 45 deliberately did NOT cover**:
+- Metal simdgroup kernel papers. Searched thoroughly (query: "Metal
+  Performance Shaders MPS Graph LLM transformer kernel fused attention
+  Apple GPU"): the field has engineering blog posts (Drawthings,
+  Explosion, Apple WWDC24) but not arxiv-grade research on Metal
+  simdgroup primitives for attention. Gap #1 remains open — this is
+  increasingly looking like a "write-it-ourselves" engineering task
+  rather than a literature-gapped one.
+- DefensiveKV (2510.13334), ForesightKV (2602.03203), ChunkKV,
+  LookaheadKV: all either already held (Pass 44) or training-based
+  (disqualifying).
+- RobustKV (2410.19937): jailbreak-defense via KV eviction. Related to
+  MTI but narrower (specific to jailbreak prompts, not the full
+  cache-perturbation attack surface). Queued if we later need a
+  jailbreak-specific defense.
+- Shadow-in-the-Cache / KV-Cloak (2508.09442): KV-cache privacy attacks.
+  Adjacent to robustness but a different threat model (model extraction,
+  not behavior manipulation). Relevant if we ever share KV across users.
+- ARKV (2603.08727): another budget-adaptive KV method, overlaps
+  strongly with KVTuner + KV-CoRE; held.
+- Cache Management for MoE LLMs (2509.02408): dynamic expert loading
+  paper, overlaps with PiKV's expert-sharded storage; PiKV dominates
+  for our use case; held.
+- RFID-MoE (2602.09316): expert-frequency compression, subset of PiKV;
+  held.
+- Systematic LLM inference characterization (2512.01644): GPU-focused,
+  no Apple Silicon content; held.
+
+**Gap status for pass 46**:
+1. **Metal-specific tree attention kernel** (carried from pass 43 gap #1,
+   pass 44 gap #1, pass 45 open): arxiv search continues to return
+   nothing. Possible pivot: search for general-purpose GPU papers that
+   include Apple Silicon benchmarks, or HPC papers that treat
+   simdgroup-class primitives abstractly (warp, wavefront, subgroup)
+   and port the insight.
+2. **Multi-round eviction stability — formal theory** (pass 43 gap #2,
+   carried): G-KV's empirical stabilizer is the best we have. A
+   Lyapunov-class bound on iterative approximation schemes would let us
+   *prove* a maximum rollback rate, which matters for Task 200 SpecPV
+   adaptive-N. Possible search: control-theory / iterative numerical
+   methods / PAC-Bayesian analysis of online selection.
+3. **GPU memory bandwidth utilization for dequant on M4 Pro** (pass 43
+   option #10, pass 44 gap #6): still no measurement. Likely an
+   empirical profiling task, not a literature task — but we should
+   search for papers on "memory-bound attention" and "roofline
+   analysis of transformer kernels" to see whether anyone has the
+   numbers for Apple GPUs.
+4. **Prefix cache sharing with compressed KV** (pass 44 option #8):
+   unexamined. With session save/load shipped (CLAUDE.md mentions
+   `/v1/sessions/save|load`), cross-session KV sharing is a natural
+   optimization.
+5. **Streaming tokenization / incremental prefill** (pass 44 option
+   #12): if a user edits line 500 of a 200K-token file, re-prefilling
+   the whole thing is wasteful. Look for work on incremental or
+   differential prefill.
+6. **KV cache as a database** (pass 44 option #13): indexing and
+   querying historical KV as first-class structured data. DeltaKV
+   (Task 199) implicitly does this; something more formal could help.
+
+Forty-five passes. Four papers this round, total 192 across 65+
+disciplines. The compression-stack composition story keeps refining:
+Pass 44 gave us "what to store + how much per layer + how to encode +
+how to verify"; Pass 45 adds "corrected scoring (AhaKV) + decode-time
+re-scoring (G-KV) + MoE-aware layout (PiKV) + adversarial
+robustness (MTI)" — the first time in 45 passes we have explicit
+coverage of the full quality / efficiency / security triangle rather
+than trading one for the others. Meow, nyaa, purr.
+
