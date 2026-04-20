@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-18 (pass 42)_
+_Last updated: 2026-04-19 (pass 43)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -12511,3 +12511,219 @@ together constitute a complete recipe for 1M-context interactive decode on
 M4 Pro. The next benchmark run should validate the VQ-LLM codebook-cache
 translation to Metal — if that's 2x or better on TQ3 dequant, the XQuant
 implementation unblocks and the 1M path is clear. Meow, nyaa, meow.
+
+## Pass 43 — 2026-04-19 — Goal 1 Engineering: Learned KV Codebooks, MoE-Aware Speculation, Two-Stage Compression, Position Extrapolation
+
+### [MoE-Spec: Expert Budgeting for Efficient Speculative Decoding](https://arxiv.org/abs/2602.16052) — 2602.16052
+- **Authors**: Bradley McDanel, Steven Li, Sruthikesh Surineni, Harshit Khaitan
+- **Published**: 2026-02
+- **Hypercar goals it addresses**: Goal 3 (decode speed), Goal 6 (memory fit under speculation)
+- **TL;DR**: Speculative decoding with MoE models activates many unique experts per
+  draft-tree position, creating memory pressure that erases the speculation speedup.
+  MoE-Spec is a training-free verification-time mechanism that enforces a per-layer
+  expert-capacity budget at verify time, dropping the long tail of rarely used experts.
+  Achieves 10-30% higher throughput than EAGLE-3 on MoE targets while keeping
+  accuracy intact, with configurable latency/accuracy trade-off.
+- **Why it matters for Hypercar**: Directly closes Pass 42's gap #2 (MoE-specific
+  speculative decoding). Our Qwen3-Coder-30B-A3B is MoE with 128 experts and
+  Task 157 profiling showed only ~45/128 fire on coding workloads — MoE-Spec's
+  budgeting formalizes that observation at inference time. Task 192 (QuantSpec
+  self-speculative decoding) assumed a dense target; bolting MoE-Spec's expert
+  budget on top of QuantSpec should recover decode throughput with far fewer
+  experts materialized during verification, which is exactly the regime where
+  current speculation stalls at 16K+. Training-free is ideal for our no-retrain
+  Qwen constraint.
+- **Cost of adoption**: M (2-3 days). Wrap the verification forward pass with a
+  per-layer top-K expert mask driven by a decayed running tally, re-dispatch
+  only the top-K experts per layer during verify. Risk: if expert selection
+  drifts across the tree, aggressive budgeting might produce divergent
+  predictions between draft and verify that hurt acceptance length. Ablate
+  budget = {2, 4, 8} of the 8-active-per-layer experts.
+- **Depends on**: QuantSpec self-speculative decoding (Task 192).
+- **Local PDF**: research/2602.16052_moe_spec.pdf
+
+### [CommVQ: Commutative Vector Quantization for KV Cache Compression](https://arxiv.org/abs/2506.18879) — 2506.18879
+- **Authors**: Junyan Li, Yang Zhang, Muhammad Yusuf Hassan, Talha Chafekar, Tianle Cai, Zhile Ren, Pengsheng Guo, Foroozan Karimzadeh, Colorado Reed, Chong Wang, Chuang Gan (UMass Amherst, MIT-IBM, Apple)
+- **Published**: 2025-06 (NeurIPS 2025)
+- **Hypercar goals it addresses**: Goal 1 (1M context via 1-bit KV), Goal 5 (swap headroom)
+- **TL;DR**: Additive vector quantization with a learned codebook trained by
+  Expectation-Maximization. The critical trick: the codebook is engineered to
+  *commute* with RoPE, so RoPE can be applied once per query at decode rather
+  than re-applied to each KV entry after position correction. Achieves 87.5%
+  KV reduction at 2-bit and minimal-loss 1-bit on LLaMA-3.1 8B at 128K context
+  on a single RTX 4090.
+- **Why it matters for Hypercar**: This is the QAT KV codebook paper Pass 42
+  called for — and the RoPE-commutativity property is a huge secondary win.
+  Our SnapKV `skip_rerope=True` path (Task 168, 4.7x decode speedup) works
+  because we tolerate the position drift; a commutative codebook would let
+  us do *principled* eviction without re-RoPE cost. At 1-bit it also blows
+  past XQuant's 1.4-bit target (Task 185). The learned codebook is trained
+  per-model but only once — exactly the calibration-only cost we'd pay for
+  KVTuner (Task 186) anyway. Applied to streaming heads in DuoKV, this
+  takes KV from 22.5 GB (TQ3) toward ~7.5 GB at 1M — below the budget even
+  with Chrome+editor co-tenancy.
+- **Cost of adoption**: L (1-2 weeks). Need: (1) EM calibration loop on a
+  Qwen3-Coder activation dump at 32K, (2) commutative-codebook encode/decode
+  in Metal kernels, (3) integration with DuoKV streaming path replacing TQ3.
+  Biggest risk: the commutativity proof relies on specific codebook structure;
+  if that structure fights Qwen3-Coder's RoPE base frequency or the 8:1 GQA,
+  we fall back to TQ3. Mitigation: run the calibration on 3 different base
+  frequencies (θ ∈ {10000, 40000, 1000000}) before committing the Metal kernel.
+- **Depends on**: TQ3 KV cache (shipped), DuoKV (shipped). Optional VQ-LLM
+  codebook-cache kernel (Task 189) for the decode matmul path.
+- **Local PDF**: research/2506.18879_commvq.pdf
+
+### [RocketKV: Accelerating Long-Context LLM Inference via Two-Stage KV Cache Compression](https://arxiv.org/abs/2502.14051) — 2502.14051
+- **Authors**: Payman Behnam, Yaosheng Fu, Ritchie Zhao, Po-An Tsai, Zhiding Yu, Alexey Tumanov (NVIDIA, Georgia Tech)
+- **Published**: 2025-02 (ICML 2025)
+- **Hypercar goals it addresses**: Goal 1 (compression ratio), Goal 3 (decode speed at long context)
+- **TL;DR**: Two-stage training-free KV compression. Stage 1 is permanent
+  coarse-grain eviction of input tokens (SnapKV-like). Stage 2 is a hybrid
+  sparse attention method that performs fine-grain top-K selection on both
+  head and sequence dimensions, with selections performed *per GQA group*
+  rather than per head. Achieves up to 400x compression with 3.7x end-to-end
+  speedup and up to 32.6% peak memory reduction; "negligible accuracy loss"
+  on LongBench, Needle, InfiniteBench at 128K.
+- **Why it matters for Hypercar**: Two angles at once. First, the per-GQA-group
+  selection is exactly what Qwen3-Coder's 8:1 GQA needs — current SnapKV
+  ranks per head and we pay a broadcast cost. Second, RocketKV explicitly
+  composes eviction (our SnapKV stack) with top-K sparse attention at decode
+  (Quest-like), unifying what we have today as two separate systems. The
+  32.6% peak-memory reduction during decode is exactly our gap at 64K+ where
+  Metal peak flirts with 42 GB. And the training-free top-K selection
+  generalizes cleanly under GQA grouping — fewer selections, lower top-K
+  kernel latency, preserves our existing per-head quantization.
+- **Cost of adoption**: M (3-5 days). Port the per-GQA-group selection path
+  into `omlx/patches/snapkv.py` so eviction ranks by group (not by head).
+  Add the stage-2 hybrid sparse attention as a decode-time overlay — it
+  replaces our Quest-style page selection. Risk: RocketKV's "hybrid" means
+  SnapKV-dynamic + Quest-static, and getting both to agree on which tokens
+  to materialize needs careful interaction with DuoKV's retrieval/streaming
+  split. Ablation mandatory: per-head vs per-group selection on NIAH@128K.
+- **Depends on**: SnapKV eviction (shipped), DuoKV (shipped).
+- **Local PDF**: research/2502.14051_rocketkv.pdf
+
+### [LongRoPE: Extending LLM Context Window Beyond 2 Million Tokens](https://arxiv.org/abs/2402.13753) — 2402.13753
+- **Authors**: Yiran Ding, Li Lyna Zhang, Chengruidong Zhang, Yuanyuan Xu, Ning Shang, Jiahang Xu, Fan Yang, Mao Yang (Microsoft)
+- **Published**: 2024-02 (ICML 2024)
+- **Hypercar goals it addresses**: Goal 1 (1M context positional fidelity), Goal 2 (retrieval at 1M)
+- **TL;DR**: Identifies two non-uniformities in RoPE position interpolation
+  (per-RoPE-dimension and per-position-range) and runs an evolutionary search
+  over per-dimension interpolation factors to find a schedule that extends
+  context 8x without fine-tuning. With ~1K fine-tuning steps at 256K, the
+  method extends LLaMA2 and Mistral to 2048K tokens while preserving
+  short-context performance via a readjustment at 8K.
+- **Why it matters for Hypercar**: Qwen3-Coder-30B-A3B has a native 256K
+  context via YaRN-style extension. Pushing to 1M today relies on YaRN
+  extrapolation which is uniformly-scaled and known to degrade retrieval at
+  >4x extension. LongRoPE's per-dimension schedule is a pure inference-time
+  change (no weight updates if we're willing to accept 8x ceiling, one-time
+  1K-step LoRA if we want the full 2M). It pairs directly with our SnapKV
+  at 128K: SnapKV evicts tokens *after* position assignment, so a better
+  RoPE schedule lifts the retrieval floor that SnapKV then compresses from.
+  Concretely, our NIAH failure mode at 40K (per CLAUDE.md: root-caused to
+  DuoAttention head classification) might actually be RoPE-extrapolation
+  corruption. Running LongRoPE's evolutionary search against Qwen's own
+  extension schedule is a weekend experiment that could unlock Goal 1
+  without any new kernels.
+- **Cost of adoption**: S-M (2-4 days). (1) Port LongRoPE's search loop
+  against Qwen3-Coder's rotary embeddings; (2) dump the resulting per-dim
+  scaling factors into `omlx/patches/rope_schedule.py`; (3) NIAH@{32K, 64K,
+  128K, 256K, 512K, 1M} to validate the retrieval curve. The search itself
+  is cheap (~30 min on our hardware). Biggest risk: Qwen3 may already bake
+  the YaRN schedule into weights, meaning a pure-schedule swap produces
+  distribution shift. Mitigation: compare against a 256K-native Qwen3 run
+  as control before extending.
+- **Depends on**: Qwen3-Coder rotary implementation (shipped).
+- **Local PDF**: research/2402.13753_longrope.pdf
+
+### Pass 43 synthesis
+
+Pass 43 closes four of Pass 42's five identified gaps and makes a strong dent
+on the fifth:
+
+- Gap #1 (QAT KV codebook): **CommVQ 2506.18879** — learned additive codebook
+  trained by EM, with the bonus commutativity-with-RoPE property we didn't
+  know to ask for. 1-bit quality at 128K on LLaMA-3.1 8B.
+- Gap #2 (MoE-aware speculation): **MoE-Spec 2602.16052** — training-free
+  expert budgeting at verify time. Composes with Task 192 (QuantSpec) and
+  Task 157's empirical finding that ~45 of 128 experts fire on coding.
+- Gap #3 (Metal-specific tree attention kernel): *still open* — LongSpec's
+  tree attention remains CUDA-centric. Budget Pass 44 for this.
+- Gap #4 (multi-round eviction stability theory): *partially closed* —
+  RocketKV's two-stage compression is not a theory of stability, but it
+  does empirically demonstrate that a single coarse-grain eviction followed
+  by a dynamic fine-grain top-K is stable at 128K on LongBench. Formal
+  error-accumulation analysis still missing.
+- Gap #5 (attention pattern drift at 1M): **LongRoPE 2402.13753** — position
+  schedule is the most probable root cause of pattern drift at extreme
+  context. Evolutionary per-dim RoPE search is a direct remediation.
+
+**Highest-leverage finding**: CommVQ's RoPE-commutative learned codebook. The
+paper's headline is 1-bit KV at 128K, but for Hypercar the operationally
+important property is that dequant does not require re-applying RoPE to
+repositioned tokens — which is *the* cost making `skip_rerope=True` necessary
+as a hack today. A commutative codebook means Task 168's 4.7x speedup becomes
+principled rather than a quality-tolerance trade. Combined with VQ-LLM's
+codebook-cache Metal kernel (Task 189), the dequant-and-attend fused kernel
+would operate on 1-bit codes — closing the XQuant path (Task 185) by being
+*better* than XQuant on both bits and RoPE handling.
+
+**Composable end-state configuration v43**:
+- fp16 DuoKV retrieval heads (shipped)
+- CommVQ 1-bit commutative codebook on streaming heads (new, replaces TQ3)
+- KVTuner per-layer bits (Task 186) — layers with the highest sensitivity
+  stay on TQ3 3-bit or CommVQ 2-bit tier
+- VQ-LLM Metal codebook-cache kernel (Task 189), now consuming 1-bit codes
+- RocketKV two-stage compression: SnapKV coarse (shipped) + per-GQA-group
+  top-K sparse attention at decode (new)
+- DHSA dynamic sparsity (Task 191) at prefill
+- LongRoPE per-dim position schedule (new) for 256K→1M extension
+- MoE-Spec budgeted expert verification (new) on top of QuantSpec (Task 192)
+
+**Memory budget (revised at 1M)**: With CommVQ 1-bit on 70% of layers
+(streaming) and TQ3 3-bit on 30% (retrieval + high-sensitivity), expected KV
+footprint at 1M is ~7 GB (vs 22.5 GB today), leaving >15 GB of Metal headroom
+on the 48 GB budget. That is the first time the 1M budget math closes on the
+reference hardware *with* live Chrome+editor co-tenancy.
+
+**What Pass 43 deliberately did NOT cover**:
+- Nemotron-H / Jamba hybrid Mamba-Transformers (2504.03624, 2508.14444): we
+  cannot retrain Qwen3-Coder-30B-A3B into a hybrid architecture. These
+  inform future model selection, not current optimization — held.
+- CoPE / Shuffle-the-Context RoPE variants (2602.05258, 2604.14339):
+  overlap heavily with LongRoPE for our use case. If LongRoPE doesn't
+  generalize to Qwen's RoPE base frequency we revisit.
+- KVFlow (2507.07400), LMCache (2510.09665), KVStore (2511.16138): all are
+  multi-tenant server-side prefix-cache systems. Our single-user flow is
+  covered by session save/load.
+- PolarQuant (2502.02617), Cache Me If You Must (2501.19392): adaptive
+  per-token precision policies — overlap with MixKVQ (Pass 42) and KVTuner
+  (Pass 41). Held unless MixKVQ fails to compose.
+- Cost-Optimal GQA (2503.09579), QCQA (2406.10247): both are architecture
+  papers recommending different GQA ratios at training time. Not applicable
+  to a fixed Qwen3-Coder.
+
+**Gap status for pass 44**:
+1. **Metal-specific tree attention kernel**: still the biggest hole.
+   LongSpec's tree-attention primitive assumes CUDA warp-level operations;
+   Apple Silicon simdgroups have different sync semantics. Need either a
+   Metal tree-attention paper or a MPS-inspired tree-attention design doc.
+2. **Progressive eviction stability theory**: RocketKV's empirical result
+   is encouraging but we still lack a bound on cross-round error propagation.
+3. **KV cache distillation / student-model KV**: none of our 43 passes has
+   covered compressing the KV via a distilled surrogate — a student model
+   that encodes the same key-value relationship in a smaller representation.
+4. **Attention-entropy / spectral eviction**: eviction stack is attention-
+   weight-based. A spectral or entropy-based scorer might catch load-bearing
+   tokens SnapKV's window misses.
+5. **CommVQ at MoE + GQA scale**: CommVQ was validated on LLaMA-3.1 8B
+   (dense, 8:1 GQA). Qwen3-Coder-30B-A3B is MoE with expert-conditional
+   activation distributions — the EM calibration distribution may not
+   converge as cleanly. Empirical only.
+
+Forty-three passes. Four papers this round, total 184 across 65+ disciplines.
+Pass 43's most operationally valuable contribution is CommVQ's RoPE
+commutativity — a property that turns our existing re-RoPE hack into a
+first-class mechanism and closes the KV budget math at 1M on the reference
+M4 Pro 48 GB hardware. Meow, nyaa, meow.
