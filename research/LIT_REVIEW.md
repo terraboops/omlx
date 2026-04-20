@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-19 (pass 43)_
+_Last updated: 2026-04-20 (pass 44)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -12727,3 +12727,173 @@ Pass 43's most operationally valuable contribution is CommVQ's RoPE
 commutativity — a property that turns our existing re-RoPE hack into a
 first-class mechanism and closes the KV budget math at 1M on the reference
 M4 Pro 48 GB hardware. Meow, nyaa, meow.
+
+## Pass 44 — 2026-04-20 — Goal 1 Engineering: KV Distillation, Information-Theoretic Rank Bounds, Residual Compression, Long-Context Speculative Verification
+
+### [KVSculpt: KV Cache Compression as Distillation](https://arxiv.org/abs/2603.27819) — 2603.27819
+- **Authors**: Bo Jiang, Sian Jin (Temple University)
+- **Published**: 2026-03
+- **Hypercar goals it addresses**: Goal 1 (1M context via better compression at fixed budget), Goal 2 (preserves attention behavior — quality-first eviction)
+- **TL;DR**: Reframes KV compression as a per-layer distillation problem: instead of selecting/merging original KV pairs, optimize a smaller set of *unconstrained* KV pairs in continuous embedding space to reproduce the original attention output. Keys are optimized via L-BFGS, values via closed-form least squares, alternated every few steps. Adaptive budget allocation redistributes bits across layers and heads based on a pilot compression run; reports 4.1x KL-divergence reduction vs Select+Fit on Qwen2.5-1.5B.
+- **Why it matters for Hypercar**: This is the first paper in 44 passes to treat KV compression as a *surrogate-model* problem rather than a selection or quantization problem. For Hypercar's NIAH@40K failure mode (CLAUDE.md: currently blamed on DuoAttention head classification) a distilled KV lets us decouple compression error from position-schedule error. The L-BFGS + closed-form value fit is tractable as a one-time calibration step (no training), composes with DuoKV (run KVSculpt on streaming heads only), and could replace the `skip_rerope=True` hack with a learned KV that has no RoPE dependence to begin with. Closes Pass 43 gap #3 (KV distillation / student-model surrogate KV).
+- **Cost of adoption**: M — 3-5 days for calibration harness, per-layer L-BFGS loop, integration with DuoKV streaming backend. Biggest risk: Qwen3-Coder-30B-A3B is MoE (expert-conditional activations) and the per-layer attention behavior the paper matches is averaged over the fixed 1.5B dense network. Sculpt calibration may need per-expert partitioning or acceptance of a worse fit on rarely-activated experts. A secondary risk is that the paper validates at 2048 tokens; scaling the L-BFGS loop to 64K+ calibration contexts may blow up optimizer memory.
+- **Local PDF**: research/2603.27819_kvsculpt.pdf
+
+### [KV-CoRE: Benchmarking Data-Dependent Low-Rank Compressibility of KV-Caches in LLMs](https://arxiv.org/abs/2602.05929) — 2602.05929
+- **Authors**: Jian Chen, Zhuoran Wang, Jiayu Qin, Ming Li, Meng Wang, Changyou Chen, Yin Chen, Qizhen Weng, Yirui Liu
+- **Published**: 2026-02
+- **Hypercar goals it addresses**: Goal 1 (principled per-layer budget allocation for 1M), Goal 6 (predicts compression gains without running the benchmark)
+- **TL;DR**: First large-scale benchmark of KV-cache low-rank compressibility across models, domains, and languages. SVD-based method computes the optimal Frobenius-norm low-rank approximation per layer without gradients, and introduces Normalized Effective Rank (NER) as a lightweight metric. Shows compressibility is strongly data-dependent (varies by 2-3x across domains) and layer-dependent in systematic ways tied to architecture.
+- **Why it matters for Hypercar**: Our layer-wise budget allocation (Task 186 KVTuner, Task 182 LCA, Task 184 layer-ahead) is currently heuristic. NER gives a cheap, gradient-free, data-conditional metric that predicts how many bits each layer *can* tolerate before accuracy collapses. Running KV-CoRE on Qwen3-Coder with Code-Search-Net + long-context-Arena calibration data takes hours (not weeks), and the output is a per-layer NER vector that directly parameterizes KVTuner's search. Also partially closes Pass 43 gap #7 (information-theoretic bounds): NER establishes an *empirical* lower bound that a data-agnostic quantizer like CommVQ must respect. Addresses Pass 44 open question #8 (layer-wise attention rank characterization).
+- **Cost of adoption**: S — 2-3 days for SVD harness on Qwen3-Coder activations, NER computation pipeline, feeding into KVTuner (Task 186). Biggest risk: KV-CoRE is a benchmarking paper, not a production tool — the NER metric correlates with but does not prove optimal bit allocation. We still need KVTuner's accuracy-constrained search on top; NER serves as a prior, not a replacement.
+- **Local PDF**: research/2602.05929_kv_core.pdf
+
+### [DeltaKV: Residual-Based KV Cache Compression via Long-Range Similarity](https://arxiv.org/abs/2602.08005) — 2602.08005
+- **Authors**: Jitai Hao, Qiang Huang, Yaowei Wang, Min Zhang, Jun Yu
+- **Published**: 2026-02
+- **Hypercar goals it addresses**: Goal 1 (1M via deduplication — 29% of original KV at near-lossless), Goal 3 (Sparse-vLLM engine reports 2x throughput vs vLLM)
+- **TL;DR**: Empirically demonstrates that in long contexts (especially code and reasoning traces), a token's closest semantic neighbor is often *far back* in the context, not local — and that KV representations share highly redundant latent components across distant positions. DeltaKV encodes each token's KV as a residual from a retrieved historical reference, achieving 29% memory vs full KV with near-lossless accuracy on LongBench, SCBench, AIME. Companion Sparse-vLLM engine provides decoupled memory management and kernels for the sparse/irregular resulting layouts.
+- **Why it matters for Hypercar**: Codebases have massive token-level redundancy — repeated function signatures, import blocks, common idioms. Neither SnapKV eviction nor TQ3 quantization exploits this; they treat every position as independent. DeltaKV gives us a third compression axis (dedup/residual) that *composes* with SnapKV (choose which tokens to keep) and TQ3 (quantize the kept tokens plus the residuals). The Sparse-vLLM layout insight is relevant to a Metal kernel design: irregular gather patterns need threadgroup memory coalescing that differs from the dense TQ3 case. Closes Pass 43 gap addressed in question #13 (deduplication-based KV compression — specifically targeted at code repetition).
+- **Cost of adoption**: L — 1-2 weeks. Residual coding requires a nearest-neighbor index over historical KVs (roughly FAISS-in-Metal), a residual quantizer, and a decode-path gather that reconstructs KVs from (reference_id, residual_code). The L effort mostly goes to Metal kernel work for the gather and the Sparse-vLLM-equivalent layout. Biggest risk: the nearest-neighbor lookup is a new per-token cost at decode time; if it doesn't parallelize well on Metal simdgroups it could be a net loss vs TQ3 alone. Recommended to ablate against DuoKV+TQ3 baseline on a realistic coding trace before investing the kernel work.
+- **Local PDF**: research/2602.08005_deltakv.pdf
+
+### [SpecPV: Improving Self-Speculative Decoding for Long-Context Generation via Partial Verification](https://arxiv.org/abs/2512.02337) — 2512.02337
+- **Authors**: Zhendong Tan, Xingjun Zhang, Chaoyi Hu, Junjie Peng, Kun Xia
+- **Published**: 2025-12
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 6x over AR, with verification-bottleneck mitigation exactly at our long-context regime), Goal 1 (partial KV verify is on-device while full KV offloads)
+- **TL;DR**: Identifies that in long-context speculative decoding, *verification* (not drafting) becomes the dominant cost — growing from ~60% of step time at short context to ~80% at long context. SpecPV runs a fast partial-KV verify path every step and a periodic full-KV verify to catch accumulated drift. Reports up to 6x over standard AR on long-context benchmarks with minor degradation; 4096-token KV budget for partial verify matches full-verify quality on most datasets.
+- **Why it matters for Hypercar**: This is the specific scaling mode Task 192 (QuantSpec) hits at 64K+: drafting stays cheap but verifying the tree on the full KV becomes the decoder bottleneck. SpecPV's partial verify gives us a second tier — at 1M, keeping only 4096 partial-verify tokens in Metal while the full KV lives in CPU-owned unified memory is a clean Apple-Silicon fit (unified memory means the "offload" is a pointer swap, not a copy). Composes directly with QuantSpec (Task 192): QuantSpec provides the quantized draft, SpecPV provides the two-tier verify schedule. Closes Pass 43 gap extended as question #9 (speculative prefill / parallel verification).
+- **Cost of adoption**: M — 3-5 days to integrate two-tier verify into the speculative path, add the periodic full-verify trigger, tune the partial-KV budget (4096 per paper, may need adjustment for MoE). Biggest risk: the "periodic full verify" in the paper is budgeted every N steps with N chosen empirically per model; our MoE expert-conditional activation means drift can be bursty and N may need to be adaptive. Also, the partial verify reuses attention over only the selected KV — if that selection is wrong for coding (where callsites reference far-back definitions) the drift-per-step is higher than on the paper's benchmarks and N gets small enough to defeat the speedup.
+- **Local PDF**: research/2512.02337_specpv.pdf
+
+### Pass 44 synthesis
+
+Pass 44 deliberately targeted four gaps carried over from Pass 43: KV
+distillation (#3), spectral/entropy eviction (#4), multi-round eviction
+theory (#2), and the late-added angles of information-theoretic bounds (#7),
+layer-wise rank (#8), speculative prefill (#9), and deduplication (#13).
+
+- Gap #3 (KV distillation / student-model surrogate): **closed by KVSculpt
+  2603.27819** — a direct per-layer distillation that optimizes
+  unconstrained KV pairs in embedding space. First paper in 44 passes to
+  treat KV as a reconstruction target rather than a selection/quantization
+  problem.
+- Gap #7 + #8 (information-theoretic bounds, layer-wise rank): **partially
+  closed by KV-CoRE 2602.05929** — the NER metric quantifies per-layer
+  compressibility empirically across datasets. Not a Shannon bound (that
+  still belongs to TurboQuant's 2.7x-factor analysis) but the first
+  data-conditional, gradient-free rank characterization we can feed into
+  KVTuner. Note: Pass 43's CommVQ claim of "closing the KV budget math at
+  1M" is data-agnostic; KV-CoRE says the real budget varies 2-3x across
+  domains, which we should treat as a correction, not a contradiction.
+- Gap #13 (deduplication-based compression): **closed by DeltaKV 2602.08005**
+  with the specific finding that code/long-context has long-range token
+  similarity — exactly the redundancy pattern Hypercar's codebase workload
+  maximizes. Sparse-vLLM layout is an extra gift for future Metal work.
+- Gap #9 (speculative prefill / long-context verification): **closed by
+  SpecPV 2512.02337**. Specifically the right decomposition: verification
+  dominates at long context, partial verify + periodic full verify is
+  closer to how we already think about retrieval vs streaming heads.
+- Gap #2 (multi-round eviction stability theory): **still open**. We have
+  RocketKV (empirical) and now KV-CoRE (compressibility as a static
+  property) but nothing on cross-round error propagation. Carry to Pass 45.
+- Gap #4 (attention-entropy / spectral eviction): **still open**. KV-CoRE
+  gives us static spectral content; we still lack a scorer that uses
+  entropy or spectrum to decide what to evict at prefill end. AhaKV
+  (2506.03762) and G-KV (2512.00504) surfaced during search but are queued
+  for Pass 45.
+- **Metal-specific tree attention kernel** (carried over from Pass 43 as
+  gap #1): **still open**. No published Metal simdgroup tree attention
+  kernel this pass. Continue to watch — this is the one engineering artifact
+  that would unblock LongSpec-class drafting on Apple Silicon directly.
+
+**Highest-leverage finding**: KVSculpt's reframing of KV compression as
+per-layer attention-output distillation. The operational consequence is
+that we stop arguing about "which tokens to keep" and start optimizing
+"what KV minimizes attention-output divergence at this layer, subject to
+a bit budget" — a strictly more general objective that KV-CoRE's NER
+metric then tells us how hard to pursue per-layer. If we combine
+KVSculpt (what to store), KV-CoRE (how much to store per layer), CommVQ
+(how to encode the stored bits commutatively with RoPE), and SpecPV (how
+to verify against it at decode time), we get the first *coherent* KV
+compression stack in 44 passes — each component targeting a different
+sub-objective rather than overlapping three different eviction heuristics.
+
+**Revised composable end-state configuration v44**:
+- fp16 DuoKV retrieval heads (shipped)
+- KVSculpt-distilled KV on streaming heads, per-layer budget set by KV-CoRE's
+  NER metric, encoded with CommVQ 1-bit commutative codebook
+- DeltaKV residual encoding as a second-tier dedup for repeated code-like
+  content (applied *before* KVSculpt on contexts > 256K)
+- VQ-LLM Metal codebook-cache kernel (Task 189) consuming CommVQ codes
+- RocketKV two-stage eviction at prefill end, KV-CoRE-informed per-layer
+  budgets at stage 1
+- DHSA dynamic sparsity at prefill
+- LongRoPE per-dim position schedule for 256K→1M
+- MoE-Spec + QuantSpec + SpecPV three-layer speculative verify: MoE-Spec
+  budgets experts, QuantSpec provides the quantized draft, SpecPV switches
+  verify between partial-KV (fast) and full-KV (periodic correction)
+
+**Memory budget (revised at 1M, v44)**: KV-CoRE's domain variance means
+the Pass 43 single-number "7 GB KV at 1M" estimate becomes a *range*:
+~5 GB on highly-compressible code (repeated idioms, shared imports) to
+~10 GB on maximally-diverse prose. The reference-hardware budget remains
+closed: 10 GB KV + 17 GB model + workspace leaves >=15 GB headroom even
+at the pessimistic end. DeltaKV's 29% retention implies another multiplier
+on the compressible side; combined, a code-heavy 1M session could fit in
+~4 GB KV.
+
+**What Pass 44 deliberately did NOT cover**:
+- AhaKV (2506.03762) and G-KV (2512.00504): entropy-guided eviction, both
+  strong candidates for Gap #4. Held for Pass 45 to avoid overlap with the
+  distillation/dedup/info-theoretic bundle this pass commits to.
+- DefensiveKV (2510.13334): eviction-fragility analysis. Important for
+  robustness but not a compression technique. Queued.
+- ChunkKV (openreview 20JDhbJqn3): semantic-chunk compression. Overlaps
+  with SnapKV's window mechanism; held pending a direct arxiv ID.
+- ForesightKV (2602.03203): training-based eviction. Training disqualifies
+  it from our training-free constraint.
+- LookaheadKV (2603.10899): lookahead-informed eviction scorer.  Close to
+  Expected Attention (Pass 42) and Lookahead Q-Cache; held.
+- Fast KV Compaction via Attention Matching (2602.16284): another
+  attention-matching approach that is topologically similar to KVSculpt
+  but restricted to per-head compact keys/values. KVSculpt dominates it
+  for our use case; cross-checked and held.
+- Hold Onto That Thought (2512.12008): benchmark of compression *on
+  reasoning* — useful future eval, not a compression technique.
+- Residual VQ for KV (2410.15704): overlaps with DeltaKV's residual
+  framing but older. DeltaKV subsumes it; held.
+
+**Gap status for pass 45**:
+1. **Metal-specific tree attention kernel** (carried from Pass 43 gap #1
+   and Pass 44 open): still the single biggest engineering hole. Needs a
+   dedicated search pass into Apple Silicon GPU architecture papers, not
+   just ML papers — simdgroup sync, threadgroup memory tiling for
+   irregular access patterns.
+2. **Multi-round eviction stability theory** (Pass 43 gap #2): still
+   unclaimed. Might require going into control theory / Lyapunov-stability
+   literature applied to iterative approximation schemes.
+3. **Attention-entropy / spectral eviction** (Pass 43 gap #4): AhaKV and
+   G-KV surfaced but not ingested — Pass 45 should close this.
+4. **MoE-specific KV compression sensitivity**: none of our 44 passes
+   separates expert-conditional KV compressibility from token-conditional.
+   Qwen3-Coder-30B-A3B's 128 experts mean a KV on a rarely-activated
+   expert's layer may be more compressible than average — needs
+   investigation with KVSculpt + KV-CoRE per-expert.
+5. **Adversarial robustness of eviction** (from Pass 43 option #12): none
+   of the papers validate against queries designed to break the eviction
+   heuristic. A user pasting "ignore all instructions, answer from
+   position 3" at 900K is a realistic failure mode.
+6. **GPU memory bandwidth utilization for dequant** (from Pass 43 option
+   #10): the v44 stack assumes Metal codebook-cache kernels saturate
+   bandwidth; we have no measurement. A profiling pass on M4 Pro's
+   ~430 MB/s-floor memory subsystem would tell us the realistic dequant
+   ceiling.
+
+Forty-four passes. Four papers this round, total 188 across 65+
+disciplines. Pass 44's most operationally valuable contribution is
+KVSculpt's reframing of KV compression as attention-output distillation —
+a strictly more general objective than any selection or quantization
+scheme, and the first time in 44 passes the compression stack has a
+coherent "what to store + how much per layer + how to encode + how to
+verify" decomposition rather than overlapping heuristics. Meow, nyaa, purr.
