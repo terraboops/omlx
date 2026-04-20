@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-20 (pass 45)_
+_Last updated: 2026-04-20 (pass 46)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -13067,4 +13067,178 @@ re-scoring (G-KV) + MoE-aware layout (PiKV) + adversarial
 robustness (MTI)" — the first time in 45 passes we have explicit
 coverage of the full quality / efficiency / security triangle rather
 than trading one for the others. Meow, nyaa, purr.
+
+## Pass 46 — 2026-04-20 — Goal 1 Engineering: Prefix-Sharing Beyond Quantization, Lyapunov-Certified Compression, Heterogeneous Hierarchical KV, Incremental Infilling
+
+### [Sequential KV Cache Compression via Probabilistic Language Tries: Beyond the Per-Vector Shannon Limit](https://arxiv.org/abs/2604.15356) — 2604.15356
+- **Authors**: Gregory Magarshak
+- **Published**: 2026-04
+- **Hypercar goals it addresses**: Goal 1 (compression that *composes* with existing per-vector quantizers like TurboQuant rather than replacing them — unlocks a second orthogonal dimension of compression), Goal 6 (prefix deduplication across sessions directly slashes the KV footprint when OpenCode reopens the same repo)
+- **TL;DR**: Identifies that every KV compressor in the current literature (KIVI, AQUA-KV, TurboQuant, XQuant, CommVQ, KVSculpt) operates *per-vector* and is therefore bounded by the Shannon entropy of a single KV vector — roughly 3 bits per component after rotation. The paper proposes a two-layer *sequential* scheme that exploits structure *across* vectors: (1) a probabilistic-language-trie (PLT) metric identifies semantically equivalent shared prefixes across sessions and stores only the centroid + per-session delta; (2) a predictive-delta coder stores each new KV as the residual against the model's own next-vector prediction from the preceding context. The two layers are *orthogonal* to per-vector quantization and stack on top of TurboQuant. Reports 3.3-4.3 bits per *token position* (not per component) at near-lossless quality, which is a sequential-entropy win TurboQuant's per-vector 3 bits can't reach because it ignores inter-vector structure.
+- **Why it matters for Hypercar**: This is the paper Pass 45's open gap #4 (prefix cache sharing with compressed KV) was waiting for. Hypercar's session save/load (`/v1/sessions/save|load`) already persists KV across sessions, but each session is stored as an independent blob — two OpenCode sessions editing the same 200K-token repo each pay the full KV cost. The PLT layer replaces those two blobs with one centroid + two deltas, and the delta-code layer on top squeezes each delta below TurboQuant's per-vector floor. Critically: the method is training-free, composes with TurboQuant (our existing TQ3 backend — cited by name in the paper), and is the answer to Pass 44/45's unanswered "KV as a database" question (gap #6) — the PLT is literally a prefix-indexed KV database. The 914,000x theoretical-improvement number in the abstract is a large-scale-asymptotic claim that won't hold at our scale, but even a 2-3x realized win on top of TQ3 pushes a 1M-context session below 8 GB KV — comfortably within the M4 Pro budget with headroom for multi-session co-tenancy.
+- **Cost of adoption**: L — 2 weeks. Phase A (1 week): PLT index implementation — a counting trie over tokenized-prefix subsequences with per-node KV centroids. Storage is logarithmic in unique-prefix count; lookup is O(prefix-length) with a single hash per step. Phase B (1 week): predictive-delta coder — a small-rank linear predictor (per-layer) regressed on the preceding window, emitting a residual fed to the existing TQ3 quantizer. Integration point: `omlx/kv_caches/session_store.py` (session persistence) gets a PLT index side-table; new files `omlx/kv_caches/plt_index.py` and `omlx/kv_caches/delta_predictor.py`. Biggest risk: the PLT's semantic-equivalence heuristic is defined over learned embeddings, not raw tokens — requires a calibration pass on Qwen3-Coder embeddings to pick the similarity threshold. Secondary risk: at 1M context the trie itself consumes non-trivial memory (a few hundred MB); needs LRU eviction on the trie nodes themselves.
+- **Local PDF**: research/2604.15356_sequential_kv_plt.pdf
+
+### [Structural Sensitivity in Compressed Transformers: Error Propagation, Lyapunov Stability, and Formally Verified Bounds](https://arxiv.org/abs/2603.20991) — 2603.20991
+- **Authors**: Abhinaba Basu
+- **Published**: 2026-03
+- **Hypercar goals it addresses**: Goal 1 (compression that *provably* doesn't drift under multi-round eviction — the theoretical underpinning we've been missing for G-KV's empirical re-scoring), Goal 2 (per-layer sensitivity classification — which heads can compress harder without quality collapse, the unresolved question from KV-CoRE)
+- **TL;DR**: First paper to apply Lyapunov stability theory to transformer compression. Proves that residual connections *contract* compression errors when hidden-state norms grow faster than propagated error — giving a quantitative, per-layer tolerance bound. Companion result: extreme sensitivity localized to specific matrices, with *one* projection out of 468 in GPT-2 Small inducing a 20,000x perplexity spike when compressed, while value projections compress "nearly for free." The method includes ten machine-checked Lean 4 theorems that formalize per-matrix error bounds, with zero violations across 14,040+ experimental configurations spanning 117M–8B parameters, 2K-51K tokens, and WikiText-103 / C4 / HellaSwag / ARC-Easy / Winogrande.
+- **Why it matters for Hypercar**: Three direct wins. First, this is the closest thing to closing Pass 43/44/45's open gap #2 (formal stability theory for multi-round eviction). The Lyapunov-contraction result generalizes from single-shot compression to the iterative case we actually run — we can derive a maximum rollback rate for SpecPV (Task 200) adaptive-N, and a provably-safe re-scoring cadence for G-KV (Task 202). Second, the "sensitivity concentrated in a handful of matrices" empirical result is *exactly* the mechanism behind our DuoAttention head-classification failure at 40K (commit bb522f8) — we've been treating all heads uniformly when the paper shows the distribution is extremely heavy-tailed. Third, the Lean 4 theorems give us a *verification tool*: we can instantiate the formal bounds on Qwen3-Coder's specific projection matrices and get machine-checked per-layer bit-budget floors, replacing KVTuner's (Task 186) black-box search with an analytical prior. The paper's scale (up to 8B) is below Qwen3-Coder-30B-A3B's 30B total parameters, but the Lyapunov result is architectural, not scale-dependent.
+- **Cost of adoption**: M — 1 week. Phase A (3 days): port the sensitivity-scoring procedure to MLX and run it on Qwen3-Coder's 48 layers to emit a per-matrix sensitivity table. Phase B (4 days): feed the sensitivity table into KVTuner as a hard lower-bound constraint (high-sensitivity layers get a floor of, e.g., 5 bits; low-sensitivity value projections can go to 2 bits); add a sensitivity-based scheduler to G-KV so high-sensitivity heads re-score more often than low-sensitivity. The Lean theorems themselves are not required to port — we lift the Lyapunov *condition* (hidden-state norm growth vs error norm growth) as a runtime invariant that can be checked in fp16. Biggest risk: the sensitivity result is shown on pre-normalization transformers; Qwen3 uses RMSNorm which changes the Lyapunov constants — needs a re-derivation for RMSNorm (tractable; the paper's residual-contraction argument is norm-agnostic in structure).
+- **Local PDF**: research/2603.20991_lyapunov_compressed_transformer.pdf
+
+### [HeteroCache: A Dynamic Retrieval Approach to Heterogeneous KV Cache Compression for Long-Context LLM Inference](https://arxiv.org/abs/2601.13684) — 2601.13684
+- **Authors**: Zhiyuan Shi, Qibo Qiu, Feng Xue, Zhonglin Jiang, Li Yu, Jian Jiang, Xiaofei He, Wenxiao Wang
+- **Published**: 2026-01
+- **Hypercar goals it addresses**: Goal 1 (hierarchical multi-resolution KV — the gap #3 angle from pass 45), Goal 3 (3x decode speedup at 224K — directly targets the "constant-across-context" decode requirement), Goal 6 (fine-grained budget allocation reduces peak memory at long context)
+- **TL;DR**: Training-free dynamic-compression framework built on two observations: (1) attention heads exhibit diverse *temporal* heterogeneity — some heads' attention patterns are stable across tokens while others shift rapidly; (2) significant *spatial* redundancy exists among heads within the same layer. HeteroCache classifies heads by stability (temporal) and redundancy (spatial), then allocates larger cache budgets to rapidly shifting heads, while stable-redundant heads share compressed representations. A hierarchical storage mechanism keeps a subset of representative heads on the fast tier, monitoring attention shift and triggering asynchronous on-demand retrieval of contexts from a slower tier, hiding I/O latency. Reports up to 3x decode speedup at 224K context on multiple long-context benchmarks with no post-training.
+- **Why it matters for Hypercar**: Closes pass 46 gap #3 (hierarchical multi-resolution KV). Hypercar's DuoKV already does a *two-way* head split (retrieval vs streaming) — HeteroCache's stability/redundancy classification is the *next refinement*: it says the streaming vs retrieval binary is too coarse; some "streaming" heads are actually *stable* enough to share representations with their neighbors, freeing budget for the *unstable* streaming heads that currently suffer under uniform compression. This composes directly with DuoAttention's head classifier (already shipped) — we insert the stability/redundancy classifier as a *second pass* on top of the retrieval/streaming split. The asynchronous-CPU-retrieval mechanism maps cleanly to M4 Pro's unified-memory architecture — on unified memory, there is *no* CPU-GPU transfer, so HeteroCache's hierarchy collapses to a pure priority-queue in a single memory pool, which is strictly cheaper than the paper's cross-device version. The 3x decode speedup at 224K is on NVIDIA hardware with explicit CPU offload; on M4 Pro we lose the async-prefetch overlap benefit but *keep* the budget-reallocation benefit, which the paper's ablation attributes to 2/3 of the 3x gain.
+- **Cost of adoption**: M — 1 week. New file `omlx/kv_caches/hetero_cache.py` implementing the stability (temporal variance of attention weights over a window) and redundancy (cosine similarity of attention weights across heads within a layer) classifiers, run once at prefill-end. Budget allocator: high-stability + high-redundancy heads get 2-bit TQ with shared codebook; high-stability + low-redundancy heads get 3-bit TQ; low-stability heads get 4-bit or fp16. Wire in as `--kv-mode duo --hetero-cache`. Composes with PiKV expert-sharding (Task 203 — HeteroCache classification runs *within* each expert shard) and AhaKV entropy correction (Task 201 — entropy is a third signal to fold into the stability metric). Biggest risk: the stability/redundancy classifier uses a small calibration window (paper: 512 tokens at prefill end) which may not generalize beyond 16K — needs validation at 64K, 128K where head behavior is known to shift.
+- **Local PDF**: research/2601.13684_heterocache.pdf
+
+### [EFIM: Efficient Serving of LLMs for Infilling Tasks with Improved KV Cache Reuse](https://arxiv.org/abs/2505.21889) — 2505.21889
+- **Authors**: Tianyu Guo, Hande Dong, Yichong Leng, Feng Liu, Cheater Lin, Nong Xiao, Xianwei Zhang
+- **Published**: 2025-05
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 98% throughput gain on the infill pattern), Goal 4 (prefill — 52% latency reduction by avoiding re-prefilling the unchanged suffix), Goal 1 (enables a "reopen and edit" workflow for 200K+ documents without recomputing unchanged regions)
+- **TL;DR**: Systematic treatment of the fill-in-the-middle (FIM) prompt format specifically from the KV-cache-reuse angle. The standard FIM format `<P>prefix+inc<S>suffix<M>` invalidates the prefix KV whenever the incremental insertion `inc` is generated, because the suffix was built atop the old-prefix KV. EFIM restructures to `<P>prefix<S>suffix<M>inc` so that BOTH prefix and suffix KV are stable — only the tail `inc` region is generated fresh. Complementary technique: fragment-tokenization training handles subtoken boundaries at the insertion point (a standard FIM failure mode). Reports 52% average latency reduction and 98% throughput improvement on two LLMs.
+- **Why it matters for Hypercar**: Closes pass 46 gap #5 (streaming tokenization / incremental prefill). The OpenCode use case — edit line 500 of a 200K-token file and ask Hypercar to complete a function — is *exactly* the FIM pattern at scale. Hypercar currently pays a full re-prefill penalty on every edit, which at 200K context is >6 minutes wall-clock and is the single biggest latency pain point in the current server. EFIM's prompt-format restructuring is a *zero-model-change* intervention at our level — the entire win is in how we build the attention mask and where we position the insertion anchor. The suffix-preservation insight composes with session save/load: we persist both prefix and suffix KV independently, and on edit we only re-prefill the (small) changed region. The fragment-tokenization part needs training and is therefore skipped; we adopt the format-restructuring half. Biggest immediate wins: a "continue from cursor" endpoint that serves edits at near-session-reload latency (<1 s) instead of full-prefill latency (>6 min at 200K).
+- **Cost of adoption**: S — 2-3 days. Two changes. First, `omlx/hypercar_server.py` gets an `/v1/infill` endpoint accepting `{prefix, suffix, insertion}` separately — the server rebuilds the attention mask in EFIM order and prefills only `insertion`. Second, the session store (`omlx/kv_caches/session_store.py`) learns to save `(prefix_kv, suffix_kv)` as two independent blobs so reload handles the prefix-then-suffix composition correctly. No model changes. Biggest risk: RoPE position IDs must be assigned as if the prompt were in standard order — EFIM requires a small positional-reassignment trick on the suffix tokens (the paper details this); without it, RoPE-dependent heads produce garbage. This is a ~50-line patch but needs a NIAH validation to confirm no regression.
+- **Local PDF**: research/2505.21889_efim_infilling_kv.pdf
+
+### Pass 46 synthesis
+
+Pass 46 deliberately targeted four of the six gaps carried from pass 45:
+gap #2 (Lyapunov stability theory), gap #3 (hierarchical multi-resolution
+KV), gap #4 (prefix cache sharing with compressed KV), and gap #5
+(streaming tokenization / incremental prefill). Gap #6 (KV cache as a
+database) is partially closed by sequential-KV's PLT index, which is
+quite literally a prefix-indexed KV database. Gap #1 (Metal simdgroup
+tree attention kernel) remains open and — as in passes 43/44/45 —
+continues to look like an engineering task rather than a literature task.
+
+- Gap #2 (Lyapunov / formal stability): **closed by Structural Sensitivity
+  2603.20991**. First arxiv paper in 46 passes to provide machine-checked
+  Lean 4 bounds on compression error propagation. The residual-contraction
+  Lyapunov condition lifts cleanly to a runtime invariant.
+- Gap #3 (hierarchical multi-resolution KV): **closed by HeteroCache
+  2601.13684**. Temporal (stability) + spatial (redundancy) head
+  classifiers replace our binary retrieval/streaming split with a
+  four-way allocation.
+- Gap #4 (prefix cache sharing with compressed KV): **closed by
+  Sequential KV / PLT 2604.15356**. First paper to show prefix
+  deduplication and delta coding are orthogonal to per-vector
+  quantization, and to compose explicitly with TurboQuant (our existing
+  TQ3 backend).
+- Gap #5 (streaming tokenization / incremental prefill): **closed by
+  EFIM 2505.21889**. Zero-model-change prompt-format restructuring
+  that preserves BOTH prefix and suffix KV across edits.
+- Gap #6 (KV cache as a database): **partially closed**. Sequential KV's
+  PLT *is* a prefix-indexed KV database; a fuller "queryable KV store"
+  with range / approximate / semantic lookups remains open.
+
+**Highest-leverage finding**: EFIM's suffix-preservation trick. Every
+other paper in pass 46 is a medium-to-large engineering investment (1-2
+weeks) with a quality-or-memory win. EFIM is 2-3 days of server-level
+prompt routing for a 52% prefill latency reduction AND a 98%
+throughput gain on the exact user workflow (edit a large file, ask for
+a completion) that is currently the most painful UX failure mode of the
+Hypercar server. Ship first, measure second.
+
+**Revised composable end-state configuration v46**:
+- fp16 DuoKV retrieval heads (shipped), with HeteroCache stability /
+  redundancy second-pass classifier (NEW, Task 206)
+- KVSculpt-distilled KV on streaming heads (Task 197), budget by
+  KV-CoRE's NER (Task 198) AND Lyapunov-sensitivity floor from
+  Structural Sensitivity (NEW, Task 207), encoded with CommVQ (Task 193)
+- Sequential-KV PLT index + delta predictor layered on top of TQ3
+  across sessions (NEW, Task 205) — unifies session save/load into a
+  prefix-indexed KV database
+- AhaKV entropy-corrected scorer (Task 201)
+- G-KV decode-time re-scoring (Task 202), composed with QuantSpec
+  (Task 192), SpecPV (Task 200), MoE-Spec (Task 194)
+- PiKV expert-sharded layout (Task 203)
+- DeltaKV residual dedup (Task 199)
+- MTI integrity monitor (Task 204)
+- EFIM infill endpoint and suffix-preserving session store (NEW, Task
+  208) — the near-term UX unblock for edit-a-200K-file workflows
+- VQ-LLM Metal codebook-cache kernel (Task 189)
+- RocketKV two-stage eviction (Task 195)
+- DHSA prefill sparsity (Task 191)
+- LongRoPE position schedule (Task 196)
+
+**Memory budget (revised at 1M, v46)**: Sequential-KV's PLT layer stacks
+multiplicatively on top of Pass 45's projected 3-6 GB KV at 1M for
+code-heavy sessions, pushing the worst-case cross-session footprint down
+further when OpenCode reopens the same repository (realistic workflow).
+Projected 2-4 GB KV at 1M with PLT + TQ3 + HeteroCache budget
+reallocation on a single active session, with additional amortization
+across concurrent sessions that share repository prefixes.
+
+**What Pass 46 deliberately did NOT cover**:
+- FlashAttention-4 (2603.05451). Blackwell-specific (B200/GB200);
+  Apple Silicon has no equivalent tensor-memory / 2-CTA mode; not
+  portable. Held.
+- KV Packet (2604.13226). Introduces *trainable* soft-token adapters
+  for context-independent KV caching — disqualifying (we cannot
+  retrain Qwen3-Coder). The *concept* of treating cached documents as
+  immutable "packets" is captured in our session save/load, so partial
+  conceptual overlap; held.
+- PrefillShare (2602.12029). Multi-model disaggregated serving; we
+  serve a single model. Held.
+- Log-Linear Attention (2506.04761), Kimi Linear (2510.26692),
+  MemMamba (2510.03279). All require training a new architecture;
+  disqualifying for the Qwen3-Coder substrate.
+- TokenDance (2604.03143), DroidSpeak (2411.02820). Multi-agent /
+  cross-LLM KV sharing; orthogonal to the single-model long-context
+  problem. Held for a future multi-agent pass if we build that.
+- Selective KV-Cache Sharing (2508.08438). Focuses on timing-side-channel
+  *security*, not compression. Composes conceptually with MTI
+  (Task 204) but is a distinct threat model; held.
+- PHOTON (2512.20687). Already in LIT_REVIEW from a prior pass.
+- A Non-Asymptotic Theory of Seminorm Lyapunov Stability (2502.14208).
+  Pure math — general seminorm-contractive iterative algorithms. The
+  Structural Sensitivity paper is the transformer-specific application
+  and subsumes it for our purposes. Held.
+
+**Gap status for pass 47**:
+1. **Metal simdgroup tree attention kernel** (carried from passes 43-46,
+   open): still no arxiv-grade paper. The gap is now four passes deep;
+   recommend Pass 47 pivot to either (a) HPC / CUDA / ROCm warp-primitive
+   papers whose insight ports to simdgroup, or (b) accepting this as a
+   pure engineering task and building it directly with the existing
+   Metal shading-language docs.
+2. **KV as a queryable database (beyond prefix)** (gap #6, partially open):
+   sequential-KV's PLT is a prefix-indexed store. A richer query
+   interface — approximate semantic lookup, range queries, time-based
+   retention policies — remains unexplored. Possible search: embedded
+   vector databases, online approximate-nearest-neighbor indices that
+   fit in on-device memory.
+3. **Online KV recompression as access patterns evolve** (pass 45
+   option #11, carried): as some segments become "cold" during a long
+   session, recompressing them at a tighter bit width would free
+   memory. No paper found yet that does this with measurement-driven
+   triggers; search "adaptive bit-width KV online" next pass.
+4. **Attention kernel fusion across transformer layers** (pass 45
+   option #12, carried): Deep Kernel Fusion (2602.11808) was adjacent
+   but not specifically KV-oriented; search for "cross-layer attention
+   fusion KV" and "streaming multi-layer attention" for pass 47.
+5. **Speculative cache warmup / preheat during idle** (pass 45 option
+   #13, carried): with session persistence, we could speculatively
+   reload sessions that the user is likely to reopen. No paper found;
+   likely engineering, not literature.
+6. **Constant-memory attention variants that compose with existing
+   weights** (pass 45 option #15, carried): Kimi Linear etc. require
+   retraining. Search for post-hoc linearization / distillation that
+   can convert Qwen3-Coder to a bounded-state cache without retraining
+   from scratch.
+
+Forty-six passes. Four papers this round, total 196 across 65+
+disciplines. Pass 46 closes four of the six Pass 45 gaps; Pass 45's
+quality / efficiency / security triangle now gains a fourth vertex —
+*multi-session economics*, via sequential-KV's cross-session prefix
+sharing and EFIM's cross-edit KV reuse. The Hypercar compression stack
+shifts from "compress one session well" to "compress a *workflow* well":
+the same repository opened across a week of OpenCode sessions pays the
+prefix cost once, not seven times. Meow, nyaa, purr.
 
