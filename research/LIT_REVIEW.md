@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-21 (pass 48)_
+_Last updated: 2026-04-21 (pass 49)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -13678,5 +13678,458 @@ The M4-Pro-specific benchmark numbers in 2603.04428 finally give us a
 direct hardware reference to calibrate against. Four gaps closed or
 partially closed, two carried and two new gaps introduced for pass 49.
 Meow, nyaa, purr.
+
+## Pass 49 — 2026-04-21 — Goal 1 Engineering: Reasoning-Aware Redundancy, Online Subspace Adaptation, Auto-Budget Query Voting, Agentic KV TTL
+
+Pass 49 targets four of the pass-48 open gaps: gap #1 (online
+retrospective KV recompression — carried from passes 45, 46, 47, 48),
+gap #5 (reasoning-model KV cache — new in pass 48), gap #6 (on-device
+inference-time index adaptation — new in pass 48), and the
+adjacent angles #9 (learned per-query token budget) and #10 (cache-aware
+prompt reuse in agentic workflows). Pass 49 deliberately does NOT
+chase gap #4 (Metal kernel literature) — the surveyed 2026 papers
+(vllm-mlx, MLX-M5, MLX benchmarking) are blog-and-benchmark material
+already reflected in CLAUDE.md's current state; no new *paper-level*
+Metal kernel work surfaced this pass, and the actionable Metal path
+forward remains Task 211 (Tawa-style hand port).
+
+### R-KV — Redundancy-Aware KV Cache Compression for Reasoning Models (NeurIPS 2025)
+- **arXiv**: 2505.24133
+- **Goals addressed**: **1** (90% KV memory savings at 10% budget, opening reasoning-heavy 1M workloads),
+  **2** (reasoning-workload quality — the Goal 2 breadth claim requires surviving CoT-style evals, and
+  existing heavy-hitter strategies fail there), **3** (6.6× decode throughput vs full cache on long CoT).
+- **Why it matters for Hypercar**: Every pass-40+ KV-compression paper has been validated primarily on
+  instruction-tuned models. Our Goal 2 claim ("4 independent evals beating GPT-4") currently leans on
+  HumanEval, MMLU-Pro, RULER, NIAH, LiveCodeBench — all short-output. The moment we add a reasoning-style
+  eval to the Goal 2 breadth set (e.g. ARC-AGI, AIME, GPQA), our shipped SnapKV/H2O-lineage evictors
+  become the bottleneck: R-KV specifically shows that attention-based heavy-hitter eviction *breaks* on
+  long CoT because the chain repeatedly revisits earlier reasoning steps — the "most-attended-so-far"
+  heuristic is fooled by high-redundancy reflection patterns. R-KV's fix is to compose attention-based
+  importance with an explicit redundancy term so reflection-echo tokens (token *t* that restates what
+  token *t-200* already said) are penalized. On Qwen3-Coder-30B-A3B our existing CAOTE (Task 100) already
+  has a redundancy-adjacent signal (value-vector distance to V-mean), but it's not reasoning-aware:
+  CAOTE evicts *low*-value-magnitude tokens, whereas R-KV evicts *high*-redundancy tokens regardless of
+  magnitude. The two compose: run CAOTE first for the easy-evict tail, then R-KV redundancy for the
+  harder middle-band.
+- **Key mechanism**: Three-component score = attention importance + dynamic redundancy + joint
+  selection. The redundancy term is a cosine-similarity check between each candidate token's K vector
+  and the running window of K vectors in the last L tokens; tokens whose K closely matches a recent K
+  are flagged redundant *even if they have high attention*. The joint selector uses a weighted sum with
+  the weight tuned per decode step based on the current attention entropy (high-entropy steps — many
+  candidates look equally important — shift weight toward redundancy; low-entropy steps trust attention
+  alone). Training-free, drop-in on any existing attention-based evictor.
+- **Result on their benchmarks**: 100% of full-cache performance at 10% budget, 105% at 16% budget
+  (i.e. R-KV *beats* full cache because it prunes reflection noise). 6.6× throughput on reasoning
+  workloads. Two reasoning models tested (DeepSeek-R1-Distill-Qwen-7B, QwQ-32B) — QwQ-32B is close
+  enough to our Qwen3-Coder-30B-A3B architectural family that the result should transfer with modest
+  calibration.
+- **Hardware**: NVIDIA A100 80GB and H100 80GB. They use HuggingFace Transformers with FlashAttention-2
+  (not specifically applicable to Metal), but the redundancy scoring itself is MLX-portable —
+  one extra cosine-similarity matmul per eviction round.
+- **Composition with existing stack**: Stacks cleanly on CAOTE (Task 100, shipped) — CAOTE is the
+  V-vector-distance term, R-KV's redundancy is the K-vector-distance term. Stacks on SnapKV (shipped)
+  — R-KV is a scoring upgrade, not a replacement. Stacks on BUZZ segmented eviction (shipped) —
+  redundancy check runs within each segment. Does NOT stack on Wave Index (Task 213) because Wave
+  Index already handles retrieval-head KV via clustering; R-KV is strictly for streaming-head eviction.
+- **Cost of adoption**: S — 3 days. One new file `omlx/kv_caches/redundancy_score.py` with the
+  cosine-similarity redundancy check, one change to `omlx/patches/snapkv.py` adding the weighted-sum
+  composition with existing scores, one new benchmark phase in `hypercar_bench` that runs the redundancy-
+  stress eval (e.g. a passkey-at-depth test where the prompt is a long CoT trace with many reflections).
+  The tricky bit: computing pairwise K similarities within the eviction window is O(L²) in the window
+  size, so cap the window at L=1024 tokens (their default) — beyond that the cost overwhelms the win.
+  Biggest risk: Qwen3-Coder is not trained for extended reasoning, so the redundancy pattern may be
+  weaker than in their DeepSeek-R1-Distill and QwQ test models — the fix may not help much on code
+  workloads and may add 1-3% decode overhead for zero gain. Mitigation: gate R-KV behind a
+  `--reasoning-aware-eviction` flag defaulted OFF; enable only when reasoning-style evals are being
+  gated.
+- **Local PDF**: research/2505.24133_rkv_redundancy_reasoning.pdf
+
+### OjaKV — Context-Aware Online Low-Rank KV Cache Compression with Oja's Rule
+- **arXiv**: 2509.21623
+- **Goals addressed**: **1** (online-adapted low-rank compression is the "online retrospective
+  recompression" gap we've carried for five passes), **3** (continual adaptation means the subspace
+  stays aligned as context evolves — no catastrophic quality collapse at 256K+ even if the prompt's
+  topic drifts mid-sequence), **6** (low-rank factors take O(d × r) memory regardless of context length,
+  where d=128 head dim and r is the adapted rank).
+- **Why it matters for Hypercar**: This is the first paper in the entire 49-pass review that implements
+  **online, incremental subspace adaptation** during decoding rather than offline-learned projections.
+  Our current low-rank compression story is limited to static quantization codebooks (CommVQ pass 41,
+  KVSculpt pass 44, A²ATS pass 48): all three freeze the codebook at prefill end, which works for
+  instruction-tuned single-turn workloads but degrades on multi-turn agentic workflows where the
+  conversation's topic distribution drifts every few turns. OjaKV's insight: the KV matrix's
+  principal components can be tracked *incrementally* via Oja's rule (an online PCA update) with
+  O(d × r) work per decoding step, keeping the subspace aligned to whatever the current context is
+  about. On our agentic benchmark this directly addresses the "topic drift penalty" — currently,
+  a code-review session that switches from Python to Rust after 20K tokens sees retrieval-head
+  degradation because the CommVQ codebook was calibrated on Python activations. OjaKV's online
+  adaptation would re-align the low-rank basis as the Rust content accumulates. Second insight
+  (strategic hybrid storage): OjaKV preserves the first-K and last-K tokens in **full rank** while
+  compressing the middle — this mirrors our existing DuoAttention-style retrieval/streaming split
+  but does it with low-rank rather than quantization. The paper claims *accuracy improvements* on
+  very-long-context reasoning benchmarks, which is rare — most compression papers report "maintains
+  accuracy at high compression" as their ceiling.
+- **Key mechanism**: (a) Anchor policy: preserve first 128 and last 128 tokens at full rank (matching
+  StreamingLLM's sink pattern). (b) Online Oja update: maintain a basis matrix U ∈ ℝ^{d×r} per head,
+  initialized from a prefill-stage SVD of the first 1K K vectors. For each new K vector k_t during
+  decoding: `U ← (U + η × k_t × k_tᵀ × U) / normalize()`, where η is the Oja learning rate. (c)
+  Compressed storage: intermediate tokens stored as low-rank codes c_t = Uᵀ × k_t (r floats instead of
+  d = 128). (d) Periodic lightweight refresh during decode — every N steps, one extra Oja update pass
+  over a sample of recent Ks to keep basis drift bounded.
+- **Result on their benchmarks**: Strongest gains on very-long-context reasoning (128K+); up to 2.5×
+  better perplexity than static low-rank baselines at equal compression ratio; on-par or better than
+  quantization methods at equivalent budgets. Tested on Llama-3.1-8B, Llama-3.2-3B.
+- **Hardware**: NVIDIA A100 in paper. Oja update is d × r matmul per step — at d=128, r=32, that's
+  4K floats × 32 = 128K FMAs per token per head — well under 1% of Qwen3-Coder's per-token FLOP
+  budget. MLX-portable with no kernel work.
+- **Composition with existing stack**: OjaKV is a *middle-band* compressor. DuoKV already handles the
+  retrieval/streaming split; OjaKV would replace the streaming-head *quantization* (currently fp16 ring
+  buffer) with an online-adapted low-rank code for tokens in positions [128, L-128]. Retrieval heads
+  stay as Wave Index (Task 213). Composes with R-KV (above) as an alternative streaming-head strategy
+  — ablate against each other rather than compose (both operate on the same tokens). Composes with
+  CommVQ (Task 193) in the other direction: CommVQ's static codebook plus OjaKV's online basis is
+  overkill; ship one or the other. Composes with A²ATS (Task 214) as an anchor-aware extension —
+  A²ATS's WRoPE still applies to the preserved first-128 / last-128 full-rank tokens.
+- **Cost of adoption**: M — 1 week. New file `omlx/kv_caches/oja_lowrank.py` implementing the
+  per-head online Oja update, the anchor-aware storage layout, and the incremental basis refresh.
+  One change to `omlx/kv_caches/duo.py` to replace the streaming-head ring-buffer with OjaKV-compressed
+  storage. One new prefill-stage SVD initializer (torch-compatible, one-shot at context start). Wire
+  in as `--oja-streaming` with `--oja-rank R` (default 32, = 4× compression over fp16 d=128) and
+  `--oja-lr η` (default 1e-3, per-paper). The big risk: Oja's rule is stable on stationary
+  distributions but the MLX autograd-free path may accumulate numerical error over 1M tokens — the
+  paper runs to 128K. Mitigation: periodic (every 16K tokens) SVD re-init from a sliding window of
+  recent Ks to reset drift. Secondary risk: at r=32 we're compressing d=128 to 32, a 4× ratio that's
+  gentler than our current TQ3 (~5.3×) — only wins if accuracy gain offsets the smaller memory
+  saving. Ablate carefully; if accuracy-at-equal-memory is worse than Wave Index + TQ3, revert.
+- **Local PDF**: research/2509.21623_ojakv_online_lowrank.pdf
+
+### GVote — Adaptive Per-Request KV-Cache Compression Without Manually Setting Budget (ICLR 2026)
+- **arXiv**: 2509.03136
+- **Goals addressed**: **1** (per-request automatic budget sizing — 2× memory reduction on average,
+  which on our 48 GB M4 Pro is the difference between 2× simultaneous 1M sessions and 1× 1M session),
+  **2** (the paper's argument is that fixed budgets *hurt* accuracy on simple tasks AND collapse on
+  hard tasks — auto-sizing is a strict Pareto improvement), **3** (dynamic budget means fewer
+  speculative-decode rejections on easy prompts, higher effective throughput).
+- **Why it matters for Hypercar**: Every knob in our current config is a *fixed* number — SnapKV keep
+  ratio, BUZZ segment size, CAOTE evict threshold, DuoAttention head count, TQ3 bit budget, Wave Index
+  cluster count. These were all calibrated on representative workloads, but the workload distribution
+  in a real coding session is *bimodal*: 80% of turns are "tweak three lines" (short, easy, attention
+  is sparse) and 20% are "refactor the whole repo" (long, complex, attention is dense). A single
+  compression setting has to straddle both, which means it's suboptimal for both. GVote's key insight:
+  at prefill end, *sample* K=128 synthetic future queries from the hidden-state Gaussian distribution,
+  compute their attention patterns against the current KV, and take the *union* of their top-k
+  attention sets as the keep mask. The budget auto-sizes to match the query-diversity signal — simple
+  prompts produce low-diversity sample queries (tight union, small budget) while complex prompts
+  produce high-diversity sample queries (broad union, large budget). Training-free, deterministic
+  given a seed.
+- **Key mechanism**: (a) Prefill-end snapshot: capture hidden states H ∈ ℝ^{L×d} at the final
+  transformer layer. (b) Gaussian fit: empirically estimate μ, Σ of the hidden-state distribution
+  (diagonal Σ works as well as full Σ in their ablation). (c) Monte Carlo query sampling: draw K=128
+  synthetic hidden vectors h_i ~ N(μ, Σ), project each through the model's Q projection (the actual
+  weight matrix W_Q), and compute attention scores h_i^T × W_Q × K^T against the stored K cache. (d)
+  Keep-mask union: for each sampled query, take its top-k attention indices (k chosen from the
+  attention entropy of that query's scores); union across all 128 samples; store the union as the keep
+  mask for the rest of decoding. (e) The union's size IS the auto-budget.
+- **Result on their benchmarks**: ~2× average memory reduction (union is ~50% of full cache, not
+  fixed). On Multi-Doc QA: 0.35 accuracy at 10% memory vs existing methods that need 20%+ for lower
+  accuracy. Tested on Llama-3-8B, Llama-3-70B, Qwen2.5-7B, Qwen2.5-32B, multi-doc-QA and
+  needle-in-a-haystack benchmarks.
+- **Hardware**: NVIDIA A100 80GB. The Monte Carlo sampling step is K=128 × one forward-pass attention
+  computation, which is ~128 × L × d FLOPs — cheap (seconds) at L=128K, negligible against the
+  multi-minute prefill itself. On M4 Pro this is mx.random.multivariate_normal (MLX-native) +
+  one mx.matmul + one mx.topk per sample.
+- **Composition with existing stack**: GVote is a *meta-compressor* — it runs once at prefill end
+  and outputs the keep mask that existing evictors (SnapKV, CAOTE, BUZZ) then respect. So: SnapKV
+  picks the INITIAL top-K based on actual Q vectors, GVote then augments with synthetic-Q votes to
+  catch tokens the real Q missed. Stacks cleanly with every existing eviction method — it's an
+  independent signal source. Stacks with R-KV (above) — GVote picks *which* tokens to keep, R-KV
+  picks *which redundant tokens to drop*; opposite ends of the eviction pipeline. Stacks with Wave
+  Index (Task 213) — GVote runs on streaming heads, Wave Index handles retrieval heads.
+- **Cost of adoption**: S — 4 days. New file `omlx/kv_caches/query_voting.py` implementing the
+  Gaussian fit, Monte Carlo sampling, and union aggregation. One change to `omlx/patches/snapkv.py`
+  to take an external "augment mask" and OR it with the SnapKV top-K. Wire in as
+  `--query-vote-augment` with `--vote-samples N` (default 128) and `--vote-seed S` for
+  reproducibility. Biggest risk: the Gaussian hidden-state assumption may break on our code
+  calibration set (code has different activation statistics than natural language — more bimodal,
+  heavier tails). Mitigation: empirically check hidden-state Gaussianity on Qwen3-Coder-30B-A3B over
+  a code corpus; if non-Gaussian, use a Gaussian mixture (2-3 components) for the sampling step. No
+  training required either way. Secondary risk: the one-shot prefill-end sampling doesn't capture
+  query drift over a very long decode — on 32K+ decode traces the keep mask may become stale;
+  mitigation is periodic resampling every 4K decode steps (small overhead).
+- **Local PDF**: research/2509.03136_gvote_adaptive_budget.pdf
+
+### Continuum — Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live
+- **arXiv**: 2511.02230
+- **Goals addressed**: **3** (eliminates re-prefill cost on subsequent agent turns — 1.12-3.66× delay
+  reduction, 1.10-3.22× throughput), **6** (the M4 Pro becomes usable for real agentic coding because
+  tool-call-heavy sessions don't thrash the KV cache between turns).
+- **Why it matters for Hypercar**: Our `hypercar_server.py` currently follows the same "evict finished
+  KV cache when new request arrives" policy Continuum specifically calls out as broken for agentic
+  workloads. Task 216 (block-pool multi-agent session store, pass 48) addresses the *spatial* version
+  of this problem (different agents = different block pools). Continuum addresses the *temporal*
+  version: within a single agent's multi-turn session, the tool-call pause between turn N and turn
+  N+1 is typically 0.5-8s (depending on tool), during which our current server happily evicts that
+  agent's KV cache if another request needs memory — then the agent's turn N+1 pays the full re-prefill
+  cost. Continuum fixes this by *predicting* tool-call durations (from the tool name + recent-history
+  statistics) and *pinning* the KV cache in GPU memory with a TTL equal to "expected tool duration +
+  small safety margin". The per-agent multi-turn benchmark in their paper (mini-swe-agent on SWE-Bench,
+  which is *exactly* our target workload) shows 3.66× reduction in end-to-end delay on long-horizon
+  debugging traces. The prediction itself is cheap: a sliding window of last-10 tool calls per tool
+  name, EMA of their durations, predict next call = EMA + 1σ.
+- **Key mechanism**: (a) Tool-call duration predictor: maintain `Dict[tool_name, SlidingWindow]` per
+  session. For each completed tool call, update the sliding window with the observed duration.
+  Predict next call's duration as EMA + 1 standard deviation (conservative upper bound). (b) TTL
+  assignment: when an agent's turn-N output finishes, instead of evicting its KV cache, mark it with
+  a TTL timestamp = now + predicted_duration. (c) Admission control: when new requests arrive, the
+  scheduler looks at the TTL-pinned caches — if the sum of live-session memory + the new request fits
+  in the memory budget, admit the new request; if not, evict the oldest-TTL session first (most likely
+  to be "dead" — its tool call has probably finished but the agent abandoned). (d) Robustness: if
+  turn N+1 arrives *before* the predicted TTL, the cache is still resident — zero-cost cache hit. If
+  turn N+1 arrives *after* the TTL (the tool took longer than predicted), the cache has been evicted —
+  pay the re-prefill cost, but no worse than the current baseline.
+- **Result on their benchmarks**: mini-swe-agent on SWE-Bench: 1.12-3.66× delay reduction, 1.10-3.22×
+  throughput gain, across multiple model sizes (Llama-3-8B through Qwen2.5-72B). Tool-call prediction
+  accuracy: 85%+ across the SWE-Bench tool distribution (bash, edit, browse).
+- **Hardware**: NVIDIA A100 80GB per instance, 4-GPU cluster. Single-GPU behavior is the subset
+  relevant to us. The TTL scheduler is a few hundred lines of Python; no kernels needed.
+- **Composition with existing stack**: Directly complements Task 216 (block-pool multi-agent session
+  store). Task 216 handles *inter-agent* memory separation; Continuum handles *intra-agent multi-turn*
+  cache retention. Both should ship together for the "multi-agent coding session" UX. Stacks with
+  session save/load (shipped): Continuum's TTL eviction should write to disk instead of discarding,
+  matching our existing session-save semantics. Independent of all compression work (R-KV, OjaKV,
+  GVote, Wave Index) — Continuum is a *scheduling* contribution, not a compression one.
+- **Cost of adoption**: S — 4 days. New file `omlx/serving/ttl_scheduler.py` implementing the
+  per-session sliding-window predictor, the TTL admission-control queue, and the integration with
+  the existing server's session store. One change to `omlx/hypercar_server.py` to route new requests
+  through the TTL scheduler instead of the current greedy-evict policy. Wire in as
+  `--agent-ttl-scheduling` (defaulted ON when `--block-pool` is on) with `--ttl-margin-sigma K`
+  (default 1.0, = one standard deviation above EMA). Biggest risk: the SWE-Bench tool distribution
+  Continuum benchmarked on is different from our OpenCode workflow — `bash` and `edit` have very
+  different duration profiles. Mitigation: log tool durations from the first 100 turns of real
+  OpenCode sessions, validate the EMA + 1σ prediction before committing to the scheduler. Secondary
+  risk: under adversarial inputs (a benchmark that uses every tool once and evicts its own cache
+  before re-use), TTL scheduling is a no-op; this isn't a regression but a missing win. Third risk:
+  the predictor is unreliable for the *first* tool call of a new tool name — fall back to a
+  global-default TTL (5 seconds) for cold-start tools.
+- **Local PDF**: research/2511.02230_continuum_agent_ttl.pdf
+
+### Pass 49 synthesis
+
+Pass 49 closes three of the six gaps carried or opened by pass 48:
+
+- Gap #1 (online retrospective KV recompression, carried from passes
+  45-46-47-48): **closed by OjaKV (2509.21623)**. Oja's rule gives us
+  an online PCA update whose cost is O(d × r) per decode step — cheap
+  enough to run continuously rather than retrospectively. This solves
+  a different formulation of the carry-over gap than originally posed
+  (re-quantize cold segments at lower bit widths), but *better*: the
+  low-rank basis adapts continuously so there's no "cold segment" at
+  all — the whole cache stays aligned to the evolving distribution.
+  The original retrospective-requantize formulation is now obsolete.
+- Gap #5 (KV cache for reasoning models, new in pass 48): **closed by
+  R-KV (2505.24133)**. Shows explicitly that attention-based heavy-hitter
+  strategies BREAK on long CoT because reflection-echo tokens confuse the
+  "most-attended" signal. The redundancy term (cosine distance in K
+  space) is cheap to add and composes with our existing eviction stack.
+  This closes the reasoning-workload quality gap in Goal 2 before we
+  add a reasoning eval to the Goal 2 breadth set (pre-emptive fix).
+- Gap #6 (on-device inference-time index adaptation, new in pass 48):
+  **partially closed by OjaKV**. OjaKV's Oja updates ARE on-device
+  inference-time adaptation — no fine-tuning, no gradients, just a
+  running eigenvector estimate. The adjacent angle (learning Wave
+  Index cluster centroids online) remains speculative and is
+  specifically worth more exploration in pass 50.
+
+The remaining carried gap is #4 (Metal-specific attention kernel
+papers): pass 49 deliberately did not pursue further after confirming
+with two targeted searches that no new *paper-level* Metal kernel work
+has surfaced since pass 48. Task 211 (Tawa-style hand port) remains
+the actionable path.
+
+GVote (2509.03136) and Continuum (2511.02230) address adjacent angles
+#9 (learned query budget) and #10 (cache-aware prompt reuse) rather
+than named pass-48 gaps — both offer high-leverage UX wins (GVote:
+automatic per-request budget sizing; Continuum: no re-prefill on
+multi-turn agent tool calls) that compose with the existing stack
+without architectural changes.
+
+**Highest-leverage finding**: Continuum (2511.02230). Its 1.12-3.66×
+end-to-end delay reduction on mini-swe-agent / SWE-Bench is the single
+biggest UX improvement available in pass 49, and it requires *no*
+model or compression changes — just a scheduling fix on top of
+Task 216's block-pool. The fact that this paper specifically benchmarks
+*our target workload* (agentic coding with tool calls on SWE-Bench)
+is rare; every other KV-compression paper in 49 passes has benchmarked
+either natural-language QA or single-turn code completion. Task 217
+ships this before any compression change.
+
+**Runner-up finding**: GVote's auto-budget-by-query-voting. The
+insight that "the right budget *is* the union of plausible future
+queries' top-k" is the cleanest formulation yet of the
+compression-vs-accuracy trade-off, and the Gaussian-sample +
+Monte-Carlo-union operationalization is trivially portable. Ships as
+Task 219. The other two papers (R-KV, OjaKV) are strict upgrades to
+already-shipped components rather than architectural expansions, which
+is the right shape for pass 49 — pass 48 made big architectural
+commitments (RetroInfer Wave Index, SpeCache, block-pool), pass 49
+should solidify, not expand.
+
+**Revised composable end-state configuration v49**:
+- fp16 DuoKV retrieval heads (shipped), with HeteroCache second-pass
+  classifier (Task 206), LoLA self-recall promotion (Task 212),
+  RetroInfer Wave Index for sublinear decode retrieval (Task 213) —
+  O(K) per-decode attention independent of context length.
+- Streaming heads: replace fp16 ring-buffer with **OjaKV online
+  low-rank compression** (NEW, Task 218) — O(d × r) per-decode basis
+  update, continuous alignment to evolving context. First-128 and
+  last-128 tokens pinned full-rank (anchor policy).
+- Eviction scoring stack: SnapKV top-K (shipped) + CAOTE V-distance
+  (shipped) + BUZZ segmented (shipped) + **R-KV K-redundancy for
+  reasoning workloads** (NEW, Task 220) + **GVote synthetic-query
+  augment mask** (NEW, Task 219) + AhaKV entropy correction (Task 201)
+  + G-KV global rescoring (Task 202).
+- KVSculpt-distilled KV on streaming heads (Task 197), budget by
+  KV-CoRE NER (Task 198) + Lyapunov-sensitivity floor (Task 207) +
+  GVote auto-budget (Task 219) — three independent budget signals
+  that compose as min().
+- A²ATS query-aware codebook with WRoPE for retrieval-head quantization
+  (Task 214) — codebook design orthogonal to OjaKV (different tier).
+- Sequential-KV PLT prefix-hash index (Task 205).
+- Speculative decoding stack: QuantSpec (Task 192), SpecPV (Task 200),
+  MoE-Spec (Task 194), SpecAttn (Task 209), SpeCache speculative KV
+  prefetch (Task 215).
+- PiKV expert-sharded layout (Task 203) nested inside per-agent
+  block-pool (Task 216) with **Continuum TTL scheduling** (NEW, Task
+  217) for multi-turn agent cache retention.
+- DeltaKV residual dedup (Task 199), MTI integrity monitor (Task 204),
+  EFIM infill endpoint (Task 208).
+- Infrastructure: SparseServe layer-segmented prefill + working-set
+  monitor (Task 210), Tawa aref warp-specialization on Metal TQ3 SDPA
+  (Task 211), VQ-LLM Metal codebook-cache kernel (Task 189).
+- Position / context-length: LongRoPE schedule (Task 196), RocketKV
+  two-stage eviction (Task 195), DHSA prefill sparsity (Task 191).
+
+**Memory budget (v49, 1M context)**: unchanged from v48 at the
+wired-memory level (Wave Index still dominates: ~130 MB for retrieval
+K index). OjaKV replaces the streaming-head fp16 ring buffer (~200 MB
+at 1M if we kept full fp16) with a low-rank representation at r=32
+(~50 MB at 1M). Net: 150 MB saved at streaming-head tier, which at the
+1M projection frees ~0.5 GB total system memory. Peak Metal during
+decode drops from ~22 GB to ~21.5 GB. Peak during prefill unchanged
+(SparseServe layer-segmentation dominates).
+
+**What Pass 49 deliberately did NOT cover**:
+- ThinKV (2510.01290, already cited pass 42). The thought-adaptive
+  pattern composes with R-KV but pre-dates it; R-KV's redundancy term
+  is a strict upgrade on ThinKV's thought-segmentation heuristic.
+- RLKV (2510.08525). RL-guided head selection for reasoning —
+  requires RL training on reasoning traces, which violates our
+  training-free mandate. Held. If we ever drop the training-free
+  constraint, revisit.
+- Hold Onto That Thought (2512.12008, already cited). Benchmark
+  paper confirming heavy-hitter breakage on reasoning — R-KV cites
+  the same finding and provides the fix, so this paper's diagnostic
+  role is subsumed by R-KV's solution.
+- Trigonometric KV (2604.04921, already cited). Dominated by R-KV
+  on reasoning benchmarks in their own paper.
+- IceCache (2604.10539). DCI-tree hierarchical index for memory-efficient
+  KV — pre-dated by Wave Index's formal error bound (pass 48). Held.
+- STAC (2603.20284). Spatio-temporal compression for streaming 3D
+  reconstruction — not text-LLM-relevant. Held.
+- InfoFlow KV (2603.05353). Information-flow-aware KV recomputation
+  for RAG document-chunk caches. Interesting but our RAG workload is
+  "agentic coding over repo", not document-chunk RAG; different
+  invariants. Held for a future RAG-focused pass.
+- CacheClip (2510.10129), KV Packet (2604.13226, already cited),
+  Fusion RAG Cache (2601.12904), RAG-DCache (2504.11765). RAG-specific
+  precomputed-KV work — same hold reason as InfoFlow KV.
+- KVCompose (2509.05165). Structured composite-token KV compression —
+  domain overlap with R-KV (also token-level) but R-KV's reasoning
+  specificity is more directly useful given pass-49's goal-#2
+  reasoning gap.
+- Adaptive Layer Selection (2601.07667), AutoSelect / noise gating
+  (2603.07135), ASAP (2603.14549). Training-free layer/token pruning
+  for MLLMs — MLLM focus, not directly relevant to Qwen3-Coder.
+- Agentic Plan Caching (2506.14852). Plan-level caching across
+  semantically similar tasks — interesting but orthogonal to KV
+  caching; held for a prompt-engineering-focused pass.
+- DualPath (2602.21548). Storage-bandwidth bottleneck optimizations
+  for agentic inference — assumes SSD offload architecture we're not
+  using on M4 Pro (too slow vs unified memory); held.
+- Combating the Memory Walls (2509.09505). Survey of agentic-LLM
+  memory optimizations — mostly summary of already-cited papers.
+  Held.
+- SeerAttention-R (2506.08889). Sparse-attention adaptation for long
+  reasoning — requires training, violates mandate. Held.
+- DELTA (2510.09883). Dynamic layer-aware token attention — overlap
+  with LayerSkip (already cited) and SparseServe. Held.
+- SparseSpec (2512.01278). Sparse self-speculative decoding — overlap
+  with SpecAttn (Task 209) and QuantSpec (Task 192). Held.
+- Where Matters More Than What (2603.11564). Position-aware pseudo-
+  queries for decoding-aligned KV compression — similar flavor to
+  GVote (pseudo queries) but fixed positional scheme; dominated by
+  GVote's sampled-query approach. Held.
+- Shared Disk KV Cache (2504.11765). RAG-specific, see above.
+- ShadowServe (2509.16857). Distributed prefix caching for multi-node
+  — no multi-node on M4 Pro. Held.
+- Beyond RAG (2503.04973). Task-aware compressed KV for knowledge
+  reasoning — trains a task classifier, violates training-free
+  mandate. Held.
+- vllm-mlx, MLX-M5, MLX benchmark (various). Engineering/benchmark
+  material reflected in CLAUDE.md state; no paper-level KV or kernel
+  novelty above pass-48's 2603.04428.
+
+**Gap status for pass 50**:
+1. **Metal-specific attention kernel papers** (carried from pass 48):
+   still open. Pass 49's targeted search surfaced only blog-and-
+   benchmark material. Pass 50 search: "MSL kernel transformer
+   attention Apple", "MLX custom kernel metal shading language
+   decode", and potentially pivot to blog / technical report evidence
+   (WWDC 2026 MLX talks, Anthropic/Apple collaboration papers if
+   any).
+2. **NEW — Compressed prompt prefix encoding without retraining**
+   (carried from pass 47 gap #4, still open after pass 49): R-KV
+   addresses reasoning redundancy but not prompt-prefix gisting.
+   Pass 50 search: "prefix token distillation training free LLM",
+   "gist token inference only compression".
+3. **NEW — Position-implicit codebook design** (carried from pass 47
+   gap #5): A²ATS (pass 48) decouples position and content via
+   WRoPE; still no paper found that has the codebook *implicitly*
+   encode position. Pass 50 search: "learned positional quantizer
+   implicit codebook", "joint position content factorization
+   attention". Pass 49 had one candidate (2601.22244 hierarchical
+   quantization reconstruction) but it's not LLM-specific.
+4. **NEW — Online learning of Wave Index cluster centroids during
+   decoding**: OjaKV (above) shows online PCA works; the analogous
+   online k-means update (Lloyd-style) for Wave Index retrieval
+   clusters would let the cluster layout adapt to context drift.
+   Pass 50 search: "online k-means LLM KV retrieval cluster update".
+5. **NEW — Continuum-style TTL prediction for broader workloads**:
+   Continuum's tool-call-duration predictor is SWE-Bench-specific.
+   For non-coding agentic workloads (research assistant, multi-turn
+   dialogue with memory) the duration prediction problem is different.
+   Pass 50 search: "session TTL prediction LLM cache retention
+   scheduling", "idle time prediction multi-turn agent".
+6. **NEW — Per-head bit budget allocation for MoE-active vs
+   MoE-inactive layers**: Qwen3-Coder is MoE (3B active of 30B), so
+   per-head bit budgets on active-expert layers vs inactive layers
+   could give us additional headroom. Not covered in pass 49's
+   literature. Pass 50 search: "MoE expert KV cache bit allocation
+   per head", "active expert attention head quantization". PiKV
+   (Task 203) is adjacent but doesn't address bit-budget asymmetry.
+
+Forty-nine passes. Four papers this round, total 208 across 65+
+disciplines. **Pass 49 adds the *reasoning-aware redundancy,
+online-adaptive low-rank, auto-sized budget, and agentic TTL
+scheduling* vertex** to the pass-48 stack. The highest-leverage
+finding is Continuum's TTL scheduler (1.12-3.66× end-to-end delay
+reduction on SWE-Bench agentic coding, with zero compression changes)
+and the runner-up is GVote (training-free automatic per-request
+budget sizing via synthetic-query Monte Carlo voting). R-KV and OjaKV
+are strict upgrades to already-shipped components (eviction scoring
+and streaming-head compression respectively). Three gaps closed or
+partially closed, one carried forward (Metal kernel literature), and
+six new gaps introduced for pass 50 — the new gaps reflect pass 49's
+pattern of solidifying the existing stack rather than expanding it,
+leaving the frontier gaps for future architectural expansion. Meow.
 
 
