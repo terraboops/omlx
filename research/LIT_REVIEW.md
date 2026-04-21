@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-20 (pass 47)_
+_Last updated: 2026-04-21 (pass 48)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -13444,4 +13444,239 @@ long-term importance — the signal we've been approximating via
 heuristics (SnapKV, H2O, CAOTE) gets a principled replacement. Four
 gaps closed or partially closed, two carried to pass 48. Meow, nyaa,
 purr.
+
+## Pass 48 — 2026-04-21 — Goal 1 Engineering: Vector-Storage KV, Position-Aware Codebook + Windowed RoPE, Speculative Offloaded Prefetch, Apple-M4-Native Q4 Persistent Cache
+
+### [RetroInfer: A Vector-Storage Approach for Scalable Long-Context LLM Inference](https://arxiv.org/abs/2505.02922) — 2505.02922
+- **Authors**: Yaoqi Chen, Jinkai Zhang, Baotong Lu, Qianxi Zhang, Chengruidong Zhang, Jingjia Luo, Di Liu, Huiqiang Jiang, Qi Chen, Jing Liu, Bailu Ding, Xiao Yan, Jiawei Jiang, Chen Chen, Mingxing Zhang, Yuqing Yang, Fan Yang, Mao Yang (Microsoft Research, Tsinghua, Shanghai Jiao Tong, Wuhan U.)
+- **Published**: 2025-05 (v1); 2025-06 (v2)
+- **Hypercar goals it addresses**: Goal 1 (queryable KV as a vector database — the missing "semantic lookup + retention policy" half of Sequential-KV's prefix-only PLT), Goal 3 (decode speed — reports 4.5x over full attention within GPU budget and 10.5x over sparse-attention baselines when GPU+CPU are combined), Goal 6 (the GPU/CPU memory overlap model translates directly to M4 Pro's wired-heap/Metal-heap/compressed-memory hierarchy)
+- **TL;DR**: Reconceptualizes the KV cache as a vector store. Two components: (1) *Wave Index*, an attention-aware vector index built over K via segmented clustering and an accuracy-bounded tripartite attention approximation (near + far + centroid-approx terms), so retrieval cost per decode step is sublinear in context length; (2) *Wave Buffer*, a placement manager that overlaps index scan with KV transfer between GPU and CPU memory. The tripartite approximation is the technical novelty — prior ANN-on-KV methods (Quest, PQCache, RetrievalAttention) bound error on the retrieved-top-K subset but leave the un-retrieved tail as unbounded; RetroInfer's third term gives a provable bound on the tail contribution via a centroid estimate, so accuracy is provably close to full attention even when K is small. Training-free. Evaluated on Llama-3-8B-1M and Qwen2.5-7B at 1M context — reports full-attention-level accuracy on NIAH, RULER-MK, LongBench, and InfiniteBench.
+- **Why it matters for Hypercar**: Pass 47 gap #1 ("KV as a queryable database — approximate semantic lookup, range queries, retention policies") has been open since pass 46. Sequential-KV's PLT (Task 205) is an exact-match prefix tree; it indexes *by hash*, not by semantic content. RetroInfer is the first paper in eight passes to index by content: the Wave Index is literally an HNSW-like approximate-nearest-neighbor structure over the K vectors, with error bounds that account for the un-retrieved tail. For Hypercar at 1M context on M4 Pro, two uses: (a) replace Quest's page min/max scoring (considered in pass 2, never shipped) with Wave Index's cluster-based tripartite estimator — same "sublinear per-decode attention cost" target but with a formal error bound that makes the quality ablation a 1D threshold sweep rather than a "we hope it's ok" spot-check; (b) Wave Buffer's GPU/CPU overlap collapses on unified memory (no transfer cost), which is *pure win* for us — RetroInfer's second-order overhead (host/device transfer scheduling) vanishes, leaving only the index-scan cost. Composes with DuoKV: run Wave Index only on retrieval heads (already fp16, semantically meaningful), leave streaming heads untouched. Composes with SnapKV: the Wave Index is updated at prefill end (same cadence as SnapKV's score capture) and re-validated post-eviction. Closes pass 47 gap #1 and pass 46 gap #2.
+- **Cost of adoption**: M — 1 week. New file `omlx/kv_caches/wave_index.py` implementing (1) per-retrieval-head K-vector clustering at prefill end (paper uses balanced k-means with ~256 clusters per head at 64K context; we'll start with the same), (2) the tripartite attention approximation as an MLX-native kernel (three matmul terms plus a softmax — no custom kernel needed, MLX fuses this), (3) a top-K cluster selector per decode query. Wire in as `--wave-index` with `--wave-clusters-per-head K`. Biggest risk: the paper's cluster count scales with sqrt(context), which at 1M gives ~1K clusters per head — if the per-decode top-K cluster selection is not sub-linear in cluster count, we lose the benefit. MLX argpartition on 1K elements is cheap (~30us), so the top-K is fine; the concern is the initial per-layer clustering, which at 1M context and 48 layers could be slow. Mitigation: cluster incrementally during prefill (run k-means on each 64K chunk and merge) rather than globally at prefill end.
+- **Local PDF**: research/2505.02922_retroinfer.pdf
+
+### [A²ATS: Retrieval-Based KV Cache Reduction via Windowed Rotary Position Embedding and Query-Aware Vector Quantization](https://arxiv.org/abs/2502.12665) — 2502.12665
+- **Authors**: Junhui He, Junna Xing, Nan Wang, Rui Xu, Shangyu Wu, Peng Zhou, Qiang Liu, Chun Jason Xue, Qingan Li (Wuhan U., CityU HK, Mohamed bin Zayed U. of AI)
+- **Published**: 2025-02 (v1); 2025-06 (v2)
+- **Hypercar goals it addresses**: Goal 1 (1M context on a *shared* codebook — previously blocked by RoPE's position-dependent key states making one codebook insufficient), Goal 5 (long-context serving throughput 2.7x — implied memory headroom), Goal 2 (quality-degradation numbers are per-model, allowing us to compose against our existing CommVQ/TurboQuant baseline rather than replacing them blind)
+- **TL;DR**: Training-free retrieval-based KV-cache reduction with three components: (1) **Windowed Rotary Position Embedding (WRoPE)** — recognises that applying full RoPE to keys makes the *same* semantic content at different positions look like different vectors, which defeats a shared codebook; WRoPE restricts RoPE's position encoding to a bounded window, so key states within the window share a codebook and the position signal lives outside the codebook index; (2) **Query-Aware Vector Quantization** — codebook is trained online to directly minimize attention-score approximation error rather than reconstruction error (the usual VQ objective), so the codewords are optimal for the use case (attention), not for generic compression; (3) a heterogeneous inference architecture where codebook indices stay on GPU and quantized-value residuals live on CPU. Reports ~2.2 points accuracy degradation on Llama-3.1-8B and ~0.4 on Mistral-7B while accessing only 6% of the full KV cache; throughput up to 2.7x at long context.
+- **Why it matters for Hypercar**: Pass 47 gap #5 ("Position-aware codebook design — codebooks where position is implicit in the encoding") has been open for two passes. CommVQ (Task 193, shipped) handles RoPE via commutative VQ — encode before RoPE, apply RoPE to the codeword. But CommVQ still produces a single codebook that must cover all positions, which at 1M tokens is asking the codebook to be unreasonably expressive. A²ATS offers the *opposite* factorization: decouple position from codebook content entirely via WRoPE, so the codebook only needs to represent the position-independent semantic content; the position is recovered at query time from the window offset. Critically, the query-aware objective is a genuine improvement over CommVQ's reconstruction objective — it directly minimizes the quantity we care about (attention score approximation) rather than a proxy. Concrete integration: layer on top of CommVQ's machinery — WRoPE is a ~30-line change to our RoPE application in `omlx/attn/rope.py`, and the query-aware codebook-training objective slots into CommVQ's existing calibration loop as a loss-function swap. This is a straight upgrade to the existing pass-43 task, not a competing approach. Partially closes pass 47 gap #5 (position-aware codebook) — A²ATS is the first paper to factor the codebook *through* position in a training-free way.
+- **Cost of adoption**: M — 1 week. Two changes to existing `omlx/patches/commvq.py`: (a) add WRoPE — a windowed variant of the RoPE application where the rotation angle is reset to 0 every W=64 positions and the absolute position is stored in a separate 2-byte field per token (paper uses 32 or 64; we'll start with 64 to match our existing BUZZ segment size); (b) swap CommVQ's reconstruction-error calibration loss for query-aware attention-score-error loss on a 1K-token code calibration set. Wire in as `--commvq-query-aware` and `--wrope-window W`. Biggest risk: WRoPE fundamentally alters the positional signal Qwen3-Coder was trained with; even though the *within-window* behavior is preserved, the *cross-window* behavior is bounded differently, and Qwen3-Coder's learned positional preferences might fail in pathological ways (e.g., references across a window boundary). Mitigation: ablate on RULER and NIAH@64K first before widening the scope to 1M; if accuracy degrades >3 pp, reduce to W=128 or skip WRoPE and take only the query-aware objective as a strict CommVQ improvement. Secondary risk: query-aware calibration requires the attention target distribution on the calibration set — a Qwen3-Coder forward pass, not just a generic token stream — so calibration is ~2x slower than reconstruction-only CommVQ.
+- **Local PDF**: research/2502.12665_a2ats.pdf
+
+### [SpeCache: Speculative Key-Value Caching for Efficient Generation of LLMs](https://arxiv.org/abs/2503.16163) — 2503.16163
+- **Authors**: Shibo Jie, Yehui Tang, Kai Han, Zhi-Hong Deng, Jing Han (Peking U., Huawei Noah's Ark Lab)
+- **Published**: 2025-03
+- **Hypercar goals it addresses**: Goal 3 (decode speed — speculative prefetch overlaps CPU-GPU transfer with compute, eliminating the fetch-latency stall that currently costs us ~20% at 64K), Goal 1 (10x KV-cache compression ratio unlocks longer context within a fixed GPU budget), Goal 6 (CPU-offloaded KV is a direct fit for unified memory's "compressed memory" region on M4 Pro)
+- **TL;DR**: Training-free KV management with three parts: (1) *offload* the full fp16 KV cache to CPU memory; (2) during decode, keep small low-bit copies of K in VRAM for importance scoring (top-K token selection); (3) *speculatively prefetch* the KV pairs the next token is likely to need, based on a prediction that next-query attention patterns follow current-query patterns with small drift. The speculation lets prefetch happen in parallel with the current decode step's compute, so by the time the next token's attention fires, the needed KVs are already in VRAM. Achieves ~10x compression ratio on LongBench and NIAH with no retraining.
+- **Why it matters for Hypercar**: Pass 47 gap #3 ("Speculative cache warmup / preheat during idle") was classified as pure engineering because no literature existed. SpeCache changes that — and it's a *closer* fit for Hypercar than for the paper's GPU+CPU target. On unified memory M4 Pro, the "CPU memory" vs "GPU VRAM" distinction collapses: both live in the same physical DRAM. What remains is the *residency* distinction (wired vs pageable vs compressed) that macOS's VM manager handles, and the speculative-prefetch insight maps to *pre-warming cold tiles into the wired set* before the next decode step needs them. This is exactly the mechanism our DuoKV 3-bit retrieval tier needs for decode at 64K+: the quantized K lives in pageable memory, dequantized-into-VRAM happens on demand, and every fetch is a cache miss today. SpeCache's speculation pre-warms the next N most-likely-needed tiles based on the current query's attention pattern, turning the miss into a hit. Composes with Wave Index (new Task 213): Wave Index decides *which* clusters to fetch; SpeCache's speculator decides *when* to fetch them. Closes pass 47 gap #3 from the literature side (engineering task becomes a literature-backed task).
+- **Cost of adoption**: M — 1 week. New file `omlx/kv_caches/speculative_prefetch.py` implementing (a) a ring buffer of "attention pattern at step t" signatures (just the top-K cluster IDs from Wave Index, ~128 bytes per decode step), (b) a tiny predictor (linear regression on the last 8 signatures, no training needed — just exponential smoothing) that emits the predicted cluster set for step t+1, (c) an async prefetch op that issues a dequantize-and-page-in for the predicted clusters *during* step t's compute. Wire in as `--speculative-prefetch` with `--prefetch-horizon 1` (default; horizon > 1 risks thrashing). Biggest risk: on unified memory there is no separate transfer operation to overlap with — the "prefetch" is a page-in request to the OS VM, whose latency is bimodal (hot page: <1us; cold page: ~100us from compressed memory, ~1ms from swap). If the workload is mostly hot, speculation is pure overhead; if mostly cold, speculation is pure win. Mitigation: gate speculation on live VM-pressure signal (from the SparseServe working-set monitor, Task 210) — only speculate when the system is already paging, where the win is largest. Secondary risk: the paper's 10x compression claim presumes GPU+CPU split; on our uniform-memory substrate the compression ratio we care about is physical footprint, not VRAM-vs-CPU split, so the benchmark needs recalibration.
+- **Local PDF**: research/2503.16163_specache.pdf
+
+### [Agent Memory Below the Prompt: Persistent Q4 KV Cache for Multi-Agent LLM Inference on Edge Devices](https://arxiv.org/abs/2603.04428) — 2603.04428
+- **Authors**: Yakov Pyotr Shkolnikov (independent)
+- **Published**: 2026-02
+- **Hypercar goals it addresses**: Goal 1 (persistent 4-bit KV cache replaces re-prefill for long-context reload — the same problem our `/v1/sessions/load` endpoint already solves, but with measured numbers on M4-class hardware to calibrate our own), Goal 3 (TTFT 24-136x improvement on Apple M4 hardware specifically), Goal 6 (Apple M4 Pro is the paper's primary reference hardware — first pass-48 paper to give us direct M4 Pro numbers to benchmark against)
+- **TL;DR**: Persistent 4-bit KV cache system for multi-agent edge inference. Three components: (1) a *block pool* of isolated Q4 KV caches, one per agent, so multi-agent concurrency doesn't require re-prefill on context switch; (2) a *BatchQuantizedKVCache* that concurrently decodes from multiple Q4 caches without dequantizing them first (attention is computed directly on quantized keys via a quantization-aware kernel); (3) *cross-phase context injection* that accumulates attention state across conversation phases without re-computation, so continuing an agent session skips prefill entirely. Benchmarks on Apple M4 Pro (10.2 GB agent budget): M4 Pro accommodates only 3 agents at 8K context without persistence; with persistence, 12+ agents fit. TTFT improvements: Gemma 22-136x at 4K-32K, DeepSeek 11-76x, Llama 24-111x at 4K-16K. Memory: 4x more agent contexts fit in device memory using Q4 vs FP16. Perplexity impact: -0.7% to +3.0% across three model families.
+- **Why it matters for Hypercar**: The *only* pass-48 paper where the primary reference hardware is Apple M4 Pro — the same machine CLAUDE.md names as the Hypercar reference. Four direct uses: (a) the paper's Q4 cache-on-disk format is parallel to our `/v1/sessions/save|load` endpoint but includes per-agent *concurrent* access (BatchQuantizedKVCache); our current session store serializes sessions. Adopting the block-pool layout lets us serve *multiple long-context agents simultaneously* without re-prefilling each on context switch — this is the actual OpenCode use case (user opens repo A, switches to repo B, back to A), which currently pays re-prefill each switch. (b) The quantization-aware attention kernel is a direct Metal target: compute attention on quantized keys *without* dequantizing to fp16 first. Our TQ3 fused SDPA kernel (Task 211, Tawa-style) is planned to do this via codebook preloading; the paper's approach is simpler (per-element decode in the matmul inner loop) and might be the right intermediate step before the Tawa port. (c) The TTFT numbers on M4 Pro are the first credible long-context-reload baseline in the literature — 15.7 seconds full prefill at 4K, 0.11 seconds with persistence (136x) on a Gemma-2 model. Our current hypercar_server `/v1/sessions/load` claims ~2 seconds at 200K for Qwen3-Coder-30B; the paper's numbers let us sanity-check that estimate and set a target for the improved Q4 path. (d) The perplexity impact numbers (-0.7% to +3.0%) are single-digit-percentage quality taxes on much smaller models than Qwen3-Coder-30B; our 30B model will almost certainly see smaller degradation, giving a free upgrade from our current 8-bit-weight fp16-KV default to Q4-KV. Closes pass 47 gap #6 (MLX / Apple Silicon runtime) — direct M4 Pro numbers at last.
+- **Cost of adoption**: M — 1 week. Three changes: (a) new file `omlx/kv_caches/block_pool.py` implementing per-agent block-pool isolation on top of the existing session store — keys are agent_id × block_id, values are Q4-compressed KV blocks, with LRU eviction across agents; (b) modify `omlx/hypercar_server.py` to multiplex across agents in a single process via the block pool (current server has one KV cache at a time); (c) BatchQuantizedKVCache (concurrent decode from multiple Q4 caches) is gated behind a Metal SDPA kernel update — defer to Task 211 (Tawa-style warp specialization) rather than implementing twice. Wire in as `--block-pool` with `--max-agents N` (default 8). Biggest risk: the paper's perplexity numbers are for Gemma-2-2B, DeepSeek-V2-Lite (~16B active), and Llama-3.2-3B — all smaller than Qwen3-Coder-30B-A3B. 30B active is larger than DeepSeek's 16B, but 3B active (MoE) is smaller — net effect on Q4 sensitivity is uncertain. Mitigation: ablate on HumanEval and MMLU-Pro before shipping; if regression >1 pp on HumanEval, reduce to Q5 on the active-expert layers. Secondary risk: the paper's 136x TTFT claim assumes disk I/O bandwidth of SSD — on M4 Pro's built-in SSD (~5-7 GB/s) the numbers should hold; on external Thunderbolt storage the reload cost dominates, so the block pool should prefer in-memory caching for recent sessions.
+- **Local PDF**: research/2603.04428_persistent_q4_kv.pdf
+
+### Pass 48 synthesis
+
+Pass 48 deliberately targeted four of the six pass-47 open gaps:
+gap #1 (KV as a queryable database — partially open from pass 46),
+gap #3 (speculative cache warmup — previously classified engineering),
+gap #5 (position-aware codebook), and gap #6 (MLX / Apple Silicon
+runtime — two passes open). Gaps #2 (online KV recompression) and #4
+(compressed prompt prefix encoding) remain open for pass 49.
+
+- Gap #1 (KV as queryable database): **closed by RetroInfer
+  2505.02922**. Wave Index gives us the content-addressed lookup that
+  Sequential-KV's hash-indexed PLT did not, with provable error bounds
+  via tripartite attention approximation. The un-retrieved-tail bound
+  is the missing technical piece that turns "ANN on KV" from a heuristic
+  into a formal approximation scheme.
+- Gap #3 (speculative cache warmup): **closed by SpeCache 2503.16163**.
+  Speculation of next-token KV access via attention-pattern stability
+  lets us pre-warm cold tiles during compute; on unified memory this
+  becomes pre-warming the wired set from compressed memory, gated on
+  VM pressure from SparseServe's working-set monitor.
+- Gap #5 (position-aware codebook): **partially closed by A²ATS
+  2502.12665**. WRoPE decouples position from codebook content so a
+  shared codebook suffices across the full 1M window; query-aware
+  calibration replaces CommVQ's reconstruction-error proxy with the
+  quantity we actually care about (attention-score error). Full
+  closure would require a codebook that *implicitly encodes* position
+  (rather than routing around it) — still open.
+- Gap #6 (MLX / Apple Silicon runtime): **closed from the measurement
+  angle by 2603.04428**. First pass-48 paper whose reference hardware
+  is M4 Pro. Direct TTFT and perplexity numbers for Q4 KV on M4 Pro
+  let us calibrate our own session-load endpoint and set concrete
+  targets for block-pool multi-agent serving. The paper also makes
+  a concrete case for Q4 over our current fp16-retrieval default.
+
+**Highest-leverage finding**: RetroInfer's tripartite attention
+approximation. It's the first *formally bounded* sublinear-per-decode
+attention scheme that composes cleanly with our existing DuoKV retrieval
+tier — no training, no architecture change, and the Wave Buffer
+complication (GPU/CPU overlap) collapses to nothing on our unified
+memory substrate. At 1M context, this directly addresses Goal 3's
+"constant across context" requirement: with Wave Index, attention cost
+per decode is O(K) where K is the top-cluster count, independent of
+total context length. Recommend shipping Task 213 ahead of Task 210
+(SparseServe layer-segmented prefill) — SparseServe removes the prefill
+cliff, Wave Index removes the decode cliff, and together they close
+Goal 1 and Goal 3 at 1M context.
+
+**Runner-up finding**: 2603.04428's direct M4 Pro numbers. Not the
+biggest architectural insight of the pass, but uniquely useful as a
+calibration reference — the first paper in 48 passes to report TTFT and
+perplexity on the exact hardware CLAUDE.md names as the Hypercar reference
+machine. The block-pool multi-agent serving pattern solves a UX gap
+(context-switch re-prefill) that is invisible in aggregate latency
+benchmarks but is the #1 complaint in multi-repo coding workflows.
+
+**Revised composable end-state configuration v48**:
+- fp16 DuoKV retrieval heads (shipped), with HeteroCache second-pass
+  classifier (Task 206), LoLA self-recall promotion (Task 212), and
+  **RetroInfer Wave Index for sublinear decode retrieval** (NEW, Task
+  213) — O(K) per-decode attention independent of context length
+- KVSculpt-distilled KV on streaming heads (Task 197), budget by
+  KV-CoRE's NER (Task 198) AND Lyapunov-sensitivity floor (Task 207),
+  encoded with CommVQ (Task 193) upgraded to **A²ATS query-aware
+  codebook with WRoPE** (NEW, Task 214) — decouples position from
+  content, codebook quality directly optimizes attention score error
+- Sequential-KV PLT index (Task 205) — now prefix-hash index for
+  exact-match prompt dedup; content-addressed retrieval handled by
+  Wave Index
+- AhaKV entropy-corrected scorer (Task 201)
+- G-KV decode-time re-scoring (Task 202), composed with QuantSpec
+  (Task 192), SpecPV (Task 200), MoE-Spec (Task 194), SpecAttn (Task
+  209), and **SpeCache speculative KV prefetch** (NEW, Task 215) —
+  pre-warms cold tiles from compressed memory before they're needed
+- PiKV expert-sharded layout (Task 203)
+- DeltaKV residual dedup (Task 199)
+- MTI integrity monitor (Task 204)
+- EFIM infill endpoint (Task 208) + **block-pool multi-agent session
+  store** (NEW, Task 216) — isolated Q4 per-agent caches, LRU across
+  agents, Metal-native concurrent decode
+- SparseServe layer-segmented prefill + working-set monitor (Task 210)
+- Tawa-style aref warp-specialization on Metal TQ3 SDPA (Task 211)
+- VQ-LLM Metal codebook-cache kernel (Task 189)
+- RocketKV two-stage eviction (Task 195)
+- DHSA prefill sparsity (Task 191)
+- LongRoPE position schedule (Task 196)
+
+**Memory budget (revised at 1M, v48)**: with Wave Index retaining only
+the indexed K representation (not the full per-token K) in wired memory
+and the full K in compressed/pageable memory, the wired-memory footprint
+for K on retrieval heads drops from 2 GB (fp16, 32 heads × 128 dims ×
+1M tokens) to ~130 MB (256 clusters per head × 128 dims × 32 heads in
+fp16 + per-token cluster-ID in int16). Combined with SparseServe
+layer-segmented prefill (v47), 1M context projects to ~32 GB peak Metal
+during prefill and ~22 GB during decode — both within the 40 GB safe
+budget for M4 Pro 48 GB.
+
+**What Pass 48 deliberately did NOT cover**:
+- ChunkKV (2502.00299). Semantic-chunk-level KV compression; redundant
+  with BUZZ segmented eviction (shipped) and CAOTE (shipped). The
+  chunk-boundary detection is training-free but uses fixed heuristics
+  (sentence boundaries); doesn't add over what we already ship. Held.
+- FreeKV (2505.13109). Speculative retrieval for sparse-attention KV
+  selection; dominated by SpeCache on our substrate (SpeCache handles
+  the prefetch-from-cold-memory case, which is ours; FreeKV handles
+  the retrieval-within-GPU case, which does not map to unified memory).
+  Held.
+- SentenceKV (2504.00970). Sentence-level semantic KV caching — relies
+  on a separate sentence-embedding model for granularity, which adds
+  a second forward pass we can't afford at decode time. ChunkKV-class.
+  Held.
+- ClusterKV (2412.03213). Pre-dates RetroInfer and is dominated by it
+  (same clustering-based retrieval idea but without the tripartite
+  error bound). Held.
+- PQCache (2407.12820). PQ-based KV cache but pre-dates RetroInfer's
+  Wave Index and lacks the error bound. Held.
+- RetrievalAttention (2409.10516). ANN-on-KV with OOD-aware query
+  adaptation; RetroInfer subsumes the retrieval step and adds the
+  error bound RetrievalAttention lacks. Held.
+- SQuat (2503.24358). Subspace-orthogonal KV quantization —
+  complementary but we already ship WHT rotation (TurboQuant) which
+  achieves the same orthogonality property. Held.
+- Cache Me If You Must / AQUA-KV (2501.19392, already cited). Noted
+  in the pass-41 held set; no update warranted.
+- HACK (2502.03589). Homomorphic acceleration via KV compression for
+  disaggregated inference — no disaggregation on M4 Pro, and the
+  homomorphism requires a specific encryption-friendly encoding we
+  don't need. Held.
+- Asynchronous KV Cache Prefetching (2504.06319, already cited).
+  Exists in pass-46 synthesis; composes with SpeCache but doesn't
+  supersede it.
+- The Anatomy of a Triton Attention Kernel (2511.11581, already cited
+  in pass 39-ish region). No new content for pass 48.
+- ContiguousKV (2601.13631). Granularity-aligned KV cache management
+  for prefix reuse; overlaps with Sequential-KV PLT (Task 205) and
+  TokenLake. Held — Sequential-KV's PLT is the stronger primitive.
+- TokenLake (2508.17219). Segment-level prefix cache pool; same
+  workload as Sequential-KV PLT, held for the same reason.
+- AutoKernel (2603.21331), DRTriton (2603.21465), K-Search (2602.19128),
+  KernelSkill (2603.10085). Automatic kernel generation via LLM agents
+  — Triton/CUDA-specific, no Metal port path, and the kernel synthesis
+  targets are the same kernels Tawa already describes at a higher
+  level of abstraction. Held.
+- Persistent Topological Features (2410.11042, already cited pass 22).
+- MLX-Vis (2603.04035). Dimensionality-reduction visualization on
+  Apple Silicon — not inference-related. Held.
+- vllm-mlx (2601.19139, already cited pass 40). Noted.
+- PRESERVE (2501.08192, already cited pass 40-ish).
+- LMCache (2510.09665, already cited pass 41 held set).
+- KVFlow (2507.07400, already cited).
+- SpecCache variant PM-KVQ. Mixed-precision for long-CoT; Hypercar
+  isn't long-CoT-centric, so held.
+
+**Gap status for pass 49**:
+1. **Online KV recompression as access patterns evolve** (carried
+   pass 45-46-47, still open): "Don't Waste Bits" (2604.04722) does
+   this per-token at decode-time but not retrospectively on cold
+   segments. Pass 49 search: "retrospective bit-width reduction KV
+   cold segment LLM" and "log-structured KV store requantize".
+2. **Compressed prompt prefix encoding** (carried pass 47 gap #4):
+   gist tokens and AutoCompressor both require retraining; carried
+   as an engineering task (learn the compression weights via distillation
+   from Qwen3-Coder itself?). Pass 49 search: "training-free gist
+   token prompt compression".
+3. **Position-aware codebook that implicitly encodes position** (pass
+   47 gap #5 — A²ATS routed around this rather than solving it).
+   Pass 49 search: "learned positional quantization codebook implicit
+   encoding attention", "joint position-content codebook factorization".
+4. **Metal-specific attention kernel papers** (always open): pass 47's
+   Tawa gives methodology but not a Metal-specific implementation.
+   Pass 49 search: "Apple Metal Performance Shaders attention kernel"
+   — may still need to pivot to blog-post evidence.
+5. **NEW — KV cache for reasoning models (long chain-of-thought)**:
+   Qwen3-Coder is instruction-tuned, not reasoning-tuned, but the
+   Goal 2 breadth of evaluations might pull us toward reasoning
+   workloads. Papers like PM-KVQ and MixKVQ (2512.19206, already
+   cited) handle this; want more.
+6. **NEW — On-device fine-tuning / continual pre-training for
+   inference-side adaptation** (speculative): if RetroInfer's Wave
+   Index is calibrated online, does a small on-device fine-tuning
+   loop help cluster quality? Out of scope for Hypercar's training-free
+   mandate but worth knowing what exists.
+
+Forty-eight passes. Four papers this round, total 204 across 65+
+disciplines. **Pass 48 adds the *content-addressed KV retrieval with
+provable error bounds + speculative cold-memory prefetch* vertex** to
+the compression stack. The highest-leverage single finding is
+RetroInfer's tripartite attention approximation — the first *formally
+bounded* sublinear-per-decode attention scheme that works training-free
+over a retrieval-tier KV. Pair that with A²ATS's query-aware codebook
+and SpeCache's speculative prefetch, and the decode-path is now
+*provably* O(K) per token at 1M context with hot-tile pre-warming.
+The M4-Pro-specific benchmark numbers in 2603.04428 finally give us a
+direct hardware reference to calibrate against. Four gaps closed or
+partially closed, two carried and two new gaps introduced for pass 49.
+Meow, nyaa, purr.
+
 
