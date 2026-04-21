@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-20 (pass 46)_
+_Last updated: 2026-04-20 (pass 47)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -13241,4 +13241,207 @@ sharing and EFIM's cross-edit KV reuse. The Hypercar compression stack
 shifts from "compress one session well" to "compress a *workflow* well":
 the same repository opened across a week of OpenCode sessions pays the
 prefix cost once, not seven times. Meow, nyaa, purr.
+
+## Pass 47 — 2026-04-20 — Goal 1 Engineering: Speculation-Gated Sparse Attention, Hierarchical Serving Memory, Warp-Specialization IR, Training-Free Linear-Attention Sparse Cache
+
+### [SpecAttn: Speculating Sparse Attention](https://arxiv.org/abs/2510.27641) — 2510.27641
+- **Authors**: Harsh Shah
+- **Published**: 2025-10 (NeurIPS 2025 Workshop on Structured Probabilistic Inference & Generative Modeling)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — 75%+ reduction in KV-cache accesses directly shrinks the attention-time roofline), Goal 1 (makes dense per-decode KV reads unnecessary at long context, which is where our current decode throughput collapses), Goal 2 (perplexity impact quantified — 15.29% on PG-19 is a measurable, small quality tax)
+- **TL;DR**: Training-free sparse-attention method that piggybacks on the draft model already computed by speculative decoding. Three ingredients: (1) layer-wise KL alignment between draft and target attention distributions, (2) a sorting-free GPU-friendly top-p token selector, (3) dynamic per-token KV access pruning driven by the draft's attention pattern. Reports >75% reduction in KV-cache accesses on PG-19 with perplexity increase of only 15.29%, integrating "seamlessly" with existing speculative decoders. No fine-tuning, no architecture change.
+- **Why it matters for Hypercar**: We already ship QuantSpec (Task 192), SpecPV (Task 200), and MoE-Spec (Task 194) — three speculative-decode layers that *all* recompute the draft's attention pattern and *all* throw it away after acceptance/rejection. SpecAttn says: the draft's attention is already a training-free importance oracle; reuse it to *sparsify the target model's own attention*, paying the cost once for two wins (speculation + sparsity). This composes cleanly with AhaKV entropy correction (Task 201) and G-KV decode-time re-scoring (Task 202): the draft attention feeds SpecAttn's top-p selector, the selector's output feeds G-KV's running importance score, and AhaKV corrects any position bias in the accumulated estimate. The sorting-free top-p is critical — MLX's argpartition is reasonably fast but not free at 1M context; this paper's selector runs without any partition at all. Closes pass 46 gap (attention head/token selection during inference, Pass 47 angle #7) in a way that the existing Quest/SparQ retrieval-style papers did not — Quest uses page min/max, SpecAttn uses the speculative draft we *already compute*.
+- **Cost of adoption**: S — 3 days. New file `omlx/speculative/specattn.py` implementing the sorting-free top-p selector over draft-model attention weights and a per-layer KL-alignment calibration pass. Integration with our existing speculative stack: the draft model is already resident (QuantSpec shares it); we hook into the draft's attention forward to capture weights, feed them to SpecAttn's selector, and the target model's attention forward reads only the selected KV positions. Biggest risk: the 15.29% perplexity increase on PG-19 is on a narrative-prose benchmark; code has longer structural dependencies (function signatures at the top matter when generating at the bottom) and the sparse pattern may miss these. Mitigation: run SpecAttn-with-bypass-on-retrieval-heads — use the DuoAttention head tags (already shipped) to disable sparsification on retrieval heads where long-range deps dominate. This turns SpecAttn into a streaming-head optimization that doesn't touch the heads that matter for recall.
+- **Local PDF**: research/2510.27641_specattn.pdf
+
+### [SparseServe: Unlocking Parallelism for Dynamic Sparse Attention in Long-Context LLM Serving](https://arxiv.org/abs/2509.24626) — 2509.24626
+- **Authors**: Qihui Zhou, Peiqi Yin, Pengfei Zuo, James Cheng
+- **Published**: 2025-09
+- **Hypercar goals it addresses**: Goal 1 (serving-layer memory management for long-context that prevents the "KV takes over HBM" failure mode), Goal 4 (TTFT 9.26x improvement and layer-segmented prefill that caps peak memory per layer — directly addresses the "prefill can't fit in Metal" cliff at 128K+), Goal 6 (hierarchical storage management that maps cleanly to unified memory)
+- **TL;DR**: Training-free serving system for dynamic sparse attention (DSA) at long context. Identifies the core contradiction: DSA methods (Quest, MagicPIG, SparQ, MInference) reduce *computation* per query, but the unused KVs must still sit in HBM, which starves batch parallelism. Three system innovations: (1) *fragmentation-aware KV transfer* — GPU-direct loading and CPU-assisted saving between HBM and DRAM that exploits DSA's natural access patterns, (2) *working-set-aware batch-size control* — dynamically adjusts batch sizes based on live memory-usage estimates to prevent cache thrashing, (3) *layer-segmented prefill* — constrains peak memory during prefill to a single transformer layer at a time. Reports 9.26x lower mean TTFT and 3.14x higher throughput on long-context workloads vs existing serving systems. Requires no model retraining.
+- **Why it matters for Hypercar**: Three wins. First, layer-segmented prefill is *exactly* the mechanism we need for 120K+ single-pass prefill — our current blocker (per CLAUDE.md: "120K single-pass exceeds 48 GB Metal — progressive mid-prefill eviction required") is precisely what this paper solves, though via a different mechanism (per-layer memory scope) than progressive eviction. Second, working-set-aware batch-size control translates directly to our co-tenancy scenario: "the laptop stays usable while inference runs" (Goal 6) requires the server to back off memory when the OS starts swapping — SparseServe's live working-set estimator is the monitoring loop we don't currently have. Third, the fragmentation-aware transfer is the *system counterpart* to our KV compression stack — SparseKV decides *what* to move, SparseServe decides *when* and *how fast* to move it. On M4 Pro unified memory, there is no HBM/DRAM split to cross, but the paper's "working set in fast memory, rest in slow memory" scheduling applies verbatim to "resident in wired physical memory, rest in compressed/paged Metal heap". Closes pass 47 angle #10 (tiered memory GPU/unified/NVMe policies for KV) with the most-recent training-free treatment.
+- **Cost of adoption**: M — 1 week. Phase A (3 days): implement layer-segmented prefill — modify `omlx/prefill/` to prefill layer-by-layer with explicit `mx.clear_cache()` between layers, dropping intermediate activations that won't be needed after that layer's KV is built. Phase B (3 days): working-set monitor using `mlx.metal.get_active_memory()` and the OS VM pressure signal; back-pressure mechanism that declines new requests when free memory drops below a threshold. Phase C (1 day): wire into `omlx/hypercar_server.py` as `--layer-segmented-prefill` and `--working-set-monitor`. Biggest risk: MLX's graph fusion may extend live ranges across layers in ways the paper's CUDA-based baseline doesn't suffer from — need to confirm that explicit eval + clear between layers doesn't regress the fused-kernel wins we get at <64K.
+- **Local PDF**: research/2509.24626_sparseserve.pdf
+
+### [Tawa: Automatic Warp Specialization for Modern GPUs with Asynchronous References](https://arxiv.org/abs/2510.14719) — 2510.14719
+- **Authors**: Hongzheng Chen, Bin Fan, Alexander Collins, Bastian Hagedorn, Evghenii Gaburov, Masahiro Masuda, Matthew Brookhart, Chris Sullivan, Jason Knight, Zhiru Zhang, Vinod Grover (NVIDIA, Cornell)
+- **Published**: 2025-10 (CGO'26)
+- **Hypercar goals it addresses**: Goal 3 (decode speed — warp specialization is the fundamental primitive behind FlashAttention-class throughput, matched here on H100), Goal 4 (prefill kernel — the paper's attention benchmark matches hand-tuned CUTLASS FlashAttention-3, which is the speed-of-light target our Metal kernels currently fall short of)
+- **TL;DR**: Automatic compiler framework that generates warp-specialized GPU code from tile-based programs via a new IR abstraction called *asynchronous references* (aref). An aref expresses producer-consumer dataflow between warps at the language level; the compiler partitions computation across warps and manages software pipelines automatically. Benchmarks: 1.1x over cuBLAS GEMM, 1.2x over Triton on attention, matches hand-tuned CUTLASS FlashAttention-3. NVIDIA H100-targeted but the abstraction is architecture-independent: any SIMT GPU with producer/consumer warp-level sync primitives (Metal simdgroup barriers qualify) can implement it.
+- **Why it matters for Hypercar**: Pass 43/44/45/46 all flagged "Metal simdgroup tree-attention kernel" as the open gap — and in each case the arxiv search returned nothing Apple-specific. Tawa is the first paper in that 4-pass search that is *methodologically* portable to Metal even though its implementation isn't: the aref abstraction is warp-local producer/consumer communication, which on Apple Silicon maps to simdgroup threadgroup communication via simdgroup-level barriers (`simdgroup_barrier()` and `threadgroup_barrier(mem_flags::mem_threadgroup)` in MSL). The paper's key insight — that hand-rolled warp specialization consumes 30-50% of a kernel author's time and is where hand-tuned kernels beat auto-generated ones — applies verbatim to our Metal TQ3 SDPA kernel, which commit 2238688 noted is 10x slower than fp16 flash. The fix is likely warp-specialization analog in simdgroup form: one simdgroup producer loading the next tile's codebook while the other consumer does the current tile's matmul. This is an engineering task not a literature task (as called out in passes 43-46), but Tawa gives us the *vocabulary* to describe what we're building. Partially closes pass 46 gap #1 (Metal simdgroup kernel — closed from the portability angle; implementation still an engineering task).
+- **Cost of adoption**: L — 2+ weeks for an MSL prototype, longer for a full framework. Phase A (1 week): hand-port the aref pattern to one Metal kernel — the TQ3 SDPA kernel that is currently 10x slower than fp16 flash. Use simdgroup_barrier to express producer/consumer sync between two simdgroups in the same threadgroup, one preloading the next codebook tile, the other doing the current matmul. Phase B (indefinite): if the hand-ported version closes the gap, generalize the pattern into a small Python DSL in `omlx/kernels/aref_metal.py` that auto-generates MSL from tile-based programs. Biggest risk: Metal's threadgroup-memory budget is tighter than H100's shared-memory budget (~48 KB vs 228 KB per block), so double-buffered producer/consumer patterns that fit on H100 may not fit on M4 Pro — need to size the tile budget carefully. Secondary risk: the paper's aref semantics assume async cp.async.bulk-style loads; Metal's equivalent (async TileGroup loads from heap) has different latency characteristics that may require a different producer/consumer cadence.
+- **Local PDF**: research/2510.14719_tawa_warp_specialization.pdf
+
+### [LoLA: Low-Rank Linear Attention With Sparse Caching](https://arxiv.org/abs/2505.23666) — 2505.23666
+- **Authors**: Luke McDermott, Robert W. Heath Jr., Rahul Parhi (UC San Diego, NC State)
+- **Published**: 2025-05 (revised 2025-09)
+- **Hypercar goals it addresses**: Goal 1 (constant-memory decode path that still retains associative recall — the two properties that Mamba-class architectures usually trade off against each other), Goal 3 (linear-attention decode is O(1) per token, giving a ceiling that doesn't degrade with context length — the "constant across context" requirement of Goal 3)
+- **TL;DR**: **Training-free** augmentation to linear attention that retrofits associative recall via sparse caching. Partitions the (K,V) stream into three memory tiers: (1) a local sliding window for recent pairs, (2) a sparse global cache for "difficult-to-memorize" pairs identified by a self-recall error metric, (3) the recurrent hidden state for generic pairs. On a 4K pass-key retrieval task, lifts accuracy from 0.6% (vanilla linear attention) to 97.4% — near parity with softmax attention — while using 4.6x smaller cache than Llama-3.1 8B. The self-recall error metric is computed online during decode, so the sparse cache composition adapts to the input's specific memorization demands. No fine-tuning needed.
+- **Why it matters for Hypercar**: The carried "post-hoc linearization" gap (Pass 46 gap #6) has been blocked by every candidate so far requiring retraining (SUPRA, LoLCATs, LAWCAT, RADLADS, Liger, DSLA). LoLA is the first training-free contribution to the family: it assumes a linear-attention model already exists and *augments* it with a sparse cache to close the recall gap. Our applicability is one step removed: Qwen3-Coder-30B-A3B is a softmax-attention model, not linear — so we can't apply LoLA directly. But the *architecture* of the sparse-cache tier (self-recall error metric + global sparse pool) maps cleanly onto our DuoKV split: "streaming heads" behave like linear-attention's recurrent state (recency-biased, limited recall), and LoLA's self-recall-triggered sparse tier is exactly the "promote this token to the retrieval pool" signal we lack. The self-recall metric itself — computed online as the error between a predicted K and the true K — is a training-free oracle for "this token will be needed later" that composes with AhaKV (Task 201), G-KV (Task 202), and our existing SnapKV eviction. Partially closes the post-hoc-linearization gap by giving us the *monitoring primitive* even if we don't distill to linear attention.
+- **Cost of adoption**: M — 1 week. New file `omlx/kv_caches/self_recall_monitor.py` implementing the self-recall error metric: during decode, predict the next K from the preceding recurrent state (tiny MLP or linear predictor per-head), compute error vs the actual K, and flag tokens whose error exceeds a threshold as "difficult-to-memorize, promote to retrieval tier". Integrate with DuoKV to move flagged streaming-head tokens into the retrieval pool before SnapKV eviction sees them. Wire in as `--kv-mode duo --self-recall-promotion`. Biggest risk: the linear predictor needs a few hundred calibration steps to stabilize, during which its error signal is unreliable; a simple warmup cutoff (only activate after 1K decode steps) mitigates this. Secondary risk: the paper's 4K pass-key result is at 4K context; at 1M context the sparse-cache size grows linearly with number of flagged tokens, and if the threshold is too loose we flag too many — need a budget cap (e.g., max 4K promoted tokens total) composed with our existing SnapKV keep-K budget.
+- **Local PDF**: research/2505.23666_lola_linear_sparse_cache.pdf
+
+### Pass 47 synthesis
+
+Pass 47 deliberately targeted four of the six pass-46 gaps:
+gap #1 (Metal simdgroup tree-attention kernel — four passes open),
+gap #6 (post-hoc linearization without retraining), the new pass-47
+angle #7 (dynamic attention head/token selection during inference), and
+the new pass-47 angle #10 (tiered memory GPU/unified/NVMe policies for
+KV). Gap #2 (KV as a queryable database) and gap #3 (online KV
+recompression) remain open for pass 48.
+
+- Gap #1 (Metal simdgroup kernel): **partially closed by Tawa
+  2510.14719**. Portability is closed; implementation remains an
+  engineering task. Tawa gives us the vocabulary (asynchronous
+  references, producer/consumer warp specialization) to describe what
+  we need to build, and a concrete MSL-portable pattern (double-buffered
+  simdgroup producer loading next codebook tile while consumer does
+  current matmul) that we can try on the currently-slow TQ3 SDPA kernel.
+- Gap #6 (post-hoc linearization): **partially closed by LoLA
+  2505.23666**. The self-recall error metric is a training-free oracle
+  for "this token will be needed later" that lifts directly to our
+  DuoKV streaming heads; the full linear-attention conversion still
+  requires retraining, which we can't do. We adopt the monitoring
+  primitive, skip the architecture conversion.
+- Pass-47 angle #7 (dynamic head/token selection): **closed by SpecAttn
+  2510.27641**. First paper to reuse the speculative draft's attention
+  as a free importance oracle for sparsifying the target model's
+  attention. Composes cleanly with QuantSpec + SpecPV + MoE-Spec
+  without requiring a second draft pass.
+- Pass-47 angle #10 (tiered memory for KV): **closed by SparseServe
+  2509.24626**. Layer-segmented prefill directly solves the 120K+
+  prefill cliff we've been hitting; working-set-aware batch control is
+  the co-tenancy monitoring loop we lack.
+
+**Highest-leverage finding**: SparseServe's layer-segmented prefill.
+CLAUDE.md explicitly notes "120K single-pass exceeds 48 GB Metal —
+progressive mid-prefill eviction required" as a blocker, and the
+progressive-eviction workaround is stuck on MLX's KVCache position
+model (re-RoPE accumulation, scatter-back OOM). Layer-segmented prefill
+is a *different* solution path: instead of evicting mid-prefill, we
+simply drop intermediate activations between layers so peak memory
+never exceeds one layer's worth. This is a smaller patch than
+progressive eviction (no re-RoPE math, no sparse-cache class needed),
+composes with SnapKV (eviction runs at prefill end as today), and
+directly targets the Goal 1 ladder cliff at 120K+. Recommend shipping
+this ahead of Tasks 205-208.
+
+**Revised composable end-state configuration v47**:
+- fp16 DuoKV retrieval heads (shipped), with HeteroCache second-pass
+  classifier (Task 206) and **LoLA self-recall promotion signal** (NEW,
+  Task 212) promoting difficult-to-memorize tokens from streaming to
+  retrieval tier
+- KVSculpt-distilled KV on streaming heads (Task 197), budget by
+  KV-CoRE's NER (Task 198) AND Lyapunov-sensitivity floor (Task 207),
+  encoded with CommVQ (Task 193)
+- Sequential-KV PLT index + delta predictor (Task 205)
+- AhaKV entropy-corrected scorer (Task 201)
+- G-KV decode-time re-scoring (Task 202), composed with QuantSpec
+  (Task 192), SpecPV (Task 200), MoE-Spec (Task 194), and **SpecAttn
+  speculative-draft-driven sparsity** (NEW, Task 209) — the draft
+  model serves four purposes for the price of one
+- PiKV expert-sharded layout (Task 203)
+- DeltaKV residual dedup (Task 199)
+- MTI integrity monitor (Task 204)
+- EFIM infill endpoint (Task 208)
+- **SparseServe layer-segmented prefill + working-set monitor** (NEW,
+  Task 210) — removes the 120K+ prefill cliff
+- **Tawa-style aref warp-specialization on Metal TQ3 SDPA** (NEW, Task
+  211) — addresses the 10x slowdown on the currently-broken TQ3 fused
+  kernel
+- VQ-LLM Metal codebook-cache kernel (Task 189)
+- RocketKV two-stage eviction (Task 195)
+- DHSA prefill sparsity (Task 191)
+- LongRoPE position schedule (Task 196)
+
+**Memory budget (revised at 1M, v47)**: SparseServe's layer-segmented
+prefill removes the previously-hard 120K single-pass ceiling —
+projected peak Metal during prefill drops from 44+ GB to ~25 GB (one
+Qwen3-Coder layer's activations + KV for that layer). This is the
+first revision in 47 passes that changes the *prefill* memory budget
+rather than only the decode-time KV budget.
+
+**What Pass 47 deliberately did NOT cover**:
+- Cold-RL (2508.12485). Offline RL cache eviction for NGINX;
+  web-serving context, not LLM-KV. Concept portable but the already-
+  held KVP (2602.10238) is the LLM-specific treatment. Held.
+- DynaKV (2603.04411). Post-training low-rank KV compression. Requires
+  fine-tuning — disqualifying. Held.
+- FusedKV (2512.03870). Cross-layer KV fusion at training time. The
+  *analysis* ("values predominantly from bottom layer, keys from
+  bottom+middle") is useful as a prior on per-layer bit-budget
+  assignment, but the fusion itself requires training. The analysis
+  feeds Task 207 (Lyapunov sensitivity) as a hypothesis to test. Held
+  as a pure training-time method.
+- LAWCAT (2509.18467), RADLADS (2505.03005), DSLA (2506.09316), Liger
+  (2503.01496), Hybrid Linear Attention Done Right (2601.22156),
+  When Perplexity Lies (2603.26556). All linear-attention distillation
+  methods requiring training. Disqualifying for the Qwen3-Coder
+  substrate. Held.
+- MiniKV (2411.18077). 2-bit layer-discriminative KV with custom
+  FlashAttention-compatible CUDA kernels. Portable idea (layer-
+  discriminative bit budget) but the CUDA kernels are non-portable and
+  the portable idea is already covered by KVTuner (Task 186) and the
+  upcoming Lyapunov-sensitivity floor (Task 207). Held.
+- Deep Kernel Fusion (2602.11808). Adjacent to Tawa but targets
+  general operator fusion, not specifically attention warp
+  specialization. Tawa dominates for our kernel-speed use case. Held.
+- FlexPrefill (2502.20766), FAST-Prefill (2602.20515), QuoKA
+  (2602.08722), PSA (2503.00392). All sparse-prefill variants of
+  MInference-class work, already covered by MInference (2407.02490)
+  and DHSA (Task 191). Held.
+- Recurrent Memory-Augmented Transformers (2507.00453), MSA
+  (2603.23516). Train-from-scratch architectures; disqualifying.
+  Held.
+- Cross-Layer KV Sharing systematic study (2410.14442). Training-
+  required for best configuration; the training-free configurations
+  are dominated by GQA which Qwen3-Coder already uses. Held.
+- Optimal Software Pipelining for Tensor Core GPUs (2512.18134).
+  Tensor-core-specific; no Apple Silicon analog. Held.
+
+**Gap status for pass 48**:
+1. **KV as a queryable database (beyond prefix)** (carried from pass
+   46 gap #2, still partially open): Sequential-KV's PLT (Task 205) is
+   a prefix-indexed store, but approximate semantic lookup, range
+   queries, and retention policies remain unexplored. Possible search
+   terms for pass 48: "on-device vector database", "hierarchical
+   navigable small world HNSW KV cache", "product quantization
+   inverted file LLM cache".
+2. **Online KV recompression as access patterns evolve** (carried
+   pass 45-46, still open): no training-free paper yet found that
+   recompresses cold segments to tighter bit widths during a long
+   session. "Don't Waste Bits" (2604.04722, already held) does this
+   per-token at decode-time but not as a retrospective cold-segment
+   pass. Pass 48 search: "adaptive bit-width KV retrospective
+   requantize online".
+3. **Speculative cache warmup / preheat during idle** (carried pass
+   45-46, engineering task): no literature found; recommend classifying
+   as pure engineering.
+4. **Compressed prompt prefix encoding** (pass 46 angle #13, carried):
+   pre-compress frequently-used prompt prefixes. Adjacent to Sequential-
+   KV's PLT but prompt-level rather than KV-level. Pass 48 search:
+   "prompt prefix compression AutoCompressor Gist tokens LLM".
+5. **Position-aware codebook design** (pass 46 angle #15, carried):
+   codebooks encoding position implicitly. Adjacent to CommVQ but
+   CommVQ handles RoPE, not learned position structure. Pass 48 search:
+   "position-aware quantization codebook KV cache".
+6. **MLX internals / Apple Silicon runtime** (recurring): blog posts
+   remain more informative than arxiv. Recommend Pass 48 pivot to
+   searching MLX research paper (if any exists), Apple ML Research
+   publications, or cross-disciplinary angles (embedded systems,
+   mobile LLM serving).
+
+Forty-seven passes. Four papers this round, total 200 across 65+
+disciplines. **Pass 47 adds the *speculation-gated sparsity + tiered
+serving memory* vertex** to the compression stack — closing the
+long-open "what to compute per token" question (SpecAttn) and the
+long-open "how to fit prefill in a fixed memory budget" question
+(SparseServe), both without any retraining. The Metal kernel gap
+finally has a vocabulary (Tawa's aref abstraction) even if the
+implementation remains our own work, and LoLA's self-recall error
+metric is the first training-free oracle we have for token-level
+long-term importance — the signal we've been approximating via
+heuristics (SnapKV, H2O, CAOTE) gets a principled replacement. Four
+gaps closed or partially closed, two carried to pass 48. Meow, nyaa,
+purr.
 
