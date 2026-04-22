@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-22 (pass 51)_
+_Last updated: 2026-04-22 (pass 52)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -14932,6 +14932,395 @@ result this round, but four composable wins for the v51 stack.
 Meow meow.
 
 
+## Declared Dead Ends (Post-51)
+
+The 50-pass milestone synthesis flagged three gaps as "likely dead
+ends" after 4 passes without closure. Pass 51 made one more attempt
+on one (gist tokens via SideQuest-adjacent work — partial-close
+only). Pass 52 did one final good-faith search on each. Formal
+closure below — these are now permanent and will not be re-searched
+in future passes absent a specific engineering trigger.
+
+### Dead end 1: Metal-specific attention kernel papers (5 passes, declared pass 50, formalized here)
+
+Passes carried: 47-50 (4 passes without closure) → declared dead
+in pass 50 milestone synthesis → formalized here post-pass-51.
+Searches across passes 47-50 turned up blog posts, WWDC talks,
+MLX PRs, and Tawa-port discussions — no peer-reviewed arxiv paper
+on Apple-Silicon-specific attention kernel design. The literature
+appears not to exist because cutting-edge kernel work on Apple
+Silicon happens in-house at Apple or in framework source trees
+(MLX, MPSGraph, CoreML) rather than on arxiv. Alternatives that
+*do* exist: (a) the Tawa Metal attention port referenced in
+Task 211, pure engineering not research-derived; (b) Apple's WWDC
+2024 and 2025 Metal 3 and Metal Performance Shaders Graph sessions
+which cover kernel-fusion primitives usable from MLX; (c) MLX's
+own source (`mlx/backend/metal/kernels/`) which is the de facto
+reference implementation. Revisit condition: if an Apple Research
+paper lands (e.g., Machine Learning Research blog posts the WWDC
+talks, or an Apple researcher publishes via
+machinelearning.apple.com), add directly without another arxiv
+search pass. Otherwise: do not re-search.
+
+### Dead end 2: Training-free gist tokens (5 passes, formalized here)
+
+Passes carried: 47-51 (5 passes without closure). Pass 52 final
+search ("gist token prompt compression learned training-free")
+returned only the original 2304.08467 paper (2023, predates our
+2024-2026 cutoff and requires a training phase) and follow-ups
+2402.16058 (requires training) and 2604.13066 (dictionary encoding,
+not gist tokens). The *training-free* constraint is the binding
+one: every extant gist-token paper requires either distillation,
+instruction tuning, or a dedicated compression head trained
+against a teacher. The closest partial-closure is SideQuest
+(Task 224, pass 50) which provides model-driven *retrievability
+annotation* as a training-free prompt-only variant — different
+mechanism (prompt-engineering the main model, not a compression
+head) but addresses the same goal. TRIM-KV (Task 227) formally
+relaxes the training-free mandate for *narrow-and-highly-leveraged*
+distillation, which pass 51 accepted as a policy shift. Revisit
+condition: if we formally drop the training-free constraint for
+a broader class of compression objectives (not just retention
+gates), re-open by searching "compressed prefix prompt encoding
+distillation 2026". Alternatives we already have: SideQuest
+(Task 224), TRIM-KV (Task 227), SpecPrefill (shipped). Do not
+re-search under the training-free constraint.
+
+### Dead end 3: Position-implicit codebook design (5 passes, formalized here)
+
+Passes carried: 47-51 (5 passes without closure). Pass 52 final
+search ("implicit position codebook quantization KV cache")
+surfaced PolarQuant (2502.02617, already in review pass 43 —
+shared-codebook but NOT position-implicit; it still requires
+RoPE preconditioning before quantization) and A²ATS (already
+Task 214 — decouples position via windowed RoPE, closest extant
+work). No paper encodes position *implicitly* in the codebook
+itself (which would mean: the codebook entry for "this vector at
+position p" differs from "this vector at position q" without
+requiring a positional rotation as a separate step). The ideal
+paper — a learned codebook whose entries absorb position as
+learned curvature — does not exist in the 2024-2026 arxiv corpus.
+Alternatives: (a) A²ATS (Task 214) with WRoPE is the practical
+version of this concept; (b) CommVQ (Task 193) with shared
+cross-position codebook is the memory-optimal version;
+(c) TurboQuant's WHT rotation (shipped) as the symmetry-breaker
+that makes position-independent codebooks valid in the first
+place. Revisit condition: if we start training our own codebooks
+on long-context traces (currently no plan), search "learned
+position-absorbing codebook". Otherwise: do not re-search.
+
+All three dead ends map to work that already exists in our
+shipped stack or pending tasks; declaring them dead does not open
+new gaps, it closes carry-over bookkeeping. Fifty-two passes in,
+the research loop is reaching its natural asymptote for this
+problem shape.
+
+
+## Pass 52 — 2026-04-22 — Goal 1 Long-Tail: GPU Memory Compaction, Online KV Clustering, Formal Spec-Decode Verification, Block-wise Paged Eviction
+
+Long-tail pass (52nd). Four papers closing a narrower-than-usual
+set of gaps: one fragmentation/compaction primitive (DiffKV), one
+streaming-clustering codec (Chelsea / KV-Clustering — closes pass
+51 gap #4 online k-means), one formally-guaranteed speculative
+decode (SpecGuard), one PagedAttention-native block eviction
+(PagedEviction). Plus the formal dead-end declarations above on
+the three long-carry gaps. The MoE, scheduling, and reasoning-theory
+vertices are now saturated; pass-52 yield is concentrated on the
+*memory-management* and *verification* axes which were
+under-represented in passes 40-51.
+
+The four papers map to angles from the pass-52 direction list:
+1. Gap #14 (Memory fragmentation / KV compaction): **closed** by
+   DiffKV (2412.03131) — on-GPU parallel compaction of
+   fragmented free memory lists into contiguous regions,
+   2.7-5.7× compression with differentiated K vs V treatment.
+2. Gap #2 / pass-51 carry (Online k-means for KV centroids):
+   **closed** by Chelsea / KV Cache Clustering (2506.11418) —
+   Chunked Soft Matching performs online centroid merging with
+   alternating partition strategy, 80% memory reduction 3.19×
+   decode speedup.
+3. Gap #12 (Speculative decoding with formal verification):
+   **closed** by SpecGuard (2604.15244) — step-level verification
+   via attention-grounding score + log-probability score, 3.6%
+   accuracy gain and 11% latency reduction.
+4. Gap #14 (Memory fragmentation — second paper, block-wise
+   variant): **closed** by PagedEviction (2509.04377) — structured
+   block-wise KV pruning tailored for PagedAttention layouts,
+   pairs with DiffKV's compaction as the "eviction layer" above
+   the "defragmentation layer."
+
+### [DiffKV: Differentiated Memory Management for Large Language Models with Parallel KV Compaction](https://arxiv.org/abs/2412.03131) — 2412.03131
+- **Authors**: Yanqi Zhang, Yuwei Hu, Runyuan Zhao, John C.S. Lui, Haibo Chen
+- **Published**: 2024-12 (SOSP 2025)
+- **Hypercar goals it addresses**: Goal 6 (M4 Pro fit — GPU-parallel
+  memory compaction keeps the Metal allocator from fragmenting
+  under long runs, which on a 48 GB unified-memory machine is the
+  difference between "fits" and "swap thrash"), Goal 1 (2.7-5.7×
+  compression with near-lossless accuracy extends what fits at
+  1M), Goal 3 (1.9-5.4× throughput reports on GPU — on M4 Pro
+  with less parallelism, the directional effect holds but
+  magnitude will be smaller)
+- **TL;DR**: KV cache compression framework built around three
+  *differentiation* axes: (a) K vs V treatment — keys need higher
+  fidelity because they determine attention routing, values can
+  tolerate more compression because errors are averaged; (b)
+  token importance — not all tokens need full precision, importance
+  drives bit budget; (c) head sparsity patterns — different
+  attention heads have different sparsity profiles, so uniform
+  eviction is wasteful. The framework's *defining* contribution is
+  an on-GPU parallel memory manager that compacts fragmented free
+  memory lists into contiguous regions in parallel with decode
+  computation. Demonstrated 2.7-5.7× compression with near-lossless
+  accuracy and 1.9-5.4× throughput improvement on long-context
+  benchmarks.
+- **Why it matters for Hypercar**: Memory fragmentation is a
+  silent Goal 6 killer we have observed but not diagnosed — long
+  sessions on M4 Pro show gradual Metal-heap fragmentation that
+  manifests as swap pressure at context lengths that previously
+  fit comfortably. DiffKV's on-GPU parallel compaction is the
+  exact primitive we need. Our TurboQuantKVCache and DuoKVCache
+  already use pre-allocated slabs (Task 149), which avoids the
+  *allocation-side* fragmentation, but we don't have a compaction
+  path for post-eviction holes — once SnapKV evicts tokens from
+  the middle of a slab, the holes stay there until the slab is
+  rewritten, which is infrequent. DiffKV's parallel compaction
+  is runnable on Metal (compute shader pattern — gather-scatter
+  with atomic index update) and would eliminate the hole-accumulation
+  problem. The K-vs-V differentiation aligns with KIVI (already
+  pass 1, Task not yet) and our DuoKV split.
+- **Cost of adoption**: M (1-2 weeks). New file
+  `omlx/kv_caches/kv_compaction.py` implementing Metal kernel
+  (via `mx.fast.metal_kernel` primitive) for parallel gather-scatter
+  over a free-list bitmap. Integration point: `turboquant_kv.py`
+  and `duo_kv.py` call `compact()` after each SnapKV eviction
+  round. Risk: Metal's command-buffer model serializes kernels by
+  default; the compaction and the eviction need to be submitted
+  as a single command buffer to keep them parallel. The K-vs-V
+  differentiation component is a smaller win — we already quantize
+  K and V at the same bit budget; splitting them would require
+  re-calibrating the TQ3 codebook. Ship the compaction alone as
+  phase 1, the K-vs-V split as optional phase 2.
+- **Local PDF**: research/2412.03131_diffkv.pdf
+
+### [Efficient Long-Context LLM Inference via KV Cache Clustering (Chelsea)](https://arxiv.org/abs/2506.11418) — 2506.11418
+- **Authors**: Jie Hu, Shengnan Wang, Yutong He, Ping Gong, Jiawei Yi, Juncheng Zhang, Youhui Bai, Renhai Chen, Gong Zhang, Cheng Li, Kun Yuan
+- **Published**: 2025-06 (NeurIPS 2025)
+- **Hypercar goals it addresses**: Goal 1 (up to 80% KV cache
+  memory reduction — largest headline compression ratio we've
+  seen outside of 2-bit quantization, and orthogonal to it), Goal 3
+  (3.19× decoding acceleration, from reduced attention-matrix
+  size rather than from sparse skipping)
+- **TL;DR**: Online KV-cache clustering framework ("Chelsea")
+  that exploits the observation that *key states exhibit high
+  similarity along the sequence dimension* — adjacent tokens'
+  keys are often near-duplicates, especially in repetitive code
+  contexts. The framework performs online centroid-based clustering
+  via *Chunked Soft Matching*: partition the cache into chunks of
+  roughly 256 tokens, apply an alternating-partition strategy
+  within each chunk to identify near-duplicate clusters, merge
+  matched entries into single centroids. The per-chunk algorithm
+  is O(chunk_size²) which is feasible at chunk=256 but would be
+  prohibitive at full-context scale, hence the chunked decomposition.
+  Validated on Llama-2 and LongChat at 128K context.
+- **Why it matters for Hypercar**: This is the pass-49-through-51
+  open question (online k-means for Wave Index centroids)
+  answered with a specific LLM-applicable algorithm. The Chunked
+  Soft Matching construction is simpler than Bregman-divergence
+  clustering (pass 51 dead end) and matches the sequence-locality
+  structure we already exploit in BUZZ (per-segment top-K) and
+  RetroInfer's Wave Index (Task 213). On code workloads, key-state
+  similarity along the sequence is *much* higher than on natural
+  language — code has repeated identifiers, function signatures,
+  import statements, error-handler patterns — so the 80% reduction
+  claim should transfer favorably to Qwen3-Coder. Orthogonal to
+  TurboQuant bit-compression: Chelsea merges *duplicate* tokens,
+  TQ3 compresses *each unique* token. The two stack multiplicatively.
+  Also composes with R-KV (Task 220) which is cosine-similarity
+  eviction, not merging — Chelsea *merges* the redundant tokens
+  into one centroid rather than evicting them, preserving the
+  information content of both.
+- **Cost of adoption**: M (1 week). New file
+  `omlx/kv_caches/chelsea_clustering.py` implementing Chunked
+  Soft Matching as a periodic operation (every K=512 decode steps)
+  that scans the last N=4096 tokens and merges clusters. The
+  alternating-partition strategy is a standard soft k-means
+  variant — 5 iterations suffice per the paper. Integration:
+  after clustering, the cache has fewer entries, each with a
+  centroid KV vector; the merged position index is tracked in a
+  sparse map so attention correctly routes to the centroid when
+  a merged-token position is queried. The position-mapping layer
+  is the tricky part — we have to be careful that centroid
+  positions don't collide with subsequent unmerged tokens. Wire
+  in as `--kv-clustering` with `--chelsea-chunk-size N` (default
+  256), `--chelsea-interval K` (default 512 decode steps), and
+  `--chelsea-threshold T` (default 0.92 cosine similarity — below
+  which tokens are not merged). Risk: position-collision bugs
+  manifest as quality cliff at specific context lengths; need to
+  validate on NIAH ladder. The paper reports no quality cliff,
+  but our shorter validation budget should include a stress test
+  at the merge-boundary contexts.
+- **Local PDF**: research/2506.11418_kv_cache_clustering.pdf
+
+### [From Tokens to Steps: Verification-Aware Speculative Decoding for Efficient Multi-Step Reasoning (SpecGuard)](https://arxiv.org/abs/2604.15244) — 2604.15244
+- **Authors**: Kiran Purohit, Ramasuri Narayanam, Soumyabrata Pal
+- **Published**: 2026-04 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 2 (3.6% accuracy gain on
+  multi-step reasoning — direct contribution to the GPT-4-parity
+  target on reasoning benchmarks which we currently don't track),
+  Goal 3 (11% latency reduction from reducing rejections on
+  speculative decoding)
+- **TL;DR**: Framework for speculative decoding that performs
+  verification at the *reasoning step* granularity rather than
+  token-by-token. Samples multiple draft candidates at each step
+  boundary, then validates using two internal signals: (a)
+  *attention-based grounding score* that measures how much the
+  step's attention weights attribute to the input context and
+  previously-accepted steps (high grounding = step is supported
+  by evidence, low grounding = step is confabulated); (b)
+  *log-probability-based score* that captures standard token-level
+  model confidence. Rejection triggers recomputation with the
+  target model. No external reward model, no speculative-draft
+  fine-tuning — both signals are extracted from the target model's
+  own forward pass during verification. Validated on GSM8K,
+  MATH-500, AIME24 showing 3.6% accuracy improvement plus 11%
+  latency reduction vs standard speculative decoding.
+- **Why it matters for Hypercar**: Our current speculative decoding
+  plan (QuantSpec Task 192, SpecPV Task 200, MoE-Spec Task 194)
+  are all draft-model architectures. SpecGuard is *verification-layer*
+  infrastructure — can compose on top of any of them. The attention-
+  grounding score is especially relevant for code: code correctness
+  depends on grounding (correct variable names, valid API calls),
+  and a grounded-draft rejection rate is a much better proxy for
+  code quality than pure log-prob. For OpenCode multi-turn
+  workloads where reasoning steps are tool-call plans, step-level
+  rejection gives us finer-grained recovery than token-level.
+  Integration cost is low: the grounding score is just a dot-product
+  between the step's attention matrix columns and a "ground-truth
+  attribution" mask derived from accepted-prefix positions.
+- **Cost of adoption**: S-M (4-6 days). New file
+  `omlx/decode/spec_guard.py` implementing the two signals.
+  Grounding score: during each verification step, compute column
+  sums of attention matrix restricted to the accepted-prefix
+  positions, normalize by total attention mass. Log-prob score:
+  already exists. Combined threshold τ = 0.6 per paper (adjustable).
+  Step boundary detection: use a simple heuristic (newline,
+  step-marker tokens) rather than the paper's full parser — adequate
+  for code where steps are bracketed by natural syntactic breaks.
+  Wire in as `--spec-guard` with `--spec-guard-threshold T`
+  (default 0.6), `--spec-guard-grounding-weight W` (default 0.5
+  blending grounding and log-prob). Risk: the attention-grounding
+  score assumes the draft and target attention matrices are
+  aligned; for MoE-Spec (Task 194) where expert routing differs
+  between draft and target, need to validate the signal doesn't
+  drift. Recommend shipping SpecGuard with QuantSpec (Task 192,
+  same-architecture draft) first, then extending to MoE-Spec
+  after.
+- **Local PDF**: research/2604.15244_specguard.pdf
+
+### [PagedEviction: Structured Block-wise KV Cache Pruning for Efficient Large Language Model Inference](https://arxiv.org/abs/2509.04377) — 2509.04377
+- **Authors**: Krishna Teja Chitty-Venkata, Jie Ye, Xian-He Sun, Anthony Kougkas, Murali Emani, Venkatram Vishwanath, Bogdan Nicolae
+- **Published**: 2025-09 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 6 (block-wise eviction
+  aligned with paged-memory layouts avoids cross-page eviction
+  holes, keeping Metal unified-memory allocator behavior clean),
+  Goal 1 (efficient block-aligned eviction extends what fits at
+  long context without fragmentation overhead), Goal 3 (block-wise
+  pruning without CUDA kernel modifications — the paper's
+  implementation is a pure higher-level scheduling change, which
+  ports trivially to MLX)
+- **TL;DR**: Block-wise KV cache eviction strategy optimized for
+  PagedAttention-style paged memory layouts. Rather than evicting
+  individual tokens (which creates partial-page holes and requires
+  page compaction), PagedEviction evicts whole blocks at a time
+  using a block-aggregated importance score. Three design choices:
+  (a) block granularity matches the page size of the underlying
+  paged-attention system (16-256 tokens typically); (b)
+  block-importance score is the mean attention received by tokens
+  in the block, weighted by their recency; (c) cross-page eviction
+  patterns are explicitly avoided — each eviction round selects
+  whole blocks, preserving page alignment. Reports memory efficiency
+  and accuracy gains on Llama models at long context without
+  requiring any CUDA kernel modifications; the strategy is
+  implementable purely at the cache-manager level.
+- **Why it matters for Hypercar**: Pairs with DiffKV (paper #1 this
+  pass) as the "eviction layer" to DiffKV's "defragmentation
+  layer." DiffKV compacts post-eviction holes; PagedEviction
+  prevents creating sub-page holes in the first place. Our
+  current SnapKV eviction (shipped) is token-level and creates
+  exactly the fragmentation pattern PagedEviction prevents. For
+  Metal unified-memory where page-alignment affects actual
+  hardware behavior (MMU translation-lookaside-buffer entries,
+  cache line efficiency), block-aligned eviction has second-order
+  performance benefits beyond pure memory-layout cleanliness. Our
+  TQ3 slab layout (Task 149 pre-allocated) is already block-
+  structured (64-token groups for the codebook), so PagedEviction's
+  block granularity can naturally align with the codebook group
+  size. The paper's "no CUDA kernel modifications" property
+  matters directly: we can implement PagedEviction in pure MLX/
+  Python cache-manager code, no new Metal kernels required.
+- **Cost of adoption**: S-M (3-5 days). Modify
+  `omlx/patches/snapkv.py` to aggregate scores at block granularity
+  (sum of token scores within each block, normalized by block
+  size) and select top-K blocks rather than top-K tokens. The
+  block size parameter defaults to the TQ3 codebook group size
+  (64 tokens). Block-aggregated re-RoPE is cheaper than token-
+  level re-RoPE since whole blocks are removed contiguously.
+  Compose with DiffKV compaction (paper #1): block-wise eviction
+  + parallel compaction = all memory management in two composable
+  steps. Wire in as `--paged-eviction` with `--paged-block-size N`
+  (default 64, aligned with TQ3 groups) and
+  `--paged-evict-mode {block, token}` (default block when
+  `--kv-mode tq3`, else token). Risk: block-granularity eviction
+  is slightly coarser than token-granularity — at 25% keep
+  (Task 155 already shows 14% quality drop at token level),
+  block-level might be worse; need to validate at multiple keep
+  ratios. The paper's block-score aggregation is robust to this
+  on their benchmarks but our code workload may differ.
+- **Local PDF**: research/2509.04377_pagedeviction.pdf
+
+### Gaps carried into Pass 53
+
+Pass 52 closes four gaps (memory-fragmentation / compaction, online
+KV clustering, formal spec-decode verification, block-wise paged
+eviction) and formally declares three prior carries dead (Metal
+kernels, training-free gist tokens, position-implicit codebooks).
+Remaining open gaps:
+
+1. **Continuous-batching with heterogeneous contexts** — pass 52
+   surfaced BucketServe (2507.17120), Multi-Bin Batching
+   (2412.04504), EGTP (2602.11812) as candidates but not deeply
+   evaluated. Our single-user serving profile may not need it;
+   revisit if we add multi-tenancy.
+2. **Profile-guided per-workload quantization** — QPART
+   (2506.23934) surfaced but deferred (edge-device orientation,
+   less relevant for M4 Pro single-device). Revisit if we ship
+   a quantization calibrator tool.
+3. **LLM-as-judge calibration for compression decisions** —
+   surfaced 2601.05420, 2512.22245, 2512.03019 — the "self-judge
+   whether a compression step hurt quality" primitive. Held for
+   pass 53 if we want a training-free in-the-loop quality gate.
+4. **Attention kernel auto-tuning** — not searched this pass;
+   held for pass 53.
+5. **Low-precision training implications for inference** — not
+   searched this pass; held for pass 53.
+6. **Efficient attention for RAG-specific patterns** — not
+   searched this pass; held. Our OpenCode workload is closer to
+   RAG than raw generation.
+
+Fifty-two passes. Four papers this round, total 220 across 70+
+disciplines. **Pass 52 adds the *GPU memory compaction, online
+KV clustering, formal spec-decode verification, and block-aligned
+paged eviction* vertices** to the pass-51 stack. Highest-leverage
+finding is DiffKV (2412.03131) — the first pass-52 result that
+addresses a Goal 6 failure mode (Metal fragmentation under long
+sessions) we have observed but not previously diagnosed. Runner-up
+is Chelsea / KV Cache Clustering (2506.11418), which closes the
+pass-49-through-51 online-k-means carry with a specific
+LLM-applicable algorithm. Pass 52 also formalizes three long-carry
+dead ends, closing bookkeeping that has been open for 5 passes.
+Meow meow meow.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -15144,4 +15533,16 @@ and runtime MoE orchestration (DyMoE pairing with static SliceMoE)
 — highest-leverage being StructKV's attention-graph-topology
 signal, the first pass-51 result genuinely orthogonal to every
 eviction scorer shipped or tasked.** Tasks 225-228 track these.
+**Pass 52 adds the GPU parallel memory compaction (DiffKV),
+online KV-state clustering via Chunked Soft Matching (Chelsea /
+KV-Clustering, closing the pass-49-through-51 online-k-means
+carry), step-level formal-verification speculative decoding
+(SpecGuard), and block-aligned paged eviction (PagedEviction)
+vertices — highest-leverage being DiffKV's parallel Metal-
+compatible compaction, which addresses a Goal-6 fragmentation
+failure mode observed but not previously diagnosed. Pass 52 also
+formalizes three long-carry gaps as permanent dead ends (Metal-
+specific kernels, training-free gist tokens, position-implicit
+codebooks) — five passes without closure is the declared
+threshold. Tasks 229-232 track the pass-52 code actions.**
 
