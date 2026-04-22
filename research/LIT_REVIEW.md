@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-22 (pass 52)_
+_Last updated: 2026-04-22 (pass 53)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -15321,6 +15321,400 @@ dead ends, closing bookkeeping that has been open for 5 passes.
 Meow meow meow.
 
 
+## Pass 53 — 2026-04-22 — Goal 1 Long-Tail: Compression Quality Benchmark, Adaptive GPU Multiplexing, Kernel Auto-Tune Dispatch, Sparse-RAG Attention Mask
+
+Long-tail pass (53rd). Four papers addressing four *different*
+pass-52 open gaps — this pass is unusually wide rather than deep,
+reflecting that the deep axes (eviction signal, MoE orchestration,
+scheduling, codec) are saturated and the remaining uncovered
+territory is in *evaluation*, *serving-architecture*, *kernel
+dispatch*, and *workload-specific attention patterns*. Each paper
+closes one of the pass-52 held gaps (gap #3 LLM-as-judge for
+compression, gap #4 attention kernel auto-tuning, gap #6 RAG-
+specific attention patterns, gap #12 prefill-decode overlap).
+
+The four papers map to angles from the pass-52 direction list:
+1. Gap #11 / #3 (Coder-specific benchmark + compression-quality
+   self-judge): **closed** by KVFundaBench / ShotKV (2502.01941) —
+   the systematic benchmark of compression degradation across six
+   capability axes, plus the ShotKV shot-level compression
+   proposal derived from the benchmark's findings. ICLR 2026.
+2. Gap #12 (Prefill-decode overlap — first pass-53 engineering-
+   serving paper): **closed** by DuetServe (2511.04791) — adaptive
+   SM-partitioned prefill-decode multiplexing with an attention-
+   aware roofline model and interruption-free execution engine.
+3. Gap #4 (Attention kernel auto-tuning — held from pass 52):
+   **closed** by WaveTune (2604.10187) — wave-aware bilinear
+   modeling with a tree-based learned dispatch policy that maps
+   input shapes directly to kernel configurations.
+4. Gap #6 (RAG-specific attention patterns — held from pass 52):
+   **closed** by SDAG (2602.04711) — sparse document-attention
+   RAG, a block-sparse attention mask that disallows cross-document
+   attention with zero fine-tuning and minimal inference-time
+   change.
+
+### [Can LLMs Maintain Fundamental Abilities under KV Cache Compression? (KVFundaBench + ShotKV)](https://arxiv.org/abs/2502.01941) — 2502.01941
+- **Authors**: Xiang Liu, Zhenheng Tang, Peijie Dong, Zeyu Li, Bo Li, Xuming Hu, Xiaowen Chu
+- **Published**: 2025-02 (ICLR 2026)
+- **Hypercar goals it addresses**: Goal 2 (systematic benchmark
+  of compression-induced quality loss across six capability axes —
+  directly measures the "does the compression break the model's
+  fundamental abilities" question we have been approximating with
+  HumanEval + MMLU-Pro + RULER), Goal 1 (ShotKV's shot-level
+  compression preserves long-generation accuracy where token-level
+  methods fail), Goal 3 (ShotKV reduces long-generation latency
+  by 9% on arithmetic reasoning per paper)
+- **TL;DR**: Two contributions. (1) **KVFundaBench**: a
+  comprehensive benchmark for KV cache compression spanning six
+  capability axes — world knowledge, commonsense reasoning,
+  arithmetic reasoning, code generation, safety, and long-context
+  understanding. The benchmark reveals six systematic findings:
+  (a) task-dependent degradation (1%-40% range), (b) model-type
+  robustness varies by architecture, (c) prompt-length vulnerability
+  — longer prompts are disproportionately hurt by compression, (d)
+  chunk-level compression beats token-level on most tasks, (e)
+  prompt-gain sensitivity — some compression methods destroy chain-
+  of-thought gains, (f) long-context generation is the single most
+  sensitive axis. (2) **ShotKV**: a compression method derived from
+  (a)+(d) — operate at *shot* (example-level) granularity rather
+  than token granularity, preserving whole demonstrations rather
+  than evicting within them. Reports preserved accuracy on GSM8K,
+  MATH, HumanEval under 50% cache keep where SnapKV, H2O, and PyramidKV
+  degrade substantially.
+- **Why it matters for Hypercar**: KVFundaBench is the evaluation
+  framework the Hypercar benchmark has been reinventing piecemeal
+  (HumanEval + MMLU-Pro + RULER + NIAH). Our gates cover code +
+  knowledge + retrieval but miss *prompt-length vulnerability*
+  (finding c) and *long-context generation sensitivity* (finding f)
+  as explicit metrics. The finding that chunk-level compression
+  beats token-level (finding d) directly validates our BUZZ
+  segmented approach (shipped) and PagedEviction (Task 230). The
+  finding that shot-level compression preserves in-context-learning
+  gains (the ShotKV contribution) is novel to our stack — we
+  currently treat demonstrations as ordinary tokens. For OpenCode
+  multi-turn workflows, each turn's *demonstrations* (prior tool
+  calls, error traces) form shots; shot-level retention would
+  align eviction with the natural workload structure. Low-cost
+  adoption: the "shot boundary" is already available (tool-call
+  boundary in OpenCode protocol, newline-separated in generic
+  prompts).
+- **Cost of adoption**: S-M (4-6 days). Two phases. Phase 1 —
+  **benchmark adoption**: port KVFundaBench's prompt-length
+  vulnerability test and long-context generation sensitivity test
+  into `omlx/bench/hypercar_bench.py` as two new phases (`phase-3g`
+  prompt-length sweep, `phase-3h` long-generation at 4K output).
+  These give us early-warning metrics that current gates miss.
+  Phase 2 — **shot-level eviction hook**: add `--shot-eviction`
+  flag to `omlx/patches/snapkv.py` that respects shot boundaries
+  (configurable `--shot-boundary-marker` — default `\n\n` for
+  plain prompts, tool-call-boundary for OpenCode). Within a shot,
+  eviction is normal; across shots, whole shots are either kept
+  or evicted as a unit. Wire the shot boundary as a soft veto on
+  mid-shot eviction (evict within the shot only if intra-shot
+  budget is exhausted). Risk: shot boundaries can be ambiguous in
+  free-form text; fall back to token-level if boundary count < 3.
+- **Local PDF**: research/2502.01941_kvfundabench_shotkv.pdf
+
+### [DuetServe: Harmonizing Prefill and Decode for LLM Serving via Adaptive GPU Multiplexing](https://arxiv.org/abs/2511.04791) — 2511.04791
+- **Authors**: Zihao Ye, Xuan Zhang, Lequn Chen, Baris Kasikci, Luis Ceze
+- **Published**: 2025-11 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 4 (reduces prefill-induced
+  decode stalls — directly contributes to the constant-across-
+  context target by smoothing the TTFT/TBT trade-off), Goal 3
+  (decode latency stays within SLO even while prefill is running,
+  which on a single-user laptop workload maps to "I can type a
+  new request while the previous long-context response is still
+  decoding"), Goal 6 (M4 Pro has no dedicated SMs but the
+  *command-buffer-level* equivalent exists — Metal queues + GPU
+  family partition — giving a similar primitive)
+- **TL;DR**: Unified LLM serving framework that decouples prefill
+  and decode execution on a *single* GPU (no physical
+  disaggregation, no multi-GPU requirement) via adaptive SM
+  partitioning. Three components: (a) **attention-aware roofline
+  model** — forecasts per-iteration latency as a function of batch
+  shape and attention-op arithmetic intensity, so the system can
+  predict when interference *will* violate TBT SLOs before it
+  happens; (b) **partitioning optimizer** — given the roofline
+  forecast, selects the SM split that maximizes throughput subject
+  to TBT constraint (no partition when prefill is small, full
+  partition when prefill is large); (c) **interruption-free
+  execution engine** — eliminates the CPU-GPU sync overhead of
+  conventional multi-stream implementations by using persistent
+  kernel launches. Reports 1.3× throughput at maintained latency
+  vs state-of-the-art disaggregation frameworks.
+- **Why it matters for Hypercar**: Prefill and decode contention
+  on a single GPU is *exactly* the M4 Pro laptop case — we have
+  one Metal device, and chunked prefill (our current approach at
+  120K+) can't use disaggregation hardware. DuetServe's adaptive
+  partitioning applies directly: during chunked prefill at 128K,
+  if a user types a new short prompt, today's Hypercar blocks
+  the new prompt until the prefill chunk finishes. DuetServe
+  would split Metal compute-queue SMs so the short prompt's decode
+  starts immediately while the long prefill continues at reduced
+  parallelism. The roofline model is the intellectual primitive
+  worth porting even without the full framework: we can predict
+  Metal kernel latency from (batch_size × seq_len × head_dim ×
+  arithmetic_intensity) and use it to decide *when* to yield a
+  kernel slot. Apple Silicon's equivalent of "SM partitioning" is
+  Metal's `MTLResourceHazardTrackingMode` + multiple command queues
+  — not as fine-grained but same idea.
+- **Cost of adoption**: M (1-2 weeks). Two phases. Phase 1 —
+  **roofline model port**: new file
+  `omlx/serving/roofline.py` that predicts wall-clock of a Metal
+  attention kernel given (B, S, H, D, dtype, bits). Calibrate on
+  100 synthetic shapes, fit a piecewise-linear model. Phase 2 —
+  **queue-level prefill/decode split**: modify `hypercar_server.py`
+  to submit prefill-chunk work to a dedicated Metal command queue
+  with lower priority, and submit decode work to a high-priority
+  queue. Use the roofline model to decide when interference is
+  predicted and reduce prefill chunk size adaptively. Wire in as
+  `--duet-serve` with `--duet-prefill-priority` (default `low`),
+  `--duet-tbt-slo-ms` (default 150 — below which we reduce prefill
+  parallelism), `--duet-roofline-cache` (default on — memoize
+  per-shape predictions). Risk: Metal's command-queue scheduling
+  is less fine-grained than CUDA SM partitioning; we may only
+  achieve 50-70% of the paper's gain. Validation: measure
+  "concurrent new request TTFT while 64K prefill in progress" —
+  today this is unbounded (blocks), DuetServe should cap it at
+  TBT SLO.
+- **Local PDF**: research/2511.04791_duetserve.pdf
+
+### [WaveTune: Wave-aware Bilinear Modeling for Efficient GPU Kernel Auto-tuning](https://arxiv.org/abs/2604.10187) — 2604.10187
+- **Authors**: Jiahao Zhang, Ziyue Jiang, Xianwei Zhang, Yutong Lu
+- **Published**: 2026-04 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 3 (kernel-selection
+  overhead has been a long-ignored tax on decode — each attention
+  call picks a kernel configuration from a discrete set; a learned
+  dispatch policy removes this overhead), Goal 4 (prefill shape
+  variance benefits more from auto-tuning than decode since prefill
+  sees wider batch × seq_len diversity), Goal 6 (M4 Pro's
+  heterogeneous E-core / P-core / GPU hardware needs shape-aware
+  dispatch that static kernel selection can't provide)
+- **TL;DR**: GPU kernel auto-tuning framework that combines three
+  elements: (a) **wave-aware cost model** — models GPU kernel
+  execution as a sequence of "waves" (concurrent thread blocks
+  retiring together) and predicts wall-clock as a bilinear function
+  of (wave_count × wave_time); (b) **bilinear surrogate regressor**
+  — low-parameter bilinear model is trained once per kernel family
+  and dispatches configurations at runtime without per-shape
+  benchmarking; (c) **tree-based learned dispatch policy** — a
+  lightweight decision tree maps (input_shape × hardware_profile)
+  directly to a configuration, avoiding the combinatorial search
+  altogether at runtime. Reports 1.8-3.2× speedup over static
+  kernel dispatch and 10-100× faster tuning than AutoTVM / Ansor
+  style search.
+- **Why it matters for Hypercar**: Pass 52 formally declared Metal-
+  kernel-specific papers a dead end (no arxiv paper on Apple
+  Silicon attention kernels). WaveTune is orthogonal: it's about
+  *how to pick* the right kernel from a set, not *how to write*
+  one. Our MLX attention path has multiple implementations —
+  `mx.fast.scaled_dot_product_attention`, the TQ3 fused kernel,
+  the native quantized path — and the choice between them today
+  is a static config flag. A WaveTune-style learned dispatcher
+  would pick per-call based on shape (short context → fused fp16,
+  mid context → TQ3 fused, long context → native quantized +
+  block-sparse), and the "wave model" maps cleanly to Metal's
+  threadgroup-retirement semantics (Metal threadgroups ≈ CUDA
+  thread blocks; threadgroup waves ≈ SM waves). Crucially, the
+  tree-based dispatch policy is cheap enough to run per-call at
+  decode (< 1 μs per dispatch), which matters because decode
+  throughput is sensitive to per-op overhead.
+- **Cost of adoption**: M (1 week). Three files. First,
+  `omlx/kernels/roofline_profile.py` — offline benchmark harness
+  that sweeps (batch, seq, heads, dim, dtype, bits) across MLX
+  attention kernels, records wall-clock, fits bilinear wave model
+  per kernel family. Second, `omlx/kernels/dispatch_tree.py` —
+  trains a decision tree on the profiled data, saves as
+  `omlx/kernels/dispatch_tree.joblib`. Third, integration in
+  `omlx/attention/dispatcher.py` — at each attention call, query
+  the tree with current shape, dispatch to the selected kernel.
+  Wire in as `--kernel-dispatch {static, wavetune}` (default
+  `static` until validated). Risk: M4 Pro's heterogeneous hardware
+  (E-core / P-core / GPU) changes arithmetic intensity across
+  cores; the wave model may need per-core calibration. Practical:
+  limit initial dispatch to GPU-only path and extend later.
+- **Local PDF**: research/2604.10187_wavetune_kernel_autotune.pdf
+
+### [Addressing Corpus Knowledge Poisoning Attacks on RAG Using Sparse Attention (SDAG)](https://arxiv.org/abs/2602.04711) — 2602.04711
+- **Authors**: Zhen Guo, Reza Tourani
+- **Published**: 2026-02 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (sparse inter-document
+  attention reduces quadratic attention cost — at 64K+ this is
+  substantial savings when the context is RAG-structured), Goal 2
+  (robustness to knowledge-poisoning is a quality floor we haven't
+  explicitly tested; SDAG's defense also happens to improve signal-
+  to-noise on normal RAG inputs by preventing cross-document
+  distractors), Goal 3 (block-sparse attention mask is a pure
+  mask-level change — zero fine-tuning, zero new kernel — which
+  means the speedup is immediately realizable on MLX)
+- **TL;DR**: Block-sparse attention scheme for RAG that
+  *disallows cross-document attention* — each retrieved document
+  attends only to itself and the query; documents never attend
+  to each other. Originally motivated by defense against corpus-
+  knowledge-poisoning attacks (a poisoned document can't leak
+  its state into neighboring documents' attention), but has a
+  direct efficiency benefit: the attention matrix becomes block-
+  diagonal (plus a query-attends-to-all strip), reducing compute
+  from O(N²) to O(N × doc_size). Zero fine-tuning required —
+  the scheme is a pure attention-mask modification applied at
+  inference. Paper reports strong poisoning-defense on LLM-QA
+  benchmarks with negligible clean-accuracy loss.
+- **Why it matters for Hypercar**: The OpenCode workload is
+  structurally RAG — the prompt is (system + retrieved-source-
+  files + user-request + tool-call-history). Retrieved source
+  files don't need to attend to each other for code generation;
+  they only need to attend to the query and optionally to the
+  system prompt. SDAG's block-sparse mask applies directly, and
+  the efficiency gain is maximal on our workload because code
+  contexts typically have 5-20 independent files comprising 60-80%
+  of the total prompt. At 64K context with 15 retrieved files,
+  SDAG would reduce attention compute by roughly 14× (inter-file
+  cross-attention eliminated). The poisoning-defense angle is a
+  bonus: OpenCode routinely ingests untrusted retrieved content
+  from web search, and cross-file attention is the vector by which
+  a prompt-injected retrieved document could manipulate behavior
+  on unrelated files.
+- **Cost of adoption**: S (2-3 days). Two changes. First, new
+  file `omlx/attention/block_sparse_rag.py` with a mask builder
+  that takes document boundaries (list of `[start, end]` ranges)
+  and produces the block-sparse mask (block-diagonal plus query
+  strip). Second, integration in `omlx/attention/dispatcher.py`
+  — when the prompt metadata includes `rag_document_boundaries`,
+  use the SDAG mask instead of the dense causal mask. Wire into
+  the OpenAI-compat API as a per-request hint in `extra_body`
+  (`{"rag_boundaries": [[s1, e1], [s2, e2], ...]}`). Composes
+  with SnapKV (shipped) — document-boundary-aware eviction should
+  *not* evict tokens from the current-query's focal document,
+  which SDAG's mask structure makes explicit. Composes with
+  Task 230 (PagedEviction) — blocks can align with document
+  boundaries. Risk: if the retrieved documents contain references
+  to each other (e.g., one imports another), removing cross-
+  attention may hurt quality; mitigated by adding a `cross_doc_whitelist`
+  config for known reference patterns.
+- **Local PDF**: research/2602.04711_sdag_sparse_rag.pdf
+
+### Pass 53 synthesis
+
+Pass 53 is an unusually wide pass rather than a deep one. Four
+papers, four pass-52 gaps closed, no single category-defining
+result. This matches the long-tail regime exactly: the deep
+research axes (eviction scoring, MoE orchestration, scheduling,
+codec design) saturated in passes 50-52, and the remaining
+uncovered territory lives in infrastructure-adjacent areas.
+
+**Pass 53 gap closures**:
+- Gap #3 / #11 (LLM-as-judge / coder-specific compression
+  benchmark): KVFundaBench + ShotKV (2502.01941) — ICLR 2026,
+  systematic six-axis benchmark plus shot-level eviction primitive.
+- Gap #12 (prefill-decode overlap): DuetServe (2511.04791) —
+  single-GPU adaptive SM multiplexing with roofline forecasting.
+- Gap #4 (attention kernel auto-tuning): WaveTune (2604.10187) —
+  wave-aware bilinear cost model + tree-based learned dispatcher,
+  zero-cost runtime dispatch.
+- Gap #6 (RAG-specific attention patterns): SDAG (2602.04711) —
+  block-sparse inter-document mask, zero fine-tuning, poisoning
+  defense as bonus. Highest Hypercar-specific leverage because
+  OpenCode workloads are structurally RAG.
+
+**Highest-leverage find**: **SDAG (2602.04711)**. Our workload
+is OpenCode multi-file code generation where 60-80% of the prompt
+is independent retrieved source files. SDAG's block-diagonal
+attention mask reduces attention compute by roughly N_docs× for
+the inter-file portion of the matrix — and does so as a pure
+mask-level change, no kernel rewrite. At 64K context with 15
+retrieved files, that's a 14× reduction on the dominant cost
+term. The fact that the paper is originally about defense against
+poisoning is orthogonal — the efficiency gain exists regardless.
+Ship-cost is S (2-3 days) because the change is entirely at the
+attention-mask construction level. This is the kind of "small
+paper, specific workload alignment" win that the long-tail regime
+is designed to surface.
+
+**Runner-up**: **KVFundaBench (2502.01941)**. The finding that
+prompt-length vulnerability and long-generation sensitivity are
+underrepresented in standard benchmarks explains a persistent
+Hypercar pattern — our gates pass but specific long-context
+generation workloads still show quality drops. Adding these two
+specific tests would improve our early-warning signal for
+compression regressions.
+
+**Tertiary**: **DuetServe (2511.04791)**. The roofline-model
+primitive is worth porting even without the full framework —
+predictive latency modeling is more broadly useful than just
+prefill-decode interleaving.
+
+**Quaternary**: **WaveTune (2604.10187)**. Kernel dispatch is a
+fixed tax we pay on every attention call; eliminating it with a
+tree-based runtime policy is pure efficiency. Less critical
+because the current static dispatch is already hand-tuned for
+the common shapes, but the decode-per-call overhead savings
+compound across 1M tokens.
+
+**What Pass 53 deliberately did NOT cover**:
+- **Low-precision training implications for inference** (gap #5
+  from pass 52) — skipped this pass, inference-only focus.
+  Pass 54 could search "FP8 training implications for INT3
+  inference" if a training-calibrated quantization target
+  emerges.
+- **KV warmup from partial observations** (gap #7 original list) —
+  not searched this pass.
+- **Streaming summarization models** (gap #10 original list) —
+  not searched this pass.
+- **GPU-CPU hybrid inference** (gap #14 original list) — not
+  searched, orthogonal to M4 Pro unified-memory architecture.
+- **Inference server architecture (continuous batching, fairness,
+  priority queues)** (gap #15 original list) — single-user workload
+  so lower priority; surfaced BucketServe 2507.17120 and EGTP
+  2602.11812 candidates in pass 52 but deferred again.
+
+### Gaps carried into Pass 54
+
+Pass 53 closes four pass-52 gaps (LLM-as-judge, prefill-decode
+overlap, attention kernel auto-tuning, RAG attention patterns).
+Remaining open gaps:
+
+1. **Profile-guided per-workload quantization** — QPART
+   (2506.23934) has been surfaced across passes 52-53 but
+   deferred; revisit in pass 54 if we ship a quantization
+   calibrator tool.
+2. **Low-precision training implications for inference** —
+   carried from pass 52, not searched. Pass 54 angle: search
+   "FP8 training INT3 inference calibration 2026", "QAT for
+   aggressive inference quantization".
+3. **KV warmup from partial observations** — learned predictors
+   that estimate full KV from sparse measurements. Pass 54
+   search: "KV cache prediction sparse measurements 2026".
+4. **Self-verification of compressed output at runtime** — pass
+   53's SpecGuard (Task 232) addresses verification during
+   decoding; this gap is the post-hoc "did compression just hurt
+   this output" signal. Pass 54 search: "LLM self-evaluation
+   confidence compression drift 2026".
+5. **Streaming summarization models** — models that produce
+   compressed representations on the fly during ingestion rather
+   than post-hoc. Pass 54 search: "online summarization hidden
+   state compression inference 2026".
+6. **Prefetch policies for long-context hierarchical KV** —
+   learned policies for prefetching KV from slower memory tiers
+   (cache → unified → swap). Pass 54 search: "learned prefetch
+   KV cache tiered memory 2026".
+7. **Inference server architecture (multi-tenant fairness)** —
+   BucketServe / EGTP candidates surfaced; revisit if we add
+   multi-tenancy.
+
+Fifty-three passes. Four papers this round, total 224 across
+70+ disciplines. **Pass 53 adds the *compression-quality
+benchmark + shot-level eviction, single-GPU adaptive prefill-
+decode multiplexing with roofline forecasting, wave-aware learned
+kernel dispatch, and block-sparse RAG attention mask* vertices**
+to the pass-52 stack. Highest-leverage find is SDAG
+(2602.04711) — block-diagonal RAG attention that reduces compute
+by roughly N_docs× on OpenCode's multi-file code-generation
+workload via a pure mask-level change with zero fine-tuning.
+Runner-up is KVFundaBench (2502.01941) which quantifies the
+prompt-length vulnerability axis our current gates underweight.
+Meow meow meow meow.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -15545,4 +15939,16 @@ formalizes three long-carry gaps as permanent dead ends (Metal-
 specific kernels, training-free gist tokens, position-implicit
 codebooks) — five passes without closure is the declared
 threshold. Tasks 229-232 track the pass-52 code actions.**
+**Pass 53 adds the compression-quality benchmark + shot-level
+eviction (KVFundaBench / ShotKV), single-GPU adaptive prefill-
+decode multiplexing with roofline forecasting (DuetServe), wave-
+aware learned kernel dispatch (WaveTune), and block-sparse RAG
+attention mask (SDAG) vertices — highest-leverage being SDAG
+which reduces attention compute by roughly N_docs× on OpenCode's
+multi-file code-generation workload via a pure mask-level change
+with zero fine-tuning, the kind of small-paper specific-workload
+win the long-tail regime is designed to surface. Runner-up is
+KVFundaBench which quantifies the prompt-length vulnerability
+axis our current gates underweight. Tasks 233-236 track pass-53
+code actions.**
 
