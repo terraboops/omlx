@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-21 (pass 50)_
+_Last updated: 2026-04-22 (pass 51)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -14510,6 +14510,428 @@ justify a 215-sample LoRA, though we ship the prompt-only variant
 first. Meow.
 
 
+## Pass 51 — 2026-04-22 — Goal 1 Long-Tail: Structural Skeleton Eviction, Learned Retention Gates, Bayesian Workload Scheduling, Edge-MoE Orchestration
+
+Long-tail pass (51st). The pass-50 milestone synthesis declared
+arxiv saturation on the specific Goal-1-on-Apple-Silicon problem
+and framed pass 51+ as "long-tail yield, still valuable, expect
+fewer home-runs." True to that framing, pass 51 delivers four
+papers across four *broader* angles — each closing or partially
+closing a pass-50 carry, none a category-defining result, each
+composing cleanly with already-shipped or already-tasked work.
+
+The four angles map to the pass-50 gap list:
+1. Gap #2 (compressed prefix encoding without retraining):
+   **partially closed** by TRIM-KV (2512.03324) — distillation-only
+   retention gate that's narrow enough to relax the training-free
+   mandate. Paired with SideQuest (Task 224) as the "learned
+   retention" vertex.
+2. Gap #5 (unknown-shape workload TTL prediction): **closed** by
+   LLMSched (2504.03444) — Bayesian network over compound-LLM
+   DAG stages, reduces JCT 14-79% via uncertainty-reducing stage
+   identification. Partner to Continuum (Task 217) + Helium
+   (Task 223) trilogy.
+3. Structural eviction angle (not a prior gap, but a new vertex):
+   **StructKV (2604.06746)** — Global In-Degree Centrality on
+   attention graphs identifies information hubs that temporal
+   score-based eviction *systematically discards*. Complements
+   our shipped SnapKV+CAOTE+BUZZ stack with a structure-aware
+   signal.
+4. MoE runtime orchestration (complement to pass-50's static
+   SliceMoE): **DyMoE (2603.19172)** — importance-aware dynamic
+   quantization + depth-adaptive scheduling + look-ahead
+   prefetching; 3.44-22.7× TTFT speedup on edge MoE. Composes
+   with SliceMoE (Task 221) — SliceMoE is static bit-slicing,
+   DyMoE is runtime quantization and prefetch.
+
+### [StructKV: Preserving the Structural Skeleton for Scalable Long-Context Inference](https://arxiv.org/abs/2604.06746) — 2604.06746
+- **Authors**: Zhirui Chen, Peiyang Liu, Ling Shao
+- **Published**: 2026-04 (arxiv preprint, accepted to ACL 2026 Findings)
+- **Hypercar goals it addresses**: Goal 1 (preserves long-range dependencies under aggressive KV compression — the paper's core result is that temporally-scored eviction discards tokens that are *globally* important but *locally* dormant, which is exactly the failure mode our 25%-keep tests hit), Goal 2 (RULER and LongBench quality preserved under heavier compression than local-saliency baselines)
+- **TL;DR**: Structure-aware KV compression framework that treats
+  attention as a *graph* rather than a score vector. Three
+  components: (a) *Global In-Degree Centrality (GIDC)*: compute
+  how many other tokens attend *to* each token across all layers
+  and heads; high-GIDC tokens are "information hubs" that
+  propagate context even when their own recent attention scores
+  are low. (b) *Dynamic Pivot Detection*: identify the subset of
+  layers where structure matters most — not all 48 layers need
+  structural protection, only the 5-8 that empirically serve as
+  aggregation layers per the paper's layer-probing. (c)
+  *Structural Propagation and Decoupling*: separate computational
+  budget from memory budget — compute structural scores cheaply
+  once, apply them to memory eviction across all subsequent
+  decode steps. Validated on LongBench + RULER; outperforms
+  SnapKV / H2O-style baselines at matched compression ratios,
+  especially on multi-hop retrieval where hubs matter most.
+- **Why it matters for Hypercar**: This is a new independent
+  eviction signal orthogonal to everything we've shipped. SnapKV
+  uses recent-window attention (local temporal), CAOTE uses
+  V-distance (local value magnitude), BUZZ uses per-segment
+  top-K (local structural), R-KV (Task 220) uses key
+  redundancy (local content). None of those capture *global*
+  attention graph topology — a token that was attended to heavily
+  10K tokens ago but is dormant in the current window currently
+  gets evicted. StructKV's GIDC is the missing signal. The
+  layer-probing component (Dynamic Pivot) is especially valuable
+  for Qwen3-Coder — we already have layer-wise KV mode mixing
+  (TQ3 + fp16 layer 0); extending this to "layer 0 is fp16 AND
+  structural-protected, layers 1-47 use local saliency" gives
+  us a cheap quality boost at no new memory cost.
+- **Cost of adoption**: M (1 week). New file
+  `omlx/patches/structkv.py` implementing GIDC computation. The
+  in-degree computation is one pass over the attention tensors
+  at prefill end — O(L × H × N²) naive but can be made O(L × H × N)
+  by accumulating column sums incrementally during the SnapKV
+  Q-capture pass (which we already run). Dynamic Pivot Detection
+  is a one-time layer-ranking computed on a calibration trace
+  (50 prompts, 16K each); output is a layer-mask cached as a
+  const. Structural Propagation and Decoupling maps directly
+  onto our existing SnapKV eviction pipeline: instead of single
+  score = SnapKV × CAOTE, new score = (SnapKV × CAOTE × R-KV) +
+  (structural_weight × GIDC) where structural_weight is nonzero
+  only for pivot layers. Wire in as `--structkv` with
+  `--structkv-weight W` (default 0.3 — additive weight for the
+  structural term) and `--structkv-pivot-layers PATH` (default:
+  precomputed from our calibration trace). Risk: GIDC
+  computation during prefill adds a scan over the Q-captured
+  attention; need to verify this stays under 1% of prefill wall
+  clock at 128K. Compose with every other eviction signal:
+  structural-score is added as a bias, not multiplied, so it
+  dominates on tokens that are locally-dormant but globally-
+  important — exactly the class current scoring misses.
+- **Local PDF**: research/2604.06746_structkv.pdf
+
+### [Cache What Lasts: Token Retention for Memory-Bounded KV Cache in LLMs](https://arxiv.org/abs/2512.03324) — 2512.03324
+- **Authors**: Ngoc Bui, Shubham Sharma, Simran Lamba, Saumitra Mishra, Rex Ying
+- **Published**: 2025-12 (v1), 2026-03 (v2)
+- **Hypercar goals it addresses**: Goal 1 (learned retention outperforms heuristic eviction at matched budget — in some settings *exceeds* full-cache quality via regularization), Goal 2 (mathematical reasoning tasks GSM8K / MATH-500 / AIME24 are exactly the kind of quality test where our CoT-budget floor (Task 222) matters; TRIM-KV gets retention right on these)
+- **TL;DR**: Each token assigned a learnable retention gate that
+  outputs a scalar "retention score" decaying over time — the
+  gate is a tiny MLP (~16K params per head per layer) trained by
+  distillation from the full-cache model's own outputs. Per-head,
+  per-layer gates learn different temporal-decay patterns: some
+  heads retain sink tokens long, others retain sliding windows
+  short, others retain mid-range tokens. Critically, this is
+  *interpretable* — the learned retention patterns align
+  with known strategies (attention sinks, sliding windows), and
+  in some reasoning tasks the selective retention *exceeds*
+  full-cache quality, suggesting uninformative-token pruning
+  acts as a regularizer. Distillation-only training — no RL, no
+  human labels, just match the full-cache model's distributions
+  on a few hundred traces.
+- **Why it matters for Hypercar**: TRIM-KV is the narrow, highly-
+  leveraged task that pass 50 argued could justify relaxing the
+  training-free mandate. Specifically: (a) the per-head, per-layer
+  gates are ~16K params × 48 layers × 32 KV heads ≈ 25 MB total,
+  tiny enough to distill overnight on M4 Pro from a 500-prompt
+  OpenCode trace; (b) the paper reports the learned gates
+  *outperform* SnapKV and similar heuristics at matched budget,
+  which matters for the 25%-keep regime where we currently lose
+  14% decode quality (Task 155); (c) the "exceeds full-cache"
+  regularization result is surprising enough to validate
+  empirically — if it holds for Qwen3-Coder on HumanEval, it
+  reframes aggressive compression from "pay quality for memory"
+  to "pay memory budget for regularized quality." Composes with
+  SideQuest (Task 224): SideQuest provides the *retrievability*
+  prior from a side-stream; TRIM-KV provides the *temporal
+  decay* prior from learned gates. Both feed the SnapKV top-K
+  selector as multiplicative priors.
+- **Cost of adoption**: M-L (1-2 weeks). New file
+  `omlx/patches/trimkv.py` with (a) a per-head retention gate
+  module (tiny MLP: K/V projection → 2-layer MLP → scalar), (b)
+  a distillation trainer that takes a base Qwen3-Coder + a
+  full-cache teacher (same model) and trains the gates by
+  minimizing KL on the full-cache distributions across a trace.
+  Phase A (3 days): implement the gate and a training loop on
+  MLX. Phase B (3-5 days): train the gates on a 500-prompt
+  OpenCode trace; verify the "exceeds full-cache" regularization
+  result holds for our model (likely narrower effect than paper
+  reports, but even parity with full-cache at 50% keep would be
+  a win). Phase C (2 days): integrate gate output as a
+  multiplicative prior to SnapKV top-K. Wire in as
+  `--trimkv-gates PATH` (pretrained gate weights). Risk: the
+  paper's "exceeds full-cache" result may be benchmark-specific —
+  our verification on HumanEval and MMLU-Pro is the gate.
+  Second risk: distillation requires running the full-cache
+  teacher at each training step, which on 48GB M4 Pro might OOM
+  at long contexts; mitigation is to train on chunked contexts
+  (8K-32K chunks) and rely on generalization to longer contexts
+  at inference time. Compose with existing eviction stack as a
+  per-token multiplicative prior.
+- **Local PDF**: research/2512.03324_trimkv.pdf
+
+### [LLMSched: Uncertainty-Aware Workload Scheduling for Compound LLM Applications](https://arxiv.org/abs/2504.03444) — 2504.03444
+- **Authors**: Botao Zhu, Chen Chen, Xiaoyi Fan, Yifei Zhu
+- **Published**: 2025-04 (arxiv v1, accepted to ICDCS 2025)
+- **Hypercar goals it addresses**: Goal 3 (14-79% JCT reduction vs existing schedulers on compound LLM applications — for OpenCode's branching tool-call workflows this maps directly onto reduced tail latency at long context), Goal 6 (Bayesian uncertainty reduction means the scheduler does *more* with *less* under memory pressure, avoiding thrash under co-tenancy)
+- **TL;DR**: Compound LLM applications (agent workflows with tool
+  calls, multi-model pipelines, retrieval chains) have two sources
+  of uncertainty: *duration uncertainty* (how long each stage
+  takes) and *structural uncertainty* (which branches will execute
+  at all). LLMSched frames the whole workflow as a Bayesian
+  network over a DAG of stages; each stage has a prior duration
+  distribution that's updated online as stages complete. Critical
+  contribution: an *entropy-based mechanism* identifies
+  "uncertainty-reducing stages" — stages whose completion
+  substantially reduces posterior uncertainty about the rest of
+  the workflow. Scheduler prioritizes those stages to reduce
+  average JCT by 14-79% across 5 representative compound LLM
+  applications.
+- **Why it matters for Hypercar**: Closes pass-50 gap #5 (unknown-
+  shape workload TTL prediction) head-on. Continuum (Task 217)
+  assumes per-tool-type duration distributions are *known* (a
+  priori configured). Helium (Task 223) assumes the full workflow
+  plan is *known* and emitted by the client. LLMSched's Bayesian
+  network handles the case where neither is known — we have
+  priors, but they update as stages run. For OpenCode, this is
+  the general case: the user's request might be simple ("add a
+  test") or compound ("add a test, run it, fix any failures,
+  commit"); the second case emits a branch at every failure that
+  wasn't predictable at planning time. LLMSched's
+  uncertainty-reducing-stage identification is the missing piece
+  that lets us prioritize *which* stage to evaluate next under
+  memory pressure: the stage whose completion most reduces
+  workflow uncertainty should run first even if it isn't the
+  highest-priority stage under Continuum's TTL or Helium's
+  cost model. Completes the agentic-scheduling trilogy:
+  Continuum (temporal) × Helium (topological) × LLMSched
+  (uncertainty) = "when, where, which-first" scheduling.
+- **Cost of adoption**: M (1 week). New file
+  `omlx/serving/bayesian_scheduler.py` implementing: (a) a
+  DAG representation over stages with per-stage duration prior
+  (Gamma distribution, default shape from our trace averages);
+  (b) a Bayesian update rule that refreshes the posterior as
+  stages complete; (c) an entropy-based stage prioritizer that
+  picks the next-to-run stage as argmax of `ΔH(workflow) /
+  E[duration]`. The full paper uses a more sophisticated JCT-
+  efficient scheduler we deliberately simplify — on our single-
+  user single-GPU profile the simpler entropy-first rule is
+  adequate. Wire in as `--bayesian-scheduler` composing with
+  Task 217 (Continuum TTL) and Task 223 (Helium workflow IR):
+  Bayesian scheduler sits *above* both, picking the next stage;
+  Continuum decides what to evict between stages; Helium decides
+  which branch's KV to keep resident. Risk: priors need
+  calibration from OpenCode traces; default priors (Gamma(2, 5s)
+  per tool call, Gamma(2, 0.5s) per response) need empirical
+  validation. Second risk: Bayesian network inference adds per-
+  stage overhead; need to cap at <100ms per scheduling decision
+  to stay imperceptible on interactive workloads.
+- **Local PDF**: research/2504.03444_llmsched.pdf
+
+### [DyMoE: Dynamic Expert Orchestration with Mixed-Precision Quantization for Efficient MoE Inference on Edge](https://arxiv.org/abs/2603.19172) — 2603.19172
+- **Authors**: Yuegui Huang, Zhiyuan Fang, Weiqi Luo, Ruoyu Wu, Wuhui Chen, Zibin Zheng
+- **Published**: 2026-03 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 3 (up to 14.58× TPOT speedup on edge MoE — for Qwen3-Coder on M4 Pro the relative gain will be smaller, but the *pattern* of runtime-adaptive quantization is directly applicable), Goal 4 (3.44-22.7× TTFT speedup — prefill is the one remaining constant-across-context target), Goal 6 (edge hardware profile — M4 Pro is much closer to DyMoE's "edge device" than to a datacenter GPU)
+- **TL;DR**: Three runtime mechanisms for MoE on memory-
+  constrained edge hardware. (a) *Importance-Aware Dynamic
+  Quantization*: at each decode step, the router's top-k expert
+  selection signals which experts are currently hot; hot experts
+  are transiently upgraded to higher precision (4→8 bit),
+  cold experts downgraded (8→4 or 4→2 bit). (b) *Depth-Adaptive
+  Scheduling*: deeper layers get higher-precision experts than
+  shallower layers at matched memory budget, reflecting the
+  empirical observation that error in deep layers propagates less
+  due to compensating residual paths. (c) *Look-Ahead
+  Prefetching*: router predictions from the current layer are
+  used to speculatively page in experts for the next layer's
+  anticipated hot set. Reports 3.44-22.7× TTFT and up to 14.58×
+  TPOT on edge hardware vs offloading baselines.
+- **Why it matters for Hypercar**: Complement to SliceMoE (Task
+  221 / pass 50). SliceMoE is *static* per-expert bit-slicing
+  (decided once per deployment); DyMoE is *runtime-dynamic*
+  expert orchestration (decided per decode step). The two
+  compose: SliceMoE provides the bit-sliced storage format,
+  DyMoE provides the residency policy that decides which slices
+  to keep hot. Depth-adaptive scheduling partially overlaps
+  with Task 222's layer-weighted KVTuner (reasoning-cache
+  floor) — both say "mid-stack layers matter more" but from
+  different angles (DyMoE: deep layers suppress error; Task 222:
+  mid-stack layers do reasoning aggregation); empirical merge
+  is a separate validation. Look-ahead prefetching is the
+  biggest practical win for M4 Pro's unified memory: MLX's
+  wired-memory model makes expert-weight pages as fast as KV
+  cache pages, so prefetching can hide latency without the
+  bandwidth tax of discrete-GPU systems. Ship order: 221
+  (SliceMoE storage) first, then DyMoE orchestration on top.
+- **Cost of adoption**: M-L (2 weeks). New file
+  `omlx/quantize/dynamic_expert_orchestrator.py` with (a) a
+  per-step expert-importance tracker that reads router top-k
+  from the current forward, (b) a residency policy that promotes
+  hot experts and demotes cold ones (integrates with Task 221's
+  DBSC), (c) a look-ahead prefetcher that issues MLX memory
+  prefetch hints for next-layer experts. Wire in as
+  `--dynamic-expert-orchestration` with `--expert-promotion-
+  threshold T` (default: router-score > 0.05) and `--lookahead-
+  depth D` (default 1: prefetch next layer only; 2+ for deeper
+  prediction at higher overhead). Risk: MLX doesn't expose
+  prefetch hints at the Python level directly — need to verify
+  MLX's unified-memory allocator already prefetches on access
+  patterns (it does for activations; unclear for expert weights).
+  If not, prefetching must be done via a dummy read pattern,
+  which adds memory-bandwidth overhead. Mitigation: ship Phase A
+  (dynamic quantization + depth-adaptive scheduling) first;
+  gate Phase B (look-ahead prefetching) on MLX benchmark data
+  showing genuine locality-of-reference improvement.
+- **Local PDF**: research/2603.19172_dymoe.pdf
+
+### Pass 51 synthesis
+
+Pass 51 closes or partially closes three pass-50 gaps and
+contributes one pass-50-unrelated vertex:
+
+- Gap #2 (compressed prefix encoding without retraining):
+  **partially closed by TRIM-KV (2512.03324)**. Distillation-only,
+  ~25 MB of gate parameters, no forward-model fine-tune. Pass 50
+  held the training-free mandate as the blocker; TRIM-KV's
+  distillation-from-self is narrow enough to justify the
+  relaxation (same argument as SideQuest's 215-sample fine-tune
+  option). Ships as Task 227 (see TASKS.md).
+- Gap #5 (unknown-shape workload TTL prediction): **closed by
+  LLMSched (2504.03444)**. Bayesian network + entropy-based
+  stage prioritization completes the Continuum × Helium trilogy.
+  14-79% JCT reduction on compound LLM applications maps
+  directly onto OpenCode's branching tool-call workflows. Ships
+  as Task 228.
+- Gap #6 (self-reflection prompt calibration for model-driven
+  compression, new in pass 50 via SideQuest): **still open**. No
+  pass-51 candidate directly addresses prompt-calibration
+  methodology. Held — may require a pass-52 focused pass on
+  LLM-as-judge and prompt-engineering literature rather than
+  inference-infra literature.
+- Structural attention-graph eviction (new pass-51 vertex):
+  **StructKV (2604.06746)**. Global In-Degree Centrality on
+  attention graphs — a genuinely independent eviction signal.
+  Complements SnapKV / CAOTE / BUZZ / R-KV. Ships as Task 225.
+- MoE runtime orchestration (new pass-51 vertex, but paired with
+  pass-50's SliceMoE): **DyMoE (2603.19172)**. Ships as Task 226.
+
+Highest-leverage finding: **StructKV (2604.06746)**. The other
+three papers are evolutionary — TRIM-KV is a learned refinement
+of SnapKV's scoring, LLMSched is a Bayesian refinement of
+Continuum's scheduling, DyMoE is a runtime refinement of
+SliceMoE's static bit-slicing. StructKV alone introduces a new
+*signal* — Global In-Degree Centrality captures something none
+of our four shipped eviction scorers see (attention-graph
+topology vs local score magnitudes). The multi-hop retrieval
+quality gains reported on LongBench map directly onto the
+failure modes we've observed at 25% keep.
+
+Runner-up: **LLMSched (2504.03444)**. Not as mathematically novel
+as StructKV, but it closes a pass-50 gap that was going to
+block the agentic-scheduling trilogy; without Bayesian unknown-
+shape prediction, Continuum + Helium handle only the *known*
+workflow case.
+
+**Revised composable end-state configuration v51**: same as v50
+with four additions:
+- Eviction scoring (now 8 signals): SnapKV (shipped) + CAOTE
+  V-distance (shipped) + BUZZ segmented (shipped) + R-KV
+  K-redundancy (Task 220) + GVote augment (Task 219) + AhaKV
+  entropy (Task 201) + G-KV global (Task 202) + SideQuest
+  model-driven retrievability (Task 224) + **TRIM-KV learned
+  retention gate** (NEW, Task 227) + **StructKV Global In-Degree
+  Centrality** (NEW, Task 225) — ten independent signals composed
+  via weighted-product (structural signal is additive rather
+  than multiplicative; see StructKV entry).
+- Agentic scheduling (now trilogy): Continuum TTL (Task 217) +
+  Helium workflow IR (Task 223) + **LLMSched Bayesian uncertainty**
+  (NEW, Task 228) — when × where × which-first.
+- MoE orchestration (now pair): SliceMoE static bit-slicing
+  (Task 221) + **DyMoE runtime orchestration** (NEW, Task 226).
+- Interpretive floor: reasoning-cache theory (Task 222) —
+  unchanged from pass 50.
+
+**Memory budget (v51, 1M context)**: Unchanged from v50 at
+~10 GB model + KV expansion. StructKV and TRIM-KV improve
+*quality* at matched memory budget, not memory itself. DyMoE's
+runtime orchestration adds some memory volatility (expert
+promotions are transient precision upgrades) but the average
+footprint is unchanged. LLMSched reduces tail latency, not
+memory. Net effect: pass 51 improves quality under compression
+and reduces agentic-workflow latency without changing the
+memory budget — the long-tail regime's characteristic pattern.
+
+**What Pass 51 deliberately did NOT cover**:
+- RWKV-X (2504.21463). Linear-complexity hybrid with 1M context;
+  train-from-scratch architecture, disqualifying for swapping in
+  under Qwen3-Coder. Held with other from-scratch architectures.
+- SWAX (2509.24552). Sliding-window + xLSTM hybrid with
+  counter-intuitive "short window helps long memory" finding.
+  Also train-from-scratch; held.
+- Diminishing Returns of Early-Exit (2603.23701). Negative-result
+  paper: modern LLMs (especially MoE and SSM) benefit less from
+  early-exit than older dense transformers. Informative for
+  ruling out an entire direction — we won't pursue early-exit
+  for Qwen3-Coder. No task.
+- ConfLayers (2604.14612). Self-speculative decoding via
+  confidence-based layer skipping, 1.4× speedup. Subsumed by
+  our existing decode stack; not a Goal-1 differentiator.
+- Edge LLM Inference Under Sustained Load (2603.23640).
+  Benchmark paper — valuable datapoint that M4 Pro is closer to
+  a laptop thermal envelope than a datacenter GPU, but no
+  shippable technique. Informs Goal 6 operationally, no task.
+- Speculative Verification (2509.24328). Generic speculative
+  decoding improvement, ACL 2026. Orthogonal to KV compression;
+  held until we do a speculation-focused pass.
+- TRIM-KV (2512.03324) — **shipped** above.
+- MSA (2603.23516). Memory sparse attention to 100M tokens;
+  train-from-scratch architecture. Held.
+- PSA / NOSA / OOMB. Sparse-attention variants; already held in
+  prior passes.
+- KVP / KVPolicy (2602.10238). Previously held from pass 11 as
+  RL-based eviction; TRIM-KV's distillation approach is narrower
+  and ships first. KVP remains held.
+- ForesightKV (2602.03203). Previously held from pass 45;
+  training-based eviction dominated by TRIM-KV's distillation
+  which doesn't require RL traces.
+- StructKV (2604.06746) — **shipped** above.
+- LLMSched (2504.03444) — **shipped** above.
+- DyMoE (2603.19172) — **shipped** above.
+
+**Gap status for pass 52**:
+1. **Self-reflection prompt calibration for model-driven
+   compression** (carried from pass 50). No pass-51 candidate
+   direct. Pass 52 angle: search LLM-as-judge literature,
+   prompt-engineering literature, rather than inference-infra
+   literature.
+2. **Metal-specific attention kernel papers** (carried passes
+   48-50, 5 passes now). Pass 51 made no attempt — declared
+   permanently dead in pass 50 synthesis. Task 211 (Tawa port)
+   remains as pure engineering.
+3. **Gist tokens training-free** (carried passes 47-50, 5 passes
+   now). Pass 51 made no attempt. SideQuest partially addresses
+   the retrievability-annotation angle but not prefix gisting.
+   **Declare permanently dead in pass 52 if no new candidate
+   surfaces; 5 passes without closure is the formal dead-end
+   threshold.**
+4. **Position-implicit codebook design** (carried passes 47-50).
+   Same status — declare permanently dead in pass 52.
+5. **Online k-means for Wave Index centroids** (carried from
+   pass 49). Pass 51 search surfaced Bregman-divergence theory
+   but nothing directly applicable to Wave Index retrieval.
+   Held for an LLM-independent optimization pass.
+6. **Non-LLM compression for inspiration** (latent carry from
+   cross-discipline passes 23-39). Pass 51 didn't attempt; the
+   long-tail regime doesn't favor fresh-discipline exploration
+   unless a specific sub-problem surfaces from engineering.
+
+Fifty-one passes. Four papers this round, total 216 across 70+
+disciplines. **Pass 51 adds the *structural eviction signal
+(Global In-Degree Centrality), learned retention gates,
+Bayesian workload uncertainty, and runtime MoE orchestration*
+vertices** to the pass-50 stack. The highest-leverage finding is
+StructKV (2604.06746) — the first pass-51 result to introduce an
+eviction *signal* genuinely orthogonal to everything shipped or
+tasked. Runner-up is LLMSched (2504.03444), which closes pass
+50's gap #5 and completes the agentic-scheduling trilogy. Pass
+51's other two papers (TRIM-KV, DyMoE) are evolutionary
+refinements of pass-50 tasks. The pass-50 milestone synthesis
+correctly anticipated long-tail yield: no category-defining
+result this round, but four composable wins for the v51 stack.
+Meow meow.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -14714,5 +15136,12 @@ runner-up. Plus: the milestone synthesis identifies three gaps as
 likely dead ends after 4 passes without closure, and enumerates a
 top-5 shipping priority list — SparseServe → Block-Pool → SliceMoE
 → Wave Index → Continuum+Helium — that represents the actionable
-Goal-1 path with 50 passes of literature now behind it.
+Goal-1 path with 50 passes of literature now behind it. **Pass 51
+adds structural eviction via Global In-Degree Centrality (StructKV),
+learned retention gates (TRIM-KV), Bayesian workload uncertainty
+(LLMSched completing the Continuum × Helium scheduling trilogy),
+and runtime MoE orchestration (DyMoE pairing with static SliceMoE)
+— highest-leverage being StructKV's attention-graph-topology
+signal, the first pass-51 result genuinely orthogonal to every
+eviction scorer shipped or tasked.** Tasks 225-228 track these.
 
