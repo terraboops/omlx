@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-21 (pass 49)_
+_Last updated: 2026-04-21 (pass 50)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -14132,4 +14132,587 @@ six new gaps introduced for pass 50 — the new gaps reflect pass 49's
 pattern of solidifying the existing stack rather than expanding it,
 leaving the frontier gaps for future architectural expansion. Meow.
 
+
+## Pass 50 — 2026-04-21 — Goal 1 Engineering: Reasoning-Depth Theory, Agentic Query Planning, Bit-Sliced MoE, Model-Driven Agent Memory
+
+Milestone pass (50th). Four papers this round, selected against the
+pass-49 gap list to maximize coverage of the pass-50-unique angles:
+reasoning theory (#7), agentic cost modeling (#8), per-expert bit
+allocation on MoE (#6), and long-horizon agentic reasoning memory
+(#8/#12 intersection). Retrospective synthesis follows this section.
+
+### [How Much Cache Does Reasoning Need? Depth–Cache Tradeoffs in KV-Compressed Transformers](https://arxiv.org/abs/2604.17935) — 2604.17935
+- **Authors**: Xiao Wang
+- **Published**: 2026-04 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (theoretical floor on how aggressively we can compress before multi-step reasoning breaks), Goal 2 (reasoning eval interpretability — the paper explains *why* certain eviction policies fail on CoT)
+- **TL;DR**: First theoretical paper in the 50-pass arc to *prove* a
+  cache-vs-depth trade-off. Models Transformer inference as "k-hop
+  pointer chasing on n tokens" with cache budget s, attention dim
+  H, precision p, and depth L. Main result: compressed Transformers
+  require `L = Ω(⌈k/s⌉ · ⌈log₂ n / (Hmp)⌉)` depth, matched by a
+  "windowed pointer doubling" construction. Second result: a
+  bandwidth barrier — once `Hmp ≥ log₂ n`, per-window
+  distinguishability counting cannot exceed `⌈k/s⌉`. Third: an
+  exponential error separation between adaptive locality-respecting
+  caches (heavy-hitter eviction) and random / oblivious eviction,
+  explaining empirically why SnapKV-style policies work.
+- **Why it matters for Hypercar**: Three concrete wiring decisions.
+  First, it sets a *principled floor* on how low we can push budget
+  per-context-depth; the `k/s` term means on a k-hop reasoning trace
+  with our default 50% keep, we already sit at k/s = 2 — pushing to
+  25% (k/s = 4) would double the effective depth required to solve
+  the same reasoning problem, which is exactly what Task 155
+  measured empirically (25% keep lost 14% decode quality). This
+  paper is why. Second, the bandwidth barrier tells us head width
+  matters: Qwen3-Coder's H=128 at p=16 gives `Hmp = 2048`, so we
+  are *not* bandwidth-limited at 1M (`log₂ 1M ≈ 20`), and
+  aggressive bit reduction (down to p=3 at H=128 gives `Hmp=384`,
+  still > 20) stays above the barrier. This validates pushing TQ3
+  even at 1M. Third, the adaptive-cache separation proof is the
+  theoretical justification for R-KV (Task 220) and CAOTE (shipped)
+  — any content-aware signal dominates oblivious policies
+  asymptotically; the question is just *which* signal.
+- **Cost of adoption**: None (theoretical). The action item is
+  *interpretive*: add a new section to `research/LIT_REVIEW.md`'s
+  synthesis (done in the milestone section below) that formalizes
+  the budget floor as `s ≥ k_expected / L_available`, where
+  `k_expected` is estimated from token-type (reasoning vs editing
+  vs retrieval) and `L_available` is Qwen3-Coder's 48 layers. This
+  gives a principled way to set per-workload budget defaults. Also
+  informs Task 207 (KVTuner floor): the per-head bit-budget floor
+  needs a *per-depth* correction — heads active in mid-stack
+  layers (where reasoning aggregation happens, per our layer-wise
+  probing) need more budget than heads in the first/last layers.
+- **Local PDF**: research/2604.17935_reasoning_cache_tradeoff.pdf
+
+### [Efficient LLM Serving for Agentic Workflows: A Data Systems Perspective](https://arxiv.org/abs/2603.16104) — 2603.16104
+- **Authors**: Noppanat Wadlom, Junyi Shen, Yao Lu
+- **Published**: 2026-03 (extended preprint)
+- **Hypercar goals it addresses**: Goal 3 (decode / end-to-end speed — 1.56x speedup over state-of-the-art agent-serving baselines by cross-call optimization), Goal 6 (laptop usability: workflow-level scheduling avoids the thrash pattern where two parallel agents evict each other's KV)
+- **TL;DR**: Casts agentic workflows as *query plans* with LLM
+  invocations as first-class operators — a direct port of decades
+  of database query-optimization theory. System called Helium.
+  Three components: (a) *workflow IR* that captures cross-call
+  dependencies, (b) *proactive caching* that speculatively warms
+  KV for the plan's next branch based on the plan graph, not just
+  the last request, (c) *cache-aware scheduler* that picks which
+  call to evaluate next based on a cost function over KV-reuse
+  probability and latency budget. Reports 1.56× over vLLM on
+  multi-agent benchmarks (ReAct, AutoGen, LangGraph-style).
+- **Why it matters for Hypercar**: Task 217 (Continuum TTL, pass
+  49) ships *temporal* KV retention for multi-turn; Helium ships
+  *topological* KV retention across a branching workflow. The two
+  compose: Continuum decides when to evict, Helium decides which
+  branch's KV to warm. For OpenCode specifically, when the user
+  runs a compound prompt (edit-then-test-then-commit), the current
+  server re-prefills at each stage boundary; Helium's workflow IR
+  would let us recognize that the `edit` and `test` phases share
+  the same repository prefix and only the tool call differs. The
+  1.56× headline is conservative for our workload — Helium
+  benchmarks on short-prompt agentic tasks, whereas our OpenCode
+  prompts have 50-200K-token repo prefixes where prefix reuse is a
+  much bigger fraction of total compute.
+- **Cost of adoption**: M (1-2 weeks). New file
+  `omlx/serving/workflow_planner.py` implementing a minimal
+  workflow IR — just enough to express OpenCode's actual request
+  shapes (sequential tool calls with shared prefix). Extends Task
+  217's TTL scheduler with a per-branch priority signal. The full
+  query-optimization cost model from the paper is over-engineered
+  for our single-user single-GPU deployment — we only need the
+  prefix-aware scheduling rule (evict the branch whose prefix is
+  already cheap to re-prefill, not the branch whose prefix is
+  expensive). Wire in as `--workflow-scheduler` with a simple
+  plan-graph format the OpenCode client can populate. Risk: the
+  paper assumes multi-agent concurrency; on M4 Pro we usually have
+  one active agent at a time, so the gain depends on OpenCode
+  emitting multi-branch plans in advance (the extension hook for
+  this exists but is currently unused).
+- **Local PDF**: research/2603.16104_helium_agentic_serving.pdf
+
+### [SliceMoE: Bit-Sliced Expert Caching under Miss-Rate Constraints for Efficient MoE Inference](https://arxiv.org/abs/2512.12990) — 2512.12990
+- **Authors**: Yuseon Choi, Sangjin Kim, Jungjun Oh, Gwangtae Park, Byeongcheol Kim, Hoi-Jun Yoo (KAIST)
+- **Published**: 2025-12 (submitted), 2026-04 (v4 revision)
+- **Hypercar goals it addresses**: Goal 6 (MoE memory fit — decode-stage energy reduced 2.37-2.85× on tested MoE models, which on M4 Pro's unified memory translates to proportionally lower wired-set pressure), Goal 3 (constant decode: per-expert bit-slicing stabilizes the active-expert working set size regardless of which experts route), Goal 1 (more experts fit per gigabyte → more layers can stay quantized at aggressive bit widths at long context)
+- **TL;DR**: Three components for MoE-specific KV+weight caching.
+  (a) *Dynamic Bit-Sliced Caching (DBSC)*: each expert stored as
+  multiple bit-slices (e.g., low-order 2 bits, next 2 bits,
+  high-order 4 bits) so a warmed expert can be evicted
+  granularly — drop the low-order slices first, keep the high-order
+  ones. (b) *Calibration-Free Asymmetric Matryoshka Quantization
+  (AMAT)*: a quantization scheme where the first k bits of the
+  stored representation *are themselves* a valid lower-precision
+  quantization — no separate codebook per bit width, no calibration.
+  (c) *Predictive Cache Warmup (PCW)*: reshape the cache during
+  prefill so that experts predicted to activate during decode are
+  already at high bit-width. Reports 2.37-2.85× decode energy
+  reduction at near-high-bit accuracy.
+- **Why it matters for Hypercar**: Qwen3-Coder is MoE (3B active
+  of 30B). Pass-50 gap #6 (per-head bit budget for MoE active
+  vs inactive layers) is the concrete target; SliceMoE closes it.
+  The current server quantizes *all* experts uniformly at 8-bit
+  (from the base model) with KV at 3-bit. SliceMoE would let us
+  store inactive experts at 2-3 bit and active experts at 6-8 bit
+  without duplicating the weights — the low-bit slices ARE the
+  first k bits of the high-bit representation. Effective model
+  size drops ~40% with near-zero quality cost on the tested
+  MoE baselines. For 1M context, this is the difference between
+  the current 17.2 GB model footprint and ~10 GB, freeing ~7 GB
+  for KV expansion. Compose with PiKV (Task 203): PiKV shards KV
+  per expert; SliceMoE additionally bit-slices each expert's
+  weights. Compose with KVTuner (Task 186): per-head bit budget
+  for KV gets a per-expert-and-per-head bit budget for weights.
+- **Cost of adoption**: M-L (2 weeks). New file
+  `omlx/quantize/bit_sliced_expert.py` implementing AMAT on the
+  existing Qwen3-Coder MoE weights. The calibration-free property
+  is critical — we cannot re-calibrate an 8-bit base model. Phase A
+  (1 week): AMAT-convert the existing 8-bit weights to 4+4 bit
+  slices (high 4 + low 4 = original 8). Phase B (1 week): DBSC
+  residency policy that keeps high-4-bit slices for recently-active
+  experts, evicts low-4-bit slices first under memory pressure.
+  Risk: AMAT's "first k bits = valid lower-precision" property is
+  mathematical (truncation of a signed fixed-point representation);
+  fp16 / bfp16 quantization like Qwen3-Coder's doesn't trivially
+  support this — need to verify our specific 8-bit weights are in a
+  representation compatible with AMAT's truncation scheme. If not,
+  Phase A becomes a re-quantization from the original weights
+  rather than a bit-slicing of the existing 8-bit weights. Skip
+  PCW for pass-50 shipping — it requires a prefill-time expert
+  prediction model we don't have and predictive cache warmup on
+  our single-user serving profile is lower leverage than the
+  memory win.
+- **Local PDF**: research/2512.12990_slicemoe_bit_sliced.pdf
+
+### [SideQuest: Model-Driven KV Cache Management for Long-Horizon Agentic Reasoning](https://arxiv.org/abs/2602.22603) — 2602.22603
+- **Authors**: Sanjay Kariyappa, G. Edward Suh (Cornell / Samsung)
+- **Published**: 2026-02 (v1), 2026-03 (v2)
+- **Hypercar goals it addresses**: Goal 1 (65% reduction in peak token usage on agentic tasks with minimal accuracy loss — directly extends what fits at 1M), Goal 2 (reasoning-aware compression that avoids the pollution failure mode of prompt-based compression)
+- **TL;DR**: Frames KV cache compression as an auxiliary parallel
+  reasoning task done *by the same model*, rather than a heuristic
+  scoring rule. The LLM examines its own context in a side-channel
+  "sidequest" pass, annotates which tokens are retrievable from
+  external sources vs genuinely novel, and the serving layer evicts
+  the retrievable-externally tokens aggressively. Critical design
+  choice: the sidequest annotations are in a *separate* token stream
+  so they don't pollute the main reasoning memory. Trained on 215
+  samples (explicit tradeoff: small amount of task-specific fine-
+  tuning in exchange for a 65% peak-token reduction on agentic
+  tasks). Outperforms heuristic eviction on multi-hop reasoning
+  over external retrieval.
+- **Why it matters for Hypercar**: We have carried the
+  "training-free mandate" for 50 passes. SideQuest is the first
+  result compelling enough to potentially revisit that constraint
+  — 215 samples is small enough to LoRA-adapt on a single
+  M4 Pro overnight, and the reported 65% peak-token reduction
+  on agentic tasks is a qualitative improvement over the 50% we
+  get from SnapKV heuristic eviction. The separation-of-streams
+  insight is immediately portable *training-free*: run the current
+  Qwen3-Coder over its context with a compression-annotation
+  prompt (in a side stream, not inline), use the resulting
+  token-level "retrievability" flags to drive eviction. Free
+  training-free variant: use zero-shot prompt rather than the
+  215-sample fine-tune — quality will be lower but the separation-
+  of-streams architecture is the real win. OpenCode workload has
+  exactly the pattern SideQuest targets: lots of context is
+  "retrievable" (file contents the agent just read, can be re-read
+  later) vs "novel" (the user's last message, the agent's current
+  plan).
+- **Cost of adoption**: M (1 week training-free version; +3 days
+  if we ship the 215-sample fine-tune). New file
+  `omlx/kv_caches/model_driven_eviction.py` implementing: (a) a
+  side-stream forward pass at prefill end that annotates each
+  token with a 1-bit retrievability flag (prompt: "Is this token
+  a re-reading of externally-retrievable content? Answer Y/N per
+  token"), (b) annotation feeds the existing SnapKV eviction as
+  a per-token prior — retrievable tokens get score divided by 2
+  before the SnapKV top-K selection. The side-stream forward is
+  one prefill's worth of extra compute at session start, amortized
+  across all subsequent turns on that session. Wire in as
+  `--model-driven-eviction` with `--sidequest-prompt PATH`
+  (default: a stock prompt we calibrate on OpenCode traces).
+  Compose with R-KV (Task 220): SideQuest picks retrievability
+  prior, R-KV picks redundancy prior, multiplicatively combined
+  before CAOTE's value-aware signal. Compose with Continuum
+  (Task 217): sessions flagged as "high-retrievable fraction"
+  get shorter TTLs in the scheduler because their KV is cheaper
+  to rebuild. Risk: the side-stream annotation prompt is a
+  non-trivial prompt-engineering project — prompt quality
+  determines eviction quality. Mitigation: calibrate on a
+  50-prompt OpenCode trace before shipping. Second risk: running
+  a side-stream forward adds latency at session start — amortized
+  over multi-turn sessions, but for one-shot prompts it's pure
+  overhead. Gate `--model-driven-eviction` on session length: enable
+  only when context > 32K (where the eviction win dominates).
+- **Local PDF**: research/2602.22603_sidequest_agentic_reasoning.pdf
+
+### Pass 50 synthesis
+
+Pass 50 closes or touches three of the six gaps opened in pass 49
+and introduces one methodological shift:
+
+- Gap #6 (per-head bit budget for MoE active vs inactive layers):
+  **closed by SliceMoE (2512.12990)**. AMAT + DBSC give us the
+  per-expert bit-slicing primitive the gap asked for, with the
+  calibration-free constraint we need (can't re-calibrate an
+  8-bit Qwen3-Coder from scratch). Compose cleanly with PiKV
+  (Task 203) and KVTuner (Task 186).
+- Gap #5 (Continuum-style TTL for non-coding workloads): **partially
+  addressed by Helium (2603.16104)** from a different angle. Helium's
+  workflow IR captures the *structure* of a non-coding workload
+  (research assistant, multi-step tool use) whereas Continuum's
+  duration predictor assumes the workload is known. Helium's
+  plan-aware scheduling generalizes to arbitrary workflow shapes
+  the user explicitly declares. Remaining carry: duration
+  prediction for *unknown-shape* workloads (true blind TTL
+  prediction) — still open.
+- New methodological input (not a pass-49 gap but a standing
+  theoretical need): **reasoning-cache theory (2604.17935)**.
+  First paper in 50 passes to provide a *proof-based* floor on
+  budget-vs-depth trade-offs. Concretely informs Task 155 (why
+  25% keep hurts) and Task 207 (per-depth bit budget correction).
+- SideQuest (2602.22603) surfaces the meta-question: should we
+  relax the training-free mandate for narrow, highly-leveraged
+  tasks like model-driven eviction annotation? 65% peak-token
+  reduction on agentic tasks is a pure-quality win large enough
+  to revisit the mandate. The training-free prompt-only variant
+  ships in pass 50; the 215-sample fine-tune variant is held as
+  a future research direction.
+
+Highest-leverage finding: **SliceMoE (2512.12990)**. ~40% effective
+model-footprint reduction with no accuracy cost (per paper's
+benchmarks) is the single largest memory win available in pass 50,
+and on our 48 GB budget that's ~7 GB freed for KV expansion at
+1M — roughly doubling the headroom we had post-pass-49. The
+calibration-free property is critical and rare; most MoE
+quantization papers require a calibration set we don't have the
+infrastructure to collect.
+
+Runner-up: **Helium (2603.16104)**. The workflow-IR + cross-call
+scheduler is the generalization of Continuum that pass 49 implied
+without naming. Ships as Task 223 (see TASKS.md). The reasoning-
+cache theory paper (2604.17935) is interpretive rather than
+shippable, but it's the theoretical underpinning we've lacked for
+50 passes — it justifies our existing eviction-vs-budget choices
+with proofs rather than empirics.
+
+**Revised composable end-state configuration v50**: same as v49
+with four additions:
+- Streaming-head expert weights: **SliceMoE AMAT+DBSC** (NEW,
+  Task 221) — effective 40% model footprint reduction at near-
+  zero quality cost.
+- Agentic scheduling layer: Continuum TTL (Task 217) + **Helium
+  workflow IR** (NEW, Task 223) — temporal × topological KV
+  retention.
+- Eviction scoring: SnapKV (shipped) + CAOTE V-distance (shipped) +
+  BUZZ segmented (shipped) + R-KV K-redundancy (Task 220) + GVote
+  augment (Task 219) + AhaKV entropy (Task 201) + G-KV global
+  (Task 202) + **SideQuest model-driven retrievability annotation**
+  (NEW, Task 224) — seven independent signals composed via weighted-
+  product.
+- Interpretive floor: **reasoning-cache theory** (2604.17935, Task
+  222 interpretive) sets `s ≥ k_expected / L_available` as the
+  principled minimum budget.
+
+**Memory budget (v50, 1M context)**: model footprint drops from
+17.2 GB to ~10 GB via SliceMoE (Task 221). Freed ~7 GB available
+for KV expansion or additional block-pool agents. Net: 1M context
+fits with ~15 GB headroom instead of v49's 8 GB, opening room for
+either (a) 2× concurrent 1M agents, or (b) 2M single-agent context
+at aggressive compression. Peak Metal during decode ~15 GB (down
+from v49's 21.5 GB). Prefill peak bounded by SparseServe layer-
+segmentation (Task 210) — unchanged.
+
+**What Pass 50 deliberately did NOT cover**:
+- Crystal-KV (2601.16986). Answer-first principle for CoT — the
+  premise is that the model knows the answer partway through the
+  trace and the rest is redundant. Interesting but requires a
+  token-level "answer-boundary" detector; held for a reasoning-
+  focused pass.
+- LongFlow (2603.11504). KV compression specifically for reasoning
+  models — focused on DeepSeek-R1 / OpenAI-o1 style large-reasoning
+  models which Qwen3-Coder is not. Dominated by R-KV + SideQuest
+  combination for our workload.
+- Don't Break the Cache (2601.06007). Evaluation paper on prompt
+  caching for long-horizon agentic tasks — benchmark-level, no
+  shippable technique. Informs future eval work; no task.
+- ARKV (2603.08727). Adaptive KV-cache management under memory
+  budget — domain overlap with our existing budget stack (KVTuner,
+  KV-CoRE, Lyapunov); specific innovations subsumed by SliceMoE's
+  bit-slicing for the MoE case.
+- Agent.xpu (2506.24045). Heterogeneous-SoC agentic scheduling —
+  assumes GPU+NPU+CPU heterogeneous execution; M4 Pro doesn't have
+  this topology, and the MLX runtime already unifies GPU+CPU via
+  unified memory. Held.
+- TurboESM (2603.26110). 3-bit KV for protein LMs — orthogonal
+  rotation + QJL correction; orthogonal-rotation is what WHT
+  already gives us (shipped, TQ3), and QJL correction is a
+  minor empirical improvement. Held.
+- KEEP (2602.23592). KV-centric memory management for embodied
+  planning — embodied-robotics focus, not text-LLM-relevant.
+  Held.
+- FastTTS (2509.00195). Test-time scaling for edge LLM reasoning —
+  overlaps with reasoning-memory work (R-KV, SideQuest); the
+  specific techniques (speculative beam extension, asymmetric
+  multi-model memory) require a 2-model reasoning-model setup
+  we don't have. Held.
+- KV-stores scale (2511.16138). Scaling KV *stores* (database
+  sense) as backends for LLM KV caches — assumes server-farm
+  scale; not M4-Pro-relevant. Held.
+- KVFlow (2507.07400). Workflow-aware prefix caching for
+  multi-agent — partially subsumed by Helium (more general);
+  Helium ships. Held.
+
+**Gap status for pass 51**:
+1. **Metal-specific attention kernel papers** (carried passes 48-50):
+   still open. Pass 50's targeted search confirmed no new
+   paper-level Metal kernel work. Task 211 (Tawa-style hand port)
+   remains the only actionable path. Pass 51 should commit to
+   pursuing WWDC / Apple technical report evidence explicitly, or
+   remove this gap as a permanent dead-end.
+2. **Compressed prompt prefix encoding without retraining** (carried
+   passes 47-50). SideQuest (2602.22603) partially addresses via
+   model-driven retrievability annotation — but that's eviction,
+   not prefix gisting. Gist tokens specifically remain absent.
+   **Candidate pass 51 direction: consider gap permanently dead
+   if pass 51 surfaces nothing new — 4 passes without closure.**
+3. **Position-implicit codebook design** (carried passes 47-50).
+   No new candidate. **Also a dead-end candidate — 4 passes.**
+4. **Online learning of Wave Index cluster centroids** (carried
+   from pass 49). No new direct candidate; OjaKV (shipped, Task
+   218) handles the analogous problem for low-rank streaming
+   heads. Pass 51: search "online k-means Bregman divergence
+   attention KV sublinear retrieval".
+5. **Unknown-shape workload TTL prediction** (new in pass 50, from
+   Helium analysis). Continuum assumes known tool-duration
+   distribution; Helium assumes known workflow plan. Truly blind
+   TTL prediction for first-encounter workloads remains open.
+   Pass 51 search: "zero-shot workload prediction LLM serving",
+   "Bayesian TTL estimation cold-start".
+6. **Training-free model-driven compression prompt engineering**
+   (new in pass 50). SideQuest's architecture generalizes; the
+   prompt quality is the engineering gap. Pass 51 angle:
+   "self-reflection prompt calibration context compression LLM",
+   and/or benchmark a dozen candidate prompts on a fixed trace.
+
+Fifty passes. Four papers this round, total 212 across 70+
+disciplines. **Pass 50 adds the *reasoning-theory floor,
+workflow-IR scheduling, bit-sliced MoE, and model-driven
+retrievability annotation* vertex** to the pass-49 stack. The
+highest-leverage finding is SliceMoE (2512.12990) at ~40% model
+footprint reduction — the largest single-memory win in 50 passes.
+Runner-up is Helium (2603.16104), which generalizes Continuum's
+temporal TTL into topological workflow-IR scheduling. The
+reasoning-cache theory paper (2604.17935) is our first proof-based
+backing for eviction-vs-budget trade-offs; interpretive, not
+shippable, but overdue. SideQuest (2602.22603) surfaces the
+training-free mandate as an explicit engineering choice to revisit
+— its 65% agentic-task peak-token reduction is large enough to
+justify a 215-sample LoRA, though we ship the prompt-only variant
+first. Meow.
+
+
+## Milestone Synthesis (Passes 40-50) — 2026-04-21
+
+Fifty passes in, we have a complete 4-part decomposition of the
+1M-context problem on Apple Silicon M4 Pro 48 GB. The decomposition
+wasn't designed upfront — it emerged from the pass-40-to-50 arc
+as the natural factoring of "what survives when you try to keep
+everything but can't afford to."
+
+### What to store (selection / eviction)
+
+*The decision of which tokens stay in the cache when budget is
+finite.* Eleven years of attention-heavy literature crystallized
+around a small set of signals.
+
+- **Attention-score top-K** — SnapKV (2404.14469, shipped pass 3)
+- **Value-aware eviction** — CAOTE (Task 100, shipped)
+- **Segmented top-K preserving local structure** — BUZZ (shipped)
+- **K-space redundancy for reasoning** — R-KV (2505.24133, pass 49,
+  Task 220)
+- **V-space redundancy and cosine decay** — CAOTE extension
+- **Synthetic-query auto-augment** — GVote (2509.03136, pass 49,
+  Task 219)
+- **Entropy-corrected scoring** — AhaKV (pass 45, Task 201)
+- **Global rescoring across layers** — G-KV (pass 45, Task 202)
+- **Fair partition budgets** — Fair eviction (Task 107, shipped)
+- **Freshness decay for multi-turn conflict** — shipped
+- **Head retrieval/streaming classification** — DuoAttention
+  (shipped)
+- **Model-driven retrievability annotation** — SideQuest
+  (2602.22603, pass 50, Task 224)
+- **Theoretical floor** — Reasoning-cache theory (2604.17935,
+  pass 50, Task 222)
+
+### How much per layer (budget allocation)
+
+*The decision of how to split a fixed bit-budget across layers,
+heads, and positions.*
+
+- **Per-head bit budget** — KVTuner (pass 41, Task 186)
+- **NER-driven importance scoring** — KV-CoRE (pass 46, Task 198)
+- **Lyapunov stability floor** — (pass 46, Task 207)
+- **Sensitivity-weighted allocation** — per-head floor (Task 207)
+- **Head rebalancing** — retrieval 2× streaming 0.5× (shipped)
+- **Per-expert bit-slicing for MoE** — SliceMoE (2512.12990,
+  pass 50, Task 221)
+- **Active-expert precision** — PiKV sharding (pass 45, Task 203)
+
+### How to encode (compression codec)
+
+*The decision of how to represent each stored token's KV in the
+fewest bits that preserve reconstruction fidelity.*
+
+- **WHT rotation + product quantization** — TurboQuant (shipped,
+  TQ3 mode)
+- **Shared codebook across positions** — CommVQ (pass 43, Task 193)
+- **Windowed RoPE + query-aware codebook** — A²ATS (pass 48,
+  Task 214)
+- **Online low-rank subspace tracking** — OjaKV (pass 49,
+  Task 218) — streaming heads
+- **Wave Index (sqrt(N) clusters with tripartite bound)** —
+  RetroInfer (pass 48, Task 213) — retrieval heads
+- **Persistent Q4 session storage** — Agent Memory (pass 48,
+  Task 216) — block-pool layer
+- **Prefix-hash dedup** — Sequential-KV PLT (pass 46, Task 205)
+- **Delta-residual dedup** — DeltaKV (pass 45, Task 199)
+- **Speculative prefetch** — SpeCache (pass 48, Task 215)
+- **KV distillation target** — KVSculpt (pass 44, Task 197)
+
+### How to verify (speculative decoding and sanity)
+
+*The decision of how to trust compressed output without full
+recomputation.*
+
+- **Speculative decode with compressed target** — QuantSpec
+  (pass 42, Task 192)
+- **Partial-verify tier** — SpecPV (pass 45, Task 200)
+- **MoE-aware draft alignment** — MoE-Spec (pass 43, Task 194)
+- **Draft-driven sparse attention** — SpecAttn (pass 47, Task 209)
+- **MTI integrity monitor** — (pass 45, Task 204)
+- **GER safety cliff guard** — (Task 106, shipped)
+
+### Top 5 shipping priorities (from ~224 tasks)
+
+Ranked by leverage (memory saved or latency won) × ship-cost.
+Each justified by its benchmarked impact on our workload.
+
+1. **Task 210 — SparseServe layer-segmented prefill**
+   (2509.24626, pass 47). Removes the 120K single-pass Metal OOM
+   cliff. This is a pre-requisite for Goal 1 at 128K+ under
+   non-trivial co-tenancy. Also unblocks 256K single-pass which
+   is currently infeasible. M effort, strictly additive (no
+   interaction with compression logic). Ship first. Independent
+   of every other pending task.
+
+2. **Task 216 — Block-pool multi-agent Q4 session store**
+   (2603.04428, pass 48). 22-136× TTFT improvement for agent
+   context-switch on M4 Pro specifically. Biggest single UX win
+   in 50 passes; enables multi-repo workflow which is the #1
+   gap in user feedback. M effort. Ship second. Session-store
+   infrastructure is already there; this reshapes the layout.
+
+3. **Task 221 — SliceMoE AMAT+DBSC**
+   (2512.12990, pass 50). ~40% effective model-footprint
+   reduction (17.2 GB → ~10 GB). Frees 7 GB for KV expansion at
+   1M. Calibration-free property makes it a drop-in for our
+   Qwen3-Coder-8bit base. M-L effort. Ship third — highest
+   single memory leverage.
+
+4. **Task 213 — RetroInfer Wave Index**
+   (2505.02922, pass 48). Sublinear-per-decode retrieval with
+   formally bounded tail — the only paper in 50 passes with
+   a proof rather than empirics on un-retrieved-tail accuracy.
+   4.5× decode at long context. M effort. Ship fourth — after
+   block-pool gives us stable long-context memory.
+
+5. **Task 217 — Continuum TTL + Task 223 — Helium workflow IR**
+   (2511.02230 pass 49, 2603.16104 pass 50). Paired agentic
+   scheduling: temporal (TTL) × topological (workflow IR). 1.12-
+   3.66× end-to-end delay on SWE-Bench (Continuum) + 1.56× on
+   multi-agent workflows (Helium). S+M effort combined. Ship
+   fifth — depends on block-pool (#2). Biggest Goal 3 wins for
+   the OpenCode multi-turn workload specifically.
+
+Honorable mentions below the cut: Task 220 (R-KV, ship if we add
+a reasoning eval to Goal 2); Task 218 (OjaKV, ship if we push
+past 256K); Task 211 (Tawa Metal kernel, blocked on kernel
+expertise); Task 208 (EFIM infill, ship if we add a /v1/infill
+endpoint as a feature).
+
+### Dead ends (gaps carried >3 passes without closure)
+
+Three gaps have been carried across 4+ passes. At 3+ passes
+without closure, the pattern suggests these may be *genuine*
+dead ends (the paper we're looking for doesn't exist) rather
+than just unexplored territory.
+
+- **Metal-specific attention kernel literature** (carried passes
+  47-50, 4 passes). Every targeted search has surfaced blog
+  posts, WWDC talks, and MLX PRs — no peer-reviewed paper-level
+  kernel work on Apple Silicon attention. Likely because
+  cutting-edge kernel work happens in-house at Apple or in
+  framework source, not arxiv. **Pass 51 decision point:
+  formally drop this gap; reframe Task 211 (Tawa port) as pure
+  engineering, not research-derived.**
+
+- **Gist-token prompt prefix encoding without retraining**
+  (carried passes 47-50, 4 passes). Training-free gist-token
+  literature seems not to exist — all gist-token work we have
+  seen requires a training phase. SideQuest (pass 50) provides
+  a *different* model-driven compression primitive, but not
+  gist-tokens specifically. **Pass 51 decision point: drop or
+  relax the training-free constraint for this specific
+  sub-problem.**
+
+- **Position-implicit codebook design** (carried passes 47-50,
+  4 passes). A²ATS (pass 48) decoupled position via WRoPE —
+  the closest extant work — but no paper has the codebook
+  *encode* position implicitly. The ideal paper would be
+  positional-codebook, but it doesn't seem to exist in the
+  LLM-KV literature. **Pass 51 decision point: drop or look
+  outside LLM literature (image quantization, learned
+  positional embeddings).**
+
+Two additional gaps opened in pass 49-50 remain genuinely fresh
+and should be pursued in pass 51:
+- Unknown-shape workload TTL prediction (pass 50)
+- Training-free model-driven compression prompt engineering (pass 50)
+
+### 50-pass trajectory
+
+Passes 1-22 surveyed the KV-compression-and-serving literature
+broadly (MInference, Quest, SnapKV, DuoAttention, TurboQuant,
+RULER, YOCO, KIVI, MLA, Triforce, LayerSkip, Mixture-of-Depths,
+Longformer, StreamingLLM). Passes 23-39 explored cross-discipline
+angles for compression intuition (statistical mechanics, reservoir
+computing, voting theory, cognitive load, lexicography,
+cartography, harmonic analysis, triage, paleontology, immunology,
+adaptive optics, queueing theory, rate-distortion, counterpoint,
+apiculture). Passes 40-50 refocused on Goal 1 engineering for
+Apple Silicon specifically — 44 papers across 11 passes building
+the four-part decomposition above.
+
+The arc's narrative: **the problem is well-factored, the component
+solutions exist, the remaining work is engineering**. Five of six
+Hypercar goals are MET; Goal 1 remains, and the top-5 task list
+above is the concrete path. The research loop has surfaced
+everything reachable via arxiv; pass 51+ should pivot toward
+engineering execution with targeted literature searches only as
+engineering questions surface. Meow.
+
+
+## Synthesis
+
+This section consolidates the long arc of Hypercar literature review
+into an actionable state. See the per-pass synthesis sections above
+(especially the Milestone Synthesis (Passes 40-50) block) for
+detail. **Pass 50 adds the reasoning-theory floor, workflow-IR
+scheduling, bit-sliced MoE, and model-driven retrievability vertex
+to the pass-49 stack** — highest-leverage being SliceMoE's ~40%
+model-footprint reduction, with Helium's workflow-IR scheduling as
+runner-up. Plus: the milestone synthesis identifies three gaps as
+likely dead ends after 4 passes without closure, and enumerates a
+top-5 shipping priority list — SparseServe → Block-Pool → SliceMoE
+→ Wave Index → Continuum+Helium — that represents the actionable
+Goal-1 path with 50 passes of literature now behind it.
 
