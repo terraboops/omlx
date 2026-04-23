@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-23 (pass 56)_
+_Last updated: 2026-04-23 (pass 57)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -15066,13 +15066,47 @@ Block-Pool Task 216, separate from working-memory KV), re-open
 by searching "SSD KV prefetch policy LLM inference" with that
 specific architecture. Otherwise: do not re-search.
 
-Five dead ends total across pass 52 (three) and pass 56 (two).
-Pass-56 dead ends close the remaining two dead-end candidates
-flagged in pass 55; both are structural mismatches to Apple
-Silicon's unified-memory architecture rather than research-
-literature gaps. Fifty-six passes in, the research loop has
+### Dead end 6: FP8→INT3 training calibration for inference (4 passes, formalized pass 57 2026-04-23)
+
+Passes carried: 54-57 (4 passes without closure — carried three
+passes then one decision pass). Pass-57 final search ("FP8 INT3
+training calibration inference quantization KV cache 2026")
+returned only NVFP4/FP8 deployment guides (NVIDIA, vLLM, AMD
+Quark, Habana Gaudi), TCO economics (2502.01070, An Inquiry
+into Datacenter TCO for LLM Inference with FP8) and FP8 vendor
+documentation — no paper addresses the specific training→INT3
+calibration path where an FP8-pretrained model's weights and
+activation statistics are used to *inform* INT3 KV-cache
+quantization at inference time. The implicit answer: FP8 is a
+*training/inference compute* precision on the activation path,
+while INT3 is an *inference storage* precision on the KV-cache
+path; they operate on orthogonal surfaces and there is no
+mechanical path by which FP8 training statistics improve INT3
+KV calibration. What *does* exist and we already cover: TQ3's
+WHT rotation + Beta codebook calibration (shipped), KVTuner
+per-head allocation (Task 186), PM-KVQ positional-interpolation
+calibration (Task 244, pass 56), per-block sensitivity analysis
+(PM-KVQ). None of these require an FP8 training phase; they
+calibrate directly from short fp16 traces. Revisit condition:
+if a model lands whose native precision is FP8 (not fp16/bf16)
+and whose KV-cache activations have distribution shifts that
+fp16 calibration misses, re-open by searching "FP8-native
+activation statistics INT quantization". Otherwise: do not
+re-search — FP8→INT3 is a category mismatch, not a literature
+gap.
+
+Six dead ends total across pass 52 (three), pass 56 (two), and
+pass 57 (one). Pass-57 dead-end declaration (FP8→INT3) closes
+a 4-pass carry via category-mismatch reasoning — FP8 operates
+on training/compute-activation paths while INT3 operates on
+inference/KV-storage paths, and the two do not mechanically
+compose. The parallel pass-57 gap (hierarchical two-level KV
+for text) was NOT declared dead because the targeted search
+surfaced TTKV (2604.19769, reviewed in Pass 57 section below) —
+a direct closure. Fifty-seven passes in, the research loop has
 fully enumerated its dead-end set under the current hardware
-and architecture assumptions.
+and architecture assumptions, plus one category-mismatch
+closure.
 
 
 ## Pass 52 — 2026-04-22 — Goal 1 Long-Tail: GPU Memory Compaction, Online KV Clustering, Formal Spec-Decode Verification, Block-wise Paged Eviction
@@ -17161,6 +17195,425 @@ mismatches to Apple Silicon's unified-memory architecture
 rather than literature gaps.
 
 
+## Pass 57 — 2026-04-23 — Goal 1 Long-Tail: Temporal-Tiered Hierarchical KV, Query-Only Test-Time Training, FP8→INT3 Dead-End
+
+Long-tail pass (57th). Two papers closing two pass-56 held gaps
+(hierarchical two-level KV for text, test-time adaptation for
+long context) plus one formal dead-end declaration (FP8→INT3
+training calibration). Continuing the long-tail rhythm: each
+pass closes distinct held gaps and closes dead-end bookkeeping
+rather than drilling one axis. Pass 57 is a *two-closure +
+one-dead-end* pass. The closures are both decisive — TTKV
+introduces a temporal-tiered KV partitioning the pass-40-56 arc
+explicitly identified as absent; qTTT is the first pass-40-57
+paper to demonstrate test-time gradient adaptation on a *frozen*
+pretrained LLM with quantized KV cache compatibility, directly
+applicable to the Hypercar Qwen3-Coder-30B stack.
+
+The two papers map to pass-56 carried gaps:
+1. **Gap #2 (hierarchical two-level KV for text — held 1 pass,
+   carried from pass 56)**: **closed** by TTKV / Temporal-Tiered
+   KV Cache (2604.19769). Partitions the KV cache into temporal
+   tiers with heterogeneous capacity and precision; high-precision
+   fast tier for recent tokens, lower-precision slow tier for
+   older tokens, with block-wise streaming attention overlapping
+   communication and computation across tiers. 5.94× cross-tier
+   traffic reduction on 128K-context tasks, up to 76% latency
+   reduction, 2× throughput improvement. The paper's HBM/DRAM
+   framing is a hardware assumption, but the *software policy*
+   (temporal-tiered partition + differential precision) maps
+   cleanly to a software-only tiered memory on Apple Silicon's
+   unified memory: the "fast tier" becomes an uncompressed slab
+   for recent tokens while the "slow tier" is our existing 3-bit
+   TQ3 slab. The migration policy between tiers is the novel
+   contribution directly applicable to Hypercar.
+2. **Gap #5 (test-time adaptation for long context — new pass-56
+   angle, unexplored)**: **closed** by qTTT / Query-Only
+   Test-Time Training (2512.13898). Performs 32 gradient steps
+   per query updating *only* the query projection matrices W_Q
+   while freezing everything else (including KV cache, FFN
+   weights, K/V projections). Demonstrated on Qwen3-{1.7B, 4B,
+   8B, 32B} with 8K-128K context on LongBench-v2 and ZeroScrolls;
+   12.6-14.1 percentage point improvements on LongBench-v2 and
+   ZeroScrolls for Qwen3-4B, compute-matched to thinking-token
+   baselines. Critical for Hypercar: qTTT is compatible with
+   frozen pretrained models and with quantized KV caches (since
+   KV is frozen during TTT) — both are Hypercar constraints.
+
+### [TTKV: Temporal-Tiered KV Cache for Long-Context LLM Inference](https://arxiv.org/abs/2604.19769) — 2604.19769
+- **Authors**: Gradwell Dzikanyanga, Weihao Yang, Hao Huang, Donglei Wu, Shihao Wang, Wen Xia, Sanjeeb K C
+- **Published**: 2026-03 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (temporal-tiered KV
+  partitioning with heterogeneous capacity + precision directly
+  closes the hierarchical two-level KV gap held since pass 55;
+  5.94× cross-tier traffic reduction on 128K-context tasks
+  demonstrates the policy works at our first-tier context target),
+  Goal 3 (up to 76% latency reduction, 2× throughput improvement
+  on long-context decode — on Apple Silicon's memory-bound
+  workload this translates through the reduced cross-tier traffic
+  which on unified memory corresponds to reduced cache-line
+  pressure), Goal 6 (differential precision per tier is the
+  "differential retention" primitive we've been approximating
+  through SnapKV+BUZZ+CAOTE composition; TTKV formalizes it as a
+  first-class abstraction with a clean migration policy)
+- **TL;DR**: Temporal-Tiered KV Cache framework that partitions
+  the KV cache into *tiers with heterogeneous capacity and
+  precision* based on temporal proximity to the current decode
+  position. The fast tier preserves full precision for recent
+  and frequently accessed tokens; the slow tier applies
+  differential quantization and sparsification to older, less
+  frequently accessed states. Access pattern uses *block-wise
+  streaming attention* to overlap communication and computation
+  when accessing slow tiers. Hardware framing assumes HBM (fast)
+  + DRAM (slow) but the algorithmic contribution (temporal
+  partition + differential precision + streamed overlap) is
+  hardware-agnostic. Reports 5.94× cross-tier traffic reduction
+  on 128K-context tasks, up to 76% latency reduction vs
+  baselines, 2× throughput improvement.
+- **Why it matters for Hypercar**: Hierarchical two-level KV for
+  text has been the pass-55-to-56 open gap — flagged as potentially
+  dead-endable in pass 56 but carried for one more targeted search.
+  TTKV is the decisive closure. The paper's abstraction is
+  directly transferable to Apple Silicon despite the HBM/DRAM
+  framing: on unified memory, the "fast tier" is an
+  uncompressed/fp16 slab for the last N tokens (where N is
+  sized by how much headroom the working set permits), and the
+  "slow tier" is our existing 3-bit TQ3 slab for older tokens.
+  The migration between tiers is the novel contribution — when
+  a token ages past the fast-tier window, it is *quantized and
+  demoted* to the slow tier with a single batched operation;
+  when a slow-tier token is re-accessed above a threshold, it
+  is *dequantized and promoted* back to the fast tier. This is
+  more principled than our current approach where DuoKV
+  statically assigns heads to retrieval (fp16) vs streaming
+  (3-bit) once at calibration time — TTKV makes the
+  classification *temporal* per-token rather than static
+  per-head. The 76% latency reduction and 2× throughput claims
+  are on long-context workloads where cross-tier traffic
+  dominates, which is exactly Hypercar's 64K-1M regime. Composes
+  with TQ3 (shipped — TQ3 becomes the slow-tier codec), with
+  DuoKV (shipped — DuoKV's head classification becomes the *axis
+  along which* tier assignment varies; per-head temporal tiers
+  give a (head × time) matrix), with SnapKV (shipped — SnapKV
+  removes tokens permanently; TTKV demotes them to cheaper
+  storage — these compose as two-stage: SnapKV evicts the
+  most-irrelevant, TTKV demotes the moderately-relevant), with
+  PM-KVQ (Task 244 — PM-KVQ's per-block bit schedule drives
+  the slow-tier codec bits; the fast tier stays fp16).
+- **Cost of adoption**: M-L (2-3 weeks). Three phases. Phase 1
+  — **tier infrastructure**: new file
+  `omlx/kv_caches/tiered_kv.py` implementing the two-tier slab
+  structure. Fast tier is fp16 or 4-bit TQ (configurable); slow
+  tier is 3-bit TQ (shared with existing TurboQuantKVCache).
+  Capacity is configurable — fast tier default 4K tokens (fits
+  comfortably in Metal cache), slow tier unbounded (grows with
+  context). Phase 2 — **temporal migration policy**: each
+  decode step, tokens that age past the fast-tier window are
+  batch-demoted to slow tier (quantize once, write to slow
+  slab, drop from fast). Re-promotion: if a slow-tier token's
+  attention score over the last K decode steps (tracked as a
+  running sum in a compact histogram) exceeds a threshold, it
+  is promoted back to fast tier (dequantize, write to fast
+  slab). Phase 3 — **block-wise streaming attention**: modify
+  `omlx/attention/` to dispatch attention over the two tiers in
+  parallel — fast-tier attention computes synchronously, slow-
+  tier attention streams in blocks while fast-tier results are
+  written. Block size default 256 tokens (fits Metal
+  thread-group memory). Wire in as `--kv-mode tiered` (new
+  mode), `--tiered-fast-window N` (default 4096 — fast-tier
+  capacity), `--tiered-fast-bits {4, 8, 16}` (default 16 —
+  fast-tier precision), `--tiered-slow-bits {2, 3}` (default 3),
+  `--tiered-promote-threshold T` (default 0.10 — attention-
+  share above which a slow-tier token is re-promoted),
+  `--tiered-block-size B` (default 256 — streaming-attention
+  block size). Composition: with TQ3 (shipped — TQ3 is the
+  slow-tier codec), with DuoKV (shipped — per-head temporal
+  tiers via (head, time) classification), with SnapKV (shipped
+  — two-stage eviction: SnapKV removes the worst, TTKV demotes
+  the middling), with PM-KVQ (Task 244 — per-block slow-tier
+  schedule), with Commodity-GPU Sparse 1M (Task 246 — sparse-
+  topk selection happens within the tiered structure; selection
+  prioritizes fast-tier tokens first). Risk: migration overhead
+  (quantize-on-demote, dequantize-on-promote) adds per-decode-
+  step cost; if > 2% of decode time, reduce migration frequency
+  (demote in batches every N steps instead of per-step). Tier
+  thrashing: if promote/demote flips frequently for the same
+  token, add hysteresis — a token must be in a tier for at
+  least K steps before it can migrate out.
+- **Local PDF**: research/2604.19769_ttkv.pdf
+
+### [Let's (not) just put things in Context: Test-Time Training for Long-Context LLMs (qTTT)](https://arxiv.org/abs/2512.13898) — 2512.13898
+- **Authors**: Rachit Bansal, Aston Zhang, Rishabh Tiwari, Lovish Madaan, Sai Surya Duvvuri, Devvrit Khatri, David Brandfonbrener, David Alvarez-Melis, Prajjwal Bhargava, Mihir Sanjay Kale, Samy Jelassi
+- **Published**: 2025-12 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 2 (12.6-14.1 pp
+  improvement on LongBench-v2 and ZeroScrolls for Qwen3-4B at
+  matched compute budget — direct intelligence-breadth gain on
+  long-context benchmarks; since the improvement is on the same
+  model family as Hypercar's Qwen3-Coder-30B, the mechanism
+  should transfer), Goal 1 (evaluated at 8K-128K contexts on
+  the same Qwen3 family Hypercar uses — direct fit, no
+  architecture-mismatch concerns; the query-only gradient
+  update is compatible with any frozen KV cache including our
+  TQ3 3-bit), Goal 3 (qTTT is *compute-matched* to thinking-
+  token baselines per the paper — i.e., it uses the same FLOP
+  budget as inference-time scaling but spends it on gradient
+  updates rather than token generation; net decode-speed impact
+  is neutral at matched budget, positive if the user has extra
+  compute budget to spend on quality)
+- **TL;DR**: Query-only test-time training (qTTT) for long-
+  context LLMs. Mechanism: (1) standard single prefill pass to
+  populate the KV cache; (2) **32 gradient steps** updating
+  *only* the query projection matrices W_Q while freezing
+  *everything else* — KV cache, FFN weights, K/V projection
+  weights, embeddings, all frozen; (3) span-based training on
+  randomly sampled short context spans (default span length
+  k=128) rather than the entire sequence — the loss is
+  next-token prediction on masked targets within the span.
+  After qTTT, generate the answer using the TTT-adapted W_Q.
+  Paper proves that qTTT updates *provably increase the
+  target-distractor margin*: the updates push attention mass
+  toward target tokens (retrieved content) and away from
+  distractor tokens (irrelevant context). Evaluated on Qwen3-
+  {1.7B, 4B, 8B, 32B} at 8K-128K context on LongBench-v2 and
+  ZeroScrolls; 12.6 pp and 14.1 pp improvements for Qwen3-4B
+  on LongBench-v2 and ZeroScrolls respectively. Synthetic-task
+  evaluation on 5-10K-line code bug localization and 25-500
+  transaction log analysis. Compute-matched to thinking-token
+  baselines: ~28 seconds per query on Qwen3-4B at 8K context
+  on A100.
+- **Why it matters for Hypercar**: Test-time adaptation for
+  long context was a pass-56-new gap — identified as a
+  potentially productive direction but unexplored in the pass-
+  40-56 arc. qTTT is the decisive closure: it is the *first*
+  pass-40-57 paper to (a) demonstrate test-time gradient
+  adaptation on a *frozen* pretrained LLM (not a TTT-pretrained
+  architecture like TTT-E2E which requires meta-learning during
+  pretraining), (b) be compatible with quantized KV caches (since
+  KV is frozen during TTT, the 3-bit TQ3 representation is
+  preserved), (c) target the exact Qwen3 family Hypercar uses
+  at the exact 8K-128K context window. The mechanism is
+  minimally invasive: only 48 W_Q matrices per layer get
+  updated, each ~d_model × d_head — for Qwen3-Coder-30B with
+  d_model=5120, d_head=128, 48 layers × 8 heads × 5120 × 128
+  bytes × 4 (fp32 gradient) ≈ 100 MB of gradient storage —
+  fits easily in the M4 Pro's 48 GB budget. The 32 gradient
+  steps at 8K context on A100 took 28 seconds; on M4 Pro with
+  a 30B model at 128K context, extrapolating via memory-
+  bandwidth ratio gives ~2-4 minutes per query — acceptable
+  for high-value queries, too slow for interactive. The value
+  proposition is that qTTT buys *12-14 percentage points on
+  long-context QA* in exchange for those 2-4 minutes, which
+  for a research-grade coding assistant tackling a 128K-line
+  codebase is a compelling trade. The target-distractor-margin
+  proof is especially important: it gives a theoretical reason
+  why qTTT works at long context where vanilla prompt
+  engineering fails — it's not a compute trick, it's a
+  *distributional* fix to attention's inherent limitation on
+  long irrelevant context. Composes with TQ3 (shipped — TQ3 KV
+  is frozen during TTT, so fully compatible), with DuoKV
+  (shipped — DuoKV's head classification is compatible; qTTT
+  updates W_Q for both retrieval and streaming heads), with
+  SnapKV (shipped — SnapKV evicts before TTT; qTTT operates on
+  the retained cache), with Commodity-GPU Sparse 1M (Task 246 —
+  sparse-topk selection happens at decode time; qTTT adapts W_Q
+  which changes the scores that drive selection — composition
+  needs careful validation since the two both affect attention
+  scoring), with SmallKV (Task 237 — SmallKV's drift monitor
+  can flag when qTTT-adaptation has diverged from baseline,
+  providing a safety signal).
+- **Cost of adoption**: M (1-2 weeks). Three phases. Phase 1
+  — **W_Q-only gradient infrastructure**: MLX has existing
+  gradient support — verify that gradient flows through W_Q
+  only when we set `requires_grad=True` on W_Q matrices and
+  `requires_grad=False` elsewhere. Create a new training loop
+  `omlx/train/qttt.py` that takes (model, kv_cache, spans)
+  and runs N gradient steps on W_Q only. Phase 2 — **span
+  sampling and loss**: implement the span-based TTT objective
+  — randomly sample K spans of length k from the context, mask
+  the last token of each span, compute the next-token-prediction
+  loss with the masked target as ground truth, sum over spans.
+  Default k=128, K=32 spans per batch. Phase 3 — **inference
+  integration**: new CLI flag `--qttt-enable` on the
+  hypercar_server generate endpoint; when set, the server does
+  prefill → qTTT loop → generate. Wire in as `--qttt-enable`
+  (default off — quality-vs-latency tradeoff belongs to the
+  user per query), `--qttt-steps N` (default 32 per paper),
+  `--qttt-span-length K` (default 128), `--qttt-span-count M`
+  (default 32), `--qttt-lr L` (default 1e-5 — small step size
+  appropriate for frozen-pretrained-model adaptation), `--qttt-
+  scope {all-heads, retrieval-only, streaming-only}` (default
+  all-heads — DuoKV-aware scoping is a follow-up). Composition
+  risks are low since qTTT only mutates W_Q temporarily per-
+  query; after the query returns, restore the original W_Q from
+  a pinned copy. Risk: 2-4 minute per-query latency on M4 Pro
+  for 128K context is too slow for interactive; gate qTTT
+  behind an explicit user opt-in (e.g., `/v1/completions?qttt=1`
+  query parameter). Gradient-storage risk: ~100 MB fp32 gradient
+  is tight with Metal allocator — consider fp16 or bf16
+  gradients to halve memory. Numerical-stability risk: 32
+  gradient steps at lr=1e-5 on a 30B model is a small change
+  but can drift — add a *delta-clip* on W_Q (clamp |W_Q_new -
+  W_Q_original| by 10%) to prevent runaway.
+- **Local PDF**: research/2512.13898_qttt.pdf
+
+### Pass 57 synthesis
+
+Pass 57 is a two-closure pass plus one formal dead-end
+declaration. The two papers close two of the pass-56 open gaps;
+the dead end closes one of the three-pass-held gaps.
+
+**Pass 57 gap closures**:
+- Gap #2 (hierarchical two-level KV for text — held 1 pass,
+  carried from pass 56): TTKV (2604.19769) — temporal-tiered
+  KV partitioning with heterogeneous capacity + differential
+  precision; 5.94× traffic reduction at 128K, 76% latency
+  reduction, 2× throughput; hardware HBM/DRAM framing is
+  incidental, algorithmic contribution is software policy
+  directly applicable to unified memory.
+- Gap #5 (test-time adaptation for long context — new pass-56
+  angle, unexplored): qTTT (2512.13898) — query-only test-time
+  training on frozen pretrained LLM; 12.6-14.1 pp improvement
+  on LongBench-v2/ZeroScrolls at 8K-128K on Qwen3 family;
+  compatible with quantized KV cache (KV frozen during TTT);
+  compute-matched to thinking-token baselines.
+
+**Highest-leverage find**: **qTTT (2512.13898)**. The *first*
+pass-40-57 paper to demonstrate test-time gradient adaptation
+on a frozen pretrained LLM with full compatibility with
+quantized KV cache and the exact Qwen3 model family at the
+exact 8K-128K context window Hypercar targets. The
+target-distractor-margin proof provides a theoretical reason
+why long-context QA fails without it — not a compute trick, a
+*distributional* fix to attention's inherent long-context
+limitation. 12-14 pp improvement on long-context benchmarks
+for a well-bounded 2-4-minute-per-query latency on M4 Pro
+makes this a compelling quality-vs-latency knob for high-
+value queries (tackling a 128K-line codebase). Ship-cost is
+M (1-2 weeks) since MLX gradient support exists and the
+mechanism is minimally invasive (W_Q-only, temporary
+per-query).
+
+**Runner-up**: **TTKV (2604.19769)**. Closes the hierarchical
+two-level KV gap the pass-40-56 arc explicitly identified as
+absent from the literature. The software policy (temporal-
+tiered partition + differential precision + streamed overlap)
+is hardware-agnostic despite the HBM/DRAM framing; on Apple
+Silicon's unified memory the tiers become an uncompressed fast
+slab and the existing TQ3 slab. The migration policy between
+tiers is the novel first-class primitive we've been
+approximating through SnapKV+DuoKV+CAOTE composition. Ship-
+cost is M-L (2-3 weeks) due to the streaming-attention kernel
+work; the tier infrastructure itself is straightforward.
+
+**Pass 57 dead end**: **FP8→INT3 training calibration** (gap #1,
+held 3 passes). Pass-57 final search ("FP8 training INT3
+inference KV cache calibration transfer") returned only
+*inference-only* FP8 work — 2502.01070 (Datacenter TCO for
+LLM Inference with FP8, concludes dynamic FP8 scaling
+*eliminates* the need for calibration sets), 2503.09975 (Gaudi
+FP8 inference), NVFP4 KV cache blog posts. No paper addresses
+the *training-to-inference* bit-width transfer calibration
+question — specifically, using FP8-trained models' quantization
+statistics to calibrate INT3 inference codebooks. The
+empirical finding of the searched work (dynamic scaling
+eliminates calibration sets) actually argues *against* the
+premise of the gap: if FP8 inference doesn't need calibration,
+then FP8→INT3 transfer calibration is a non-problem. Three
+passes without closure + a finding that undermines the premise
+is dispositive. Alternatives we already have: KVTuner (Task
+186) for per-head bit allocation, PM-KVQ (Task 244) for per-
+block bit allocation with positional-interpolation calibration
+— both operate on a fixed-precision baseline without requiring
+FP8-derived statistics. Revisit condition: if Hypercar
+acquires an FP8-trained base model (currently we use 8-bit
+integer quantized Qwen3-Coder-30B, not FP8), re-open by
+searching "FP8-trained model INT3 KV calibration" with that
+specific architecture. Otherwise: do not re-search.
+
+**What Pass 57 deliberately did NOT cover**:
+- **Incremental attention update** (gap #6 from pass 56).
+  Briefly touched via AsyncTLS (2604.07815, already in corpus
+  — pass 56). Carry to pass 58 with targeted search for
+  streaming-update mechanisms specific to Apple Silicon's
+  unified-memory model.
+- **KV cache migration between contexts** (gap #7 from pass
+  56). Searched; KV Packet (2604.13226) and LMCache (2510.09665)
+  already in corpus; KVCache Cache in the Wild (2506.02634) is
+  a large-provider characterization paper (orthogonal to
+  Hypercar's single-user model); EpiCache (2509.17396) is an
+  episodic KV management paper that may be a dedicated hit —
+  carry to pass 58 for targeted review.
+- **Distributed inference multi-device** (held). Orthogonal.
+- **Multi-tenant fairness** (held). Low priority.
+- **Learned eviction policies (meta-learning)** (pass-57
+  direction #8). Not searched this pass; carry.
+- **Attention prefetch from embedding similarity** (#9). Not
+  searched this pass; carry.
+- **Prompt caching at scale** (#10). Briefly searched —
+  candidates found (KVFlow 2507.07400, LMCache 2510.09665,
+  CacheSolidarity 2603.10726, Preble 2407.00023) are all
+  already in corpus or multi-tenant-server-focused
+  (orthogonal to Hypercar's single-user model). Close as
+  scope-mismatch for pass 58 absent new single-user work.
+- **Memory-efficient model merging** (#11). Not searched this
+  pass; carry.
+- **KV compression under distribution shift** (#12). Not
+  searched this pass; carry.
+- **Information bottleneck for KV** (#13). Briefly searched —
+  Expected Attention (2510.00636, already in corpus) is the
+  closest extant formalization. No new IB-specific paper
+  surfaced. Close as saturated.
+- **Approximate matrix multiplication for attention** (#14).
+  Not searched this pass; carry.
+- **Energy-efficient inference** (#15). Not searched this pass;
+  carry.
+
+### Gaps carried into Pass 58
+
+Pass 57 closes two pass-56 gaps (hierarchical two-level KV via
+TTKV, test-time adaptation via qTTT) and formally declares one
+dead end (FP8→INT3 training calibration). Remaining open gaps:
+
+1. **Incremental attention update** — new pass-56 angle,
+   carried; re-search with Apple-Silicon-unified-memory scope.
+2. **KV cache migration between contexts** — new pass-56 angle,
+   carried; targeted review of EpiCache (2509.17396) in pass 58.
+3. **Distributed inference across multiple M-series devices** —
+   held. Orthogonal.
+4. **Multi-tenant fairness** — held. Low priority.
+5. **Learned eviction policies (meta-learning)** — pass-57 new
+   angle, unexplored.
+6. **Attention prefetch from embedding similarity** — pass-57
+   new angle, unexplored.
+7. **Memory-efficient model merging** — pass-57 new angle,
+   unexplored.
+8. **KV compression under distribution shift** — pass-57 new
+   angle, unexplored.
+9. **Approximate matrix multiplication for attention** — pass-57
+   new angle, unexplored.
+10. **Energy-efficient inference** — pass-57 new angle,
+    unexplored.
+
+Fifty-seven passes. Two papers this round, total 236 across
+70+ disciplines. Plus one dead end formalized (FP8→INT3
+training calibration) — six total dead ends across passes 52-57.
+**Pass 57 adds the *temporal-tiered hierarchical KV with
+differential precision and software-policy migration, plus
+query-only test-time training on frozen pretrained LLMs with
+quantized-KV compatibility* vertices** to the pass-56 stack.
+Highest-leverage find is qTTT (2512.13898) — the first pass-40-57
+paper to demonstrate test-time gradient adaptation on a frozen
+pretrained LLM compatible with quantized KV cache on the exact
+Qwen3 model family at 8K-128K context. Runner-up is TTKV
+(2604.19769) — closes the hierarchical two-level KV gap the
+pass-40-56 arc explicitly identified as absent, with a software
+policy directly applicable to Apple Silicon's unified memory.
+Plus one dead end closed after 3 passes of no direct hit — the
+searched work (FP8 inference with dynamic scaling) actively
+undermines the premise of the gap, making the declaration
+dispositive.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -17453,4 +17906,26 @@ policies for tiered KV memory, both structural mismatches to
 unified-memory architecture rather than literature gaps. Five
 total dead ends across passes 52-56. Tasks 244-246 track pass-
 56 code actions.**
+**Pass 57 adds the temporal-tiered hierarchical KV cache with
+differential precision and software-policy migration (TTKV
+2604.19769) plus query-only test-time training on frozen
+pretrained LLMs with quantized-KV compatibility (qTTT
+2512.13898) vertices — highest-leverage being qTTT, the first
+pass-40-57 paper to demonstrate test-time gradient adaptation
+on a *frozen* pretrained LLM compatible with quantized KV
+cache on the exact Qwen3 model family at 8K-128K context;
+12.6-14.1 pp improvement on LongBench-v2/ZeroScrolls for a
+well-bounded 2-4-minute-per-query latency on M4 Pro — a
+compelling quality-vs-latency knob for high-value queries.
+Runner-up is TTKV — closes the hierarchical two-level KV gap
+the pass-40-56 arc explicitly identified as absent; the
+temporal-tiered software policy with differential precision
+per tier is hardware-agnostic despite the HBM/DRAM framing
+and maps cleanly to Apple Silicon's unified memory. Plus one
+dead end formalized: FP8→INT3 training calibration, closed
+via category-mismatch reasoning — FP8 (training/compute-
+activation) and INT3 (inference/KV-storage) operate on
+orthogonal surfaces with no mechanical composition path. Six
+total dead ends across passes 52-57. Tasks 247-248 track
+pass-57 code actions.**
 
