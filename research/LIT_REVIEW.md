@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-23 (pass 57)_
+_Last updated: 2026-04-23 (pass 58)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -17614,6 +17614,417 @@ undermines the premise of the gap, making the declaration
 dispositive.
 
 
+## Pass 58 — 2026-04-23 — Goal 1 Long-Tail: Episodic KV Cache, Long-Context Code Benchmark, Learned Forgetting, Stream-Scheduled Exact Attention
+
+Long-tail pass (58th). Four papers this round — a deliberately
+higher throughput than passes 56-57 (two each) because pass 58
+closes one held targeted review (EpiCache — flagged as the
+targeted review for pass 57's KV-cache-migration-between-contexts
+gap), introduces one orthogonal evaluation-infrastructure
+primitive (LoCoBench, which directly probes Goal 1 quality at
+the 10K-to-1M ladder Hypercar targets), and lands two brand-new
+structural primitives on opposite ends of the compression arc
+(NGC — RL-learned eviction via outcome reward, the first pass-40-58
+paper to move eviction from hand-designed-criteria to end-to-end
+learning; Stream-CQSA — schedulable exact attention via cyclic
+quorum set decomposition, the first pass-40-58 paper to preserve
+*exact* attention arithmetic while fitting arbitrary memory
+budgets).
+
+The four papers map to pass-57 carried gaps and new angles:
+
+1. **Gap #2 (KV cache migration between contexts — carried from
+   pass 56, flagged in pass 57 for targeted review)**: **closed**
+   by EpiCache (2509.17396, Apple ML). Training-free KV cache
+   management for multi-turn LongConvQA under fixed memory budget.
+   Two contributions: (a) block-wise prefill bounds peak memory
+   (vs full-context-prefill-then-evict which has unbounded peak),
+   and (b) episodic KV compression clusters conversation into
+   coherent episodes and applies episode-specific eviction —
+   solving the single-query-narrowing failure mode that query-
+   dependent eviction (SnapKV etc.) exhibits across multi-turn
+   sessions. 4-6× compression at near-full accuracy, 40% accuracy
+   improvement vs baselines, 2.4×/3.5× latency/memory reduction.
+2. **Goal-2 evaluation-infrastructure gap (pre-existing, surfaced
+   pass 58)**: LoCoBench (2509.09614, Salesforce) — 8000 scenarios
+   across 10 programming languages with context lengths spanning
+   10K-1M (a 100× variation), 8 task categories (architectural
+   understanding, cross-file refactoring, multi-session development,
+   bug investigation, feature implementation, code comprehension,
+   integration testing, security analysis), 17 metrics across 4
+   dimensions. This is the first benchmark in the corpus that
+   **directly probes Hypercar's Goal 1 × Goal 2 intersection**
+   at the exact context ladder Hypercar targets. Replaces ad-hoc
+   "try HumanEval at 4K then trust-extrapolate" with measured
+   degradation curves at 10K/32K/64K/128K/256K/512K/1M.
+3. **Gap #5 (learned eviction policies — meta-learning angle,
+   unexplored in pass 57)**: **closed** by NGC / Neural Garbage
+   Collection (2604.18002). End-to-end RL-trained eviction policy
+   — the model learns to decide which KV entries to evict as
+   discrete actions sampled jointly with reasoning tokens, trained
+   from outcome task reward alone (no supervised fine-tuning, no
+   proxy objectives). 2-3× peak-KV compression at strong accuracy
+   on Countdown/AMC/AIME, substantially outperforms hand-designed
+   eviction baselines. This is the first pass-40-58 paper where
+   the eviction criterion is *learned* rather than hand-designed
+   (SnapKV attention-score, CAOTE value-aware, BUZZ segmented,
+   StructKV graph-centrality — all hand-designed scorers).
+4. **Goal-1 mechanism-orthogonal gap (exact attention at
+   arbitrary memory budget)**: Stream-CQSA (2604.20819) introduces
+   CQS Divide, a decomposition derived from cyclic quorum sets
+   theory that partitions attention into independent subsequence
+   computations whose recomposition yields mathematically exact
+   attention output. Memory-adaptive scheduling framework
+   partitions attention into subproblems fitting arbitrary memory
+   budgets — including running exact attention over billion-token
+   sequences on a single GPU via streaming. This is the first
+   pass-40-58 paper to preserve *exact* attention (no
+   approximation error) while handling Goal-1 memory constraints;
+   all other Goal-1 papers in the corpus involve approximation
+   (quantization error, eviction information loss, sparse-top-k
+   selection error, rank-projection error).
+
+### [EpiCache: Episodic KV Cache Management for Long Conversational Question Answering](https://arxiv.org/abs/2509.17396) — 2509.17396
+- **Authors**: Minsoo Kim, Arnav Kundu, Han-Byul Kim, Richa Dixit, Minsik Cho (Apple)
+- **Published**: 2025-09 (arxiv preprint; Apple ML, code released)
+- **Hypercar goals it addresses**: Goal 1 (block-wise prefill
+  bounds peak memory during prefill — directly closes the
+  120K-single-pass Metal-OOM failure mode Hypercar currently
+  works around via session-save/load; episodic clustering +
+  per-episode eviction is the principled multi-turn extension
+  of SnapKV which is query-dependent-single-shot), Goal 3
+  (2.4× latency reduction on multi-turn workloads — agentic
+  coding workflows with repeated tool-call round-trips are
+  exactly this pattern and benefit proportionally), Goal 6
+  (3.5× memory reduction at near-full accuracy — near-free
+  headroom on 48 GB M4 Pro for larger prompts or lower swap
+  risk)
+- **TL;DR**: Training-free KV cache management for long
+  conversational QA under fixed memory budget. Two contributions:
+  (1) block-wise prefill bounds cache growth during prefill (vs
+  full-context-prefill-then-evict which has unbounded peak
+  memory); (2) episodic KV compression clusters conversation
+  history into coherent episodes and applies episode-specific
+  KV eviction, plus an adaptive layer-wise budget allocation
+  that weights each layer by its sensitivity to eviction.
+- **Why it matters for Hypercar**: Directly addresses two pain
+  points in the shipped stack. Pain #1 — the 120K single-pass
+  prefill Metal-OOM: block-wise prefill is the exact primitive
+  Hypercar has been approximating via adaptive prefill chunk
+  sizing (Task 94, shipped); EpiCache formalizes this as a
+  memory-bounded sequential prefill with per-block eviction,
+  which is a drop-in replacement for the current progressive-
+  eviction path that is blocked by re-RoPE accumulation (the
+  ``## Goal 1 Path`` section explicitly notes progressive
+  eviction is BLOCKED by MLX KVCache position model — single-
+  pass + session-save is the workaround). Pain #2 — multi-turn
+  failure of query-dependent eviction: SnapKV narrows the cache
+  to the current query's attention pattern, which is exactly
+  the failure mode EpiCache calls out; episode clustering
+  preserves topic-relevant context across turns in agentic
+  coding workflows where a single repo exploration spans 10+
+  tool-call round-trips. Apple ML provenance (and code release)
+  makes this the highest-provenance pass-58 find. The adaptive
+  layer-wise budget is orthogonal to KVTuner's per-head budget
+  (Task 186) and composes cleanly.
+- **Cost of adoption**: **M** (1-2 weeks — block-wise prefill
+  is a natural extension of the shipped adaptive-prefill path;
+  episode clustering needs a lightweight sentence-transformer
+  or cosine-similarity pass over turn boundaries — Hypercar
+  already has this as embedding infrastructure from the
+  freshness-decay path (Task 97, shipped); per-episode eviction
+  reuses SnapKV scorer on episode-scoped token subsets; the
+  layer-sensitivity measurement is a one-time offline calibration
+  similar to KVTuner). Biggest risk: episode-boundary detection
+  on code-heavy conversations with long single-turn spans —
+  cosine-similarity across code turns may not cluster cleanly;
+  validate on real agentic coding session replays before
+  shipping.
+- **Local PDF**: research/2509.17396_epicache.pdf
+
+### [LoCoBench: A Benchmark for Long-Context Large Language Models in Complex Software Engineering](https://arxiv.org/abs/2509.09614) — 2509.09614
+- **Authors**: Jielin Qiu, Zuxin Liu, Zhiwei Liu, Rithesh Murthy, Jianguo Zhang, Haolin Chen, Shiyu Wang, Ming Zhu, Liangwei Yang, Juntao Tan, Zhepeng Cen, Cheng Qian, Shelby Heinecke, Weiran Yao, Silvio Savarese, Caiming Xiong, Huan Wang (Salesforce AI Research)
+- **Published**: 2025-09 (arxiv preprint; Salesforce AI Research, code released)
+- **Hypercar goals it addresses**: Goal 2 (first benchmark in
+  corpus that directly probes the long-context × software-
+  engineering intersection at Hypercar's exact context target
+  ladder — 8 task categories span architectural understanding,
+  cross-file refactoring, multi-session development, bug
+  investigation, feature implementation, code comprehension,
+  integration testing, security analysis; 8000 scenarios ×
+  10 languages × 10K-1M context is ~100× broader than any
+  eval currently in the Hypercar gate suite), Goal 1
+  (degradation measurement at 10K/32K/64K/128K/256K/512K/1M
+  provides the measured quality floor that the shipped
+  SnapKV+DuoKV+TQ3 stack claims via extrapolation but has not
+  directly evaluated; LoCoBench converts extrapolation into
+  measurement)
+- **TL;DR**: Comprehensive long-context code evaluation benchmark.
+  8000 scenarios systematically generated across 10 programming
+  languages, context lengths 10K-1M (100× variation), 8 task
+  categories capturing long-context capabilities (architectural
+  understanding, cross-file refactoring, multi-session
+  development, bug investigation, feature implementation, code
+  comprehension, integration testing, security analysis),
+  17 metrics across 4 dimensions combined into LoCoBench Score
+  (LCBS). SOTA long-context models reveal substantial
+  performance gaps.
+- **Why it matters for Hypercar**: The current Goal-2 evidence
+  stack (HumanEval 95%, Code Intel 5/5, RULER 100%, MMLU-Pro
+  62%, LiveCodeBench 30%) is weak at exactly the intersection
+  that defines Hypercar's product thesis — long-context code
+  understanding. HumanEval is single-function; Code Intel is
+  small-repo; RULER is retrieval-only; MMLU-Pro is reasoning-
+  breadth; LiveCodeBench is competitive-programming-style. Not
+  one of these five evals directly tests "understand a 200K
+  codebase and reason across files." LoCoBench is the missing
+  eval. This is the clearest Goal-2-gate-gap closure in the
+  pass-40-58 arc. Subset-run feasibility at 10K-128K on M4 Pro
+  is plausible (Hypercar can run HumanEval full in 15 min;
+  LoCoBench per-context subsets should be similar with careful
+  scenario sampling). Full-ladder run to 1M is currently
+  infeasible (takes ~3h at 256K per `## Goal 1 Path`; 1M would
+  require session-save/reload infrastructure to be viable).
+- **Cost of adoption**: **S-M** (1-2 weeks — benchmark harness
+  integration via `omlx/bench/locobench.py`, scenario subset
+  selection for practical runtime budgets, metric plumbing
+  through hypercar_bench gate infrastructure; the metrics
+  definitions are well-specified, the main work is practical
+  runtime budget management since the full 8000 × 7-context-
+  lengths matrix is weeks of M4 Pro runtime). Biggest risk:
+  leakage with Qwen3-Coder-30B's training data — need to
+  verify the 8000 scenarios were synthesized after the model's
+  training cutoff or are genuinely held-out; the paper's
+  5-phase pipeline suggests synthesis, but pin down.
+- **Local PDF**: research/2509.09614_locobench.pdf
+
+### [Neural Garbage Collection: Learning to Forget while Learning to Reason](https://arxiv.org/abs/2604.18002) — 2604.18002
+- **Authors**: Michael Y. Li, Jubayer Ibn Hamid, Emily B. Fox, Noah D. Goodman
+- **Published**: 2026-04 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (2-3× peak KV cache
+  compression on Countdown/AMC/AIME reasoning tasks at strong
+  accuracy — direct memory-footprint reduction at the reasoning-
+  depth regime Hypercar's long-CoT agentic workloads hit),
+  Goal 2 (reasoning-task accuracy at matched compression
+  substantially outperforms eviction baselines — the first
+  pass-40-58 paper to demonstrate a *learned* eviction policy
+  beats hand-designed scorers on reasoning tasks where
+  hand-designed attention-score heuristics fail), Goal 3
+  (learned-forget periodic-pause pattern is compatible with
+  Hypercar's segmented-eviction architecture — NGC's pause-
+  evict-continue loop maps onto the segmented-evict flag
+  already shipped)
+- **TL;DR**: End-to-end RL-learned KV cache eviction policy.
+  Model periodically pauses during reasoning, decides which
+  KV cache entries to evict as discrete actions sampled from
+  the language model's own distribution, continues reasoning
+  conditioned on remaining cache. Jointly optimizes reasoning
+  and cache management via outcome-based task reward alone
+  (no supervised fine-tuning, no proxy objectives). On
+  Countdown, AMC, and AIME: maintains strong accuracy vs
+  full-cache at 2-3× peak KV compression, substantially
+  outperforms eviction baselines.
+- **Why it matters for Hypercar**: First pass-40-58 paper
+  where the eviction *criterion* is learned rather than
+  hand-designed. The shipped SnapKV+CAOTE+BUZZ+fair-eviction
+  stack uses five hand-designed scorers composed into a policy;
+  NGC proposes that the entire composition is replaceable by
+  an end-to-end RL-learned policy trained from task reward.
+  Reasoning-specific compression ratio (2-3×) is moderate
+  compared to codec compression (TQ3 5.3×) but composes
+  orthogonally — NGC is *scorer-space* learning on top of
+  codec-space compression. Hypercar's existing outcome-
+  measurement infrastructure (HumanEval pass@1 as reward
+  signal) provides the reward-shaping starting point. Major
+  caveat: RL training requires a base model + training
+  infrastructure Hypercar does not currently have on-node;
+  this is shipping-after-inference-infrastructure-matures
+  rather than a near-term ship. Path forward: port the
+  pretrained NGC policy (if released) rather than retraining,
+  or use NGC's learned policy as a gold-standard *oracle*
+  to distill into a cheap scorer the shipped eviction path
+  can use directly.
+- **Cost of adoption**: **L** (3-4 weeks minimum — depends
+  critically on policy release; if released, port the policy
+  to MLX and integrate into segmented-evict path at ~1 week;
+  if not released, full RL training on Qwen3-Coder-30B would
+  require training infrastructure Hypercar does not have
+  on-node, pushing to multi-month). Biggest risk: RL-training
+  dependency. Unless the authors release the trained policy,
+  replicating requires outcome-reward RL on the 30B target
+  model — a major infrastructure investment. Secondary risk:
+  reasoning-task-specific learned policy may not transfer to
+  code-understanding / retrieval workloads where the task
+  reward structure differs; need to validate on HumanEval
+  and LoCoBench before shipping.
+- **Local PDF**: research/2604.18002_ngc.pdf
+
+### [Stream-CQSA: Avoiding Out-of-Memory in Attention Computation via Flexible Workload Scheduling](https://arxiv.org/abs/2604.20819) — 2604.20819
+- **Authors**: Yiming Bian, Joshua M. Akey
+- **Published**: 2026-04 (arxiv preprint; this month)
+- **Hypercar goals it addresses**: Goal 1 (exact attention over
+  billion-token sequences on a single GPU via streaming —
+  directly exceeds Hypercar's 1M target while preserving exact
+  attention arithmetic; no approximation error), Goal 3
+  (memory-adaptive scheduling recasts attention from monolithic
+  operation to schedulable tasks — fits arbitrary memory
+  budgets without changing mathematical definition, which is
+  exactly the Apple Silicon unified-memory profile Hypercar
+  needs), Goal 6 (predictable memory scaling is the
+  single-node memory-budget guarantee that every other
+  Goal-1 path in the corpus lacks — quantization has
+  distribution-shift risk, eviction has retention error,
+  sparse-top-k has selection error; CQSA alone is
+  approximation-free)
+- **TL;DR**: CQS Divide — an operation derived from cyclic
+  quorum sets (CQS) theory that decomposes self-attention
+  into independent subsequence computations whose
+  recomposition yields mathematically exact attention output.
+  Stream-CQSA memory-adaptive scheduling framework partitions
+  attention into subproblems fitting arbitrary memory budgets,
+  enabling exact attention over billion-token sequences on a
+  single GPU via streaming. No approximation error.
+- **Why it matters for Hypercar**: First pass-40-58 paper to
+  preserve *exact* attention arithmetic while handling Goal-1
+  memory constraints. Every other Goal-1 path in the corpus
+  trades memory for some form of approximation — TQ3
+  quantization distortion, SnapKV eviction information loss,
+  sparse-top-k selection error, KQ-SVD rank-projection error,
+  PM-KVQ cumulative quantization error. Stream-CQSA trades
+  memory for *time* (exact same compute, just streamed) with
+  zero approximation. On Apple Silicon where memory bandwidth
+  is the scarce resource and compute is abundant, this is the
+  canonical right-direction trade: spend compute-over-time to
+  stay within memory. Composes orthogonally with every codec
+  and eviction path — Stream-CQSA operates on whatever KV
+  cache it is given, exact or quantized. The CQS-theory
+  derivation is novel in the LLM-inference literature
+  (reaches back to distributed-systems theory, 1980s). The
+  claim is also very recent (2026-04-22, this month) and
+  unproven at scale on real decoder models; need to read
+  Section 3 carefully before committing. Highest potential
+  upside of the four pass-58 papers: Goal-1 gate-defining
+  with zero approximation.
+- **Cost of adoption**: **M-L** (2-3 weeks — CQS Divide
+  implementation in MLX (1 week — requires understanding the
+  quorum-set decomposition in enough depth to translate to
+  Metal dispatch), streaming scheduling framework integrated
+  into hypercar_server attention path (3 days), validation at
+  64K/128K/256K/1M with exactness check (1 week — exactness
+  testing requires bit-identical output vs baseline at small
+  scale, then extrapolate confidence to large scale)). Biggest
+  risk: paper is brand new (2026-04-22, today's month) with
+  no replication; experimental validation is on synthetic
+  setups, not on real Qwen3-scale models. CQS-theory claim of
+  "exactly the same result as full-sequence attention" must be
+  verified bit-identically at small scale before trusting at
+  1M. Secondary risk: streaming overhead may dominate at small
+  budgets — the partition cost itself has wall-clock impact
+  even at exact arithmetic; measure carefully before claiming
+  constant-decode-speed benefit.
+- **Local PDF**: research/2604.20819_stream_cqsa.pdf
+
+### EpiCache decision (pass-57 targeted review)
+
+EpiCache (2509.17396) was flagged in pass 57's carried-gap
+enumeration as the targeted review for "KV cache migration
+between contexts" (pass-56 new angle #2). The pass-58 review
+**closes that gap with a positive decision**: EpiCache is a
+direct ship-worthy addition to the Hypercar stack. Three
+convergent reasons:
+1. **Correct problem scope**. EpiCache targets long conversational
+   QA under fixed memory — which is exactly Hypercar's agentic
+   coding workflow pattern (repeated tool-call round-trips
+   sharing a single repo-exploration context). The multi-turn
+   failure mode the paper calls out (query-dependent eviction
+   narrowing to a single query) is exactly SnapKV's known
+   weakness at agentic workflows.
+2. **Correct mechanism match**. Both contributions address real
+   Hypercar pains. Block-wise prefill maps directly onto the
+   adaptive-prefill path (Task 94) and is a drop-in extension
+   to the progressive-eviction-blocked path; episodic
+   compression is the multi-turn generalization of SnapKV the
+   shipped stack lacks; adaptive layer-wise budget is orthogonal
+   to KVTuner (Task 186) and composes cleanly.
+3. **Correct provenance**. Apple ML origin with code release
+   (github.com/apple/ml-epicache) removes the implementation-
+   risk that RL-trained learned policies carry (NGC in this
+   same pass) — the algorithm is training-free and ships as
+   inference code. This makes EpiCache the lowest-ship-cost
+   pass-58 task of the four.
+
+Tasks 249-250 capture the EpiCache ship (block-wise prefill
+is task-separable from episodic compression, so split into
+two tasks with independent validation; 251 tracks LoCoBench
+gate integration; 252 tracks Stream-CQSA exploratory
+validation).
+
+### Gaps addressed vs carried
+
+Pass 58 closes:
+- **Gap #2 (KV cache migration between contexts)** — via EpiCache
+  episodic compression (training-free, Apple ML, code released).
+- **Gap #5 (learned eviction policies)** — via NGC end-to-end RL
+  (closes gap but ship is blocked on policy release or
+  multi-month RL training infrastructure investment).
+- **New Goal-2 evaluation-gap (long-context × code intersection)**
+  — via LoCoBench integration.
+- **New Goal-1 exact-attention-at-arbitrary-budget angle** — via
+  Stream-CQSA (high-upside, paper is brand new, requires
+  exactness validation before trusting).
+
+### Gaps carried into Pass 59
+
+1. **Incremental attention update** — carried from pass 56, held
+   through 57-58; re-search with Apple-Silicon-unified-memory
+   scope.
+2. **Distributed inference across multiple M-series devices** —
+   held. Orthogonal to single-M4-Pro Hypercar target.
+3. **Multi-tenant fairness** — held. Low priority.
+4. **Attention prefetch from embedding similarity** — pass-57
+   new angle, still unexplored.
+5. **Memory-efficient model merging** — pass-57 new angle,
+   still unexplored.
+6. **KV compression under distribution shift** — pass-57 new
+   angle, still unexplored.
+7. **Approximate matrix multiplication for attention** — pass-57
+   new angle, still unexplored (may compose with Stream-CQSA).
+8. **Energy-efficient inference** — pass-57 new angle, still
+   unexplored.
+9. **NEW: Learned-policy distillation into cheap scorer** —
+   pass-58 derivative gap; if NGC's policy is released but RL
+   training is infeasible on-node, can we distill the learned
+   policy into a hand-evaluable scorer for the shipped
+   eviction path? Meta-learning-adjacent but more tractable.
+10. **NEW: Multi-turn-aware eviction replacing query-dependent**
+    — pass-58 derivative gap; EpiCache solves this via episodic
+    clustering, but the clustering heuristic (cosine-similarity
+    on sentence-transformer embeddings) may not be optimal for
+    code-heavy conversations. Investigate code-structure-aware
+    episode boundaries (AST-node transitions, file-path
+    transitions in tool-call traces).
+
+Fifty-eight passes. Four papers this round, total 240 papers
+across 70+ disciplines. No new dead ends formalized (six total
+across passes 52-57 still holds). **Pass 58 adds the *episodic
+KV compression with block-wise prefill and adaptive layer-wise
+budget (EpiCache), long-context software-engineering evaluation
+benchmark at 10K-1M ladder (LoCoBench), end-to-end RL-learned
+eviction policy from outcome reward (NGC), and exact-attention
+streaming via cyclic-quorum-set decomposition (Stream-CQSA)*
+vertices** to the pass-57 stack. Highest-leverage find is
+EpiCache — direct Hypercar-pain-matching algorithm with Apple
+ML code release, closes the pass-57 targeted-review gap and
+is the lowest-ship-cost pass-58 task. Runner-up is LoCoBench
+— the first benchmark in the pass-40-58 arc that directly
+probes Goal 1 × Goal 2 intersection at Hypercar's exact context
+ladder, replacing extrapolation with measurement on Hypercar's
+core product thesis. NGC is highest theoretical interest but
+blocked on policy release / RL infrastructure. Stream-CQSA is
+highest Goal-1 upside but brand-new (2026-04-22) and requires
+careful exactness validation before trusting.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -17928,4 +18339,37 @@ activation) and INT3 (inference/KV-storage) operate on
 orthogonal surfaces with no mechanical composition path. Six
 total dead ends across passes 52-57. Tasks 247-248 track
 pass-57 code actions.**
+**Pass 58 adds the episodic KV cache management with
+block-wise prefill and adaptive layer-wise budget (EpiCache
+2509.17396, Apple ML, code released), long-context software-
+engineering evaluation benchmark at the 10K-1M ladder with
+8 task categories and 17 metrics (LoCoBench 2509.09614,
+Salesforce AI Research, code released), end-to-end RL-learned
+eviction policy trained jointly with reasoning from outcome
+reward alone (NGC 2604.18002), and exact-attention streaming
+via cyclic-quorum-set decomposition fitting arbitrary memory
+budgets (Stream-CQSA 2604.20819, 2026-04-22 — this month)
+vertices — highest-leverage being EpiCache, direct
+Hypercar-pain-matching with Apple ML code release, closing
+the pass-57 targeted-review gap (KV cache migration between
+contexts) and providing both a block-wise prefill replacement
+for Hypercar's blocked progressive-eviction path and the
+multi-turn-aware generalization of SnapKV the shipped stack
+lacks. Runner-up is LoCoBench — the first benchmark in the
+pass-40-58 arc that directly probes Goal 1 × Goal 2
+intersection at Hypercar's exact context ladder, replacing
+extrapolation with measurement on the core product thesis
+(long-context code understanding). NGC is the first pass-40-58
+paper to make eviction policy *learned* rather than
+hand-designed — high theoretical interest but shipping is
+blocked on policy release or multi-month RL-training
+infrastructure investment not currently on-node. Stream-CQSA
+is the first pass-40-58 paper to preserve exact attention
+arithmetic while handling Goal-1 memory constraints (no
+approximation error, trading memory for streamed compute-over-
+time) — highest Goal-1 upside but brand-new and requires
+bit-identical exactness validation before trusting at 1M
+scale. No new dead ends formalized this pass — six total
+across passes 52-57 still holds. Tasks 249-252 track
+pass-58 code actions.**
 
