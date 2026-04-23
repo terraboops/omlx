@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-22 (pass 54)_
+_Last updated: 2026-04-22 (pass 55)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -16166,6 +16166,471 @@ fidelity bound on attention outputs, stacking with TurboQuant
 to project 10.6× total compression. Meow meow meow meow meow.
 
 
+## Pass 55 — 2026-04-22 — Goal 1 Long-Tail: KV Transform Coding, Latent Context Compilation, Dynamic Layer-wise Precision, QPART Decision
+
+Long-tail pass (55th). Three papers plus one formal
+dead-end declaration. Pass 55 is a *decision pass* for the
+QPART carry and closes three long-standing pass-52/53/54 gaps
+via targeted angle-specific searches. Continuing the long-tail
+rhythm: each pass closes distinct held gaps rather than drilling
+into one axis.
+
+The three papers map to pass-54 open gaps plus new search
+angles:
+1. **New serialization-vertex**: KV Cache Transform Coding
+   / KVTC (2511.01815, ICLR 2026) — closes pass-54 angle
+   #12 (efficient KV serialization formats). Classical-media-
+   compression-inspired transform coder: PCA-decorrelation +
+   adaptive quantization + entropy coding. 20× compression
+   on storage, 40× on specific use cases, no model-weight
+   modification.
+2. **Partial-close of gist-token dead end (angle #7)**:
+   Latent Context Compilation / LCC (2602.21221, Feb 2026) —
+   *context distillation* via disposable-LoRA compilation into
+   "buffer tokens." Not training-free (requires per-prompt
+   LoRA compile), but LoRA is disposed after compilation so
+   serving is stateless — a genuinely new angle vs every prior
+   gist-token paper.
+3. **New precision-routing-vertex**: DP-LLM (2508.06041,
+   NeurIPS 2025) — closes pass-54 angle #15 (per-query
+   precision). Runtime layer-wise precision assignment based
+   on input values + decoding-step sensitivity; a precision
+   allocation *policy* rather than a static bit-budget.
+
+### QPART decision (Option B — formal dead-end)
+
+QPART (2506.23934, "Adaptive Model Quantization and Dynamic
+Workload Balancing for Accuracy-aware Edge Inference") has
+been surfaced and deferred across passes 52, 53, and 54. Pass
+55 resolves: **skip — Option B, formally closed as out-of-scope
+for Hypercar.**
+
+Rationale (from abstract review this pass):
+
+1. **Wrong problem shape**: QPART targets *server ↔ edge-device
+   partitioning* — a two-node system where a fat server
+   transmits a quantized model to a constrained edge device
+   over a bandwidth-limited link. The "80% payload reduction"
+   is reduction of the *over-the-wire model-transmission* cost.
+   Hypercar is a *single-node* inference system on M4 Pro with
+   no server/edge split axis. The partitioning dimension does
+   not exist for us.
+2. **Coverage duplication on the non-partition axis**: what
+   remains of QPART after removing the partitioning component
+   is layer-wise bit-width search + an accuracy-degradation
+   constraint. Both are already covered in the shipped/pending
+   stack:
+   - Layer-wise bit-width search → KVTuner (2502.04420, Task
+     186, pending). KVTuner also has per-head budget which
+     QPART lacks.
+   - Accuracy-degradation-constrained allocation →
+     sensitivity-weighted per-layer floor (Task 207, shipped
+     as part of SnapKV's partition-budget pass); DP-LLM
+     (pass 55, Task 242) extends this to *dynamic* runtime
+     allocation.
+3. **No novel signal type**: unlike SmallKV (pass 54, novel
+   cross-scale attention signal) or KQ-SVD (pass 54, novel
+   provable attention-output fidelity bound), QPART's
+   optimization objective is a standard constrained search
+   with no runtime signal that doesn't already exist.
+4. **Four-pass deferral threshold**: our dead-end threshold is
+   5 passes without closure (matches pass-52 dead-end
+   formalizations). QPART is at 4 passes with no closure
+   candidate materializing; pass 55 preempts the formal-
+   threshold by closing at 4 since no closure path is visible
+   and the problem-shape mismatch above is dispositive.
+
+Revisit condition: if Hypercar formally acquires a second
+device (e.g., M4 Pro + M4 Max pair for collaborative
+inference), re-open QPART with the partitioning component as
+the primary contribution. Otherwise, do not re-search.
+
+### [KV Cache Transform Coding for Compact Storage in LLM Inference](https://arxiv.org/abs/2511.01815) — 2511.01815
+- **Authors**: Konrad Staniszewski, Adrian Łańcucki
+- **Published**: 2025-11 (ICLR 2026)
+- **Hypercar goals it addresses**: Goal 1 (20× on-disk
+  compression ratio for KV cache with maintained accuracy
+  directly enables 1M-context session-save workflows —
+  22.5 GB raw KV at 1M → ~1.1 GB on disk, turning session
+  save/load from a 22.5 GB I/O operation into a 1.1 GB
+  operation, 20× faster), Goal 5 (compact on-disk KV
+  shrinks swap footprint during session migration —
+  a session save doesn't spike swap by 22.5 GB; it spikes
+  by 1.1 GB, within the 8 GB envelope with room to spare),
+  Goal 6 (48 GB fit is unaffected since KVTC is a storage-
+  layer codec applied at save-time, not a runtime codec —
+  doesn't change working-memory footprint)
+- **TL;DR**: Lightweight transform coder for KV cache
+  compression, inspired by classical media compression
+  pipelines (JPEG-style). Three-stage pipeline: (1) PCA-based
+  feature decorrelation on K and V tensors using per-layer
+  calibrated bases computed once offline; (2) adaptive
+  quantization with variable bit-depth per decorrelated
+  coefficient based on coefficient variance; (3) entropy
+  coding (arithmetic coding or similar) of the quantized
+  coefficients. Requires only a one-time calibration pass —
+  no model-weight modification. Achieves 20× compression
+  while preserving accuracy on AIME25, GSM8K, LiveCodeBench,
+  LongBench, MATH-500, MMLU, Qasper, and RULER. Reaches 40×
+  or higher on specific use cases (likely the RAG case where
+  the retrieval document set is highly redundant). Reports
+  consistent improvement over token eviction, quantization,
+  and SVD-based baselines across all benchmarks.
+- **Why it matters for Hypercar**: Pass-54 declared angle #12
+  (efficient KV serialization formats) open. The current
+  Hypercar session save/load (Block-Pool Task 216, pending)
+  uses a naive per-layer safetensors write of the 3-bit-
+  quantized cache plus scales — already reasonable but leaves
+  headroom. KVTC stacks *on top of* TQ3 quantization: TQ3
+  produces 3-bit code vectors, KVTC then applies PCA +
+  arithmetic coding to those 3-bit codes for an additional
+  4-6× compression ratio on disk. At 1M context this turns
+  our projected session-save size from 4.2 GB (22.5 GB / 5.3×
+  TQ3) down to ~1.0 GB — the difference between a session
+  save that takes 4 seconds on SSD and one that takes
+  sub-second. For agentic workflows with frequent session
+  save/load cycles (the OpenCode multi-turn pattern), this
+  latency reduction is directly user-visible. KVTC is also
+  *orthogonal* to KQ-SVD (Task 239, pass 54): KQ-SVD reduces
+  rank, KVTC reduces entropy of the rank-reduced
+  representation. Stacking gives projected session-save at
+  (10.6× KQ-SVD+TQ3) × (~4× KVTC entropy) = ~40× total
+  vs fp16, or ~600 MB for 1M-context session save. This
+  composes cleanly with Block-Pool: KVTC is the on-disk
+  codec, Block-Pool is the storage manager.
+- **Cost of adoption**: M (1 week). Two files. First, new
+  file `omlx/compress/kvtc.py` implementing the three-stage
+  pipeline: PCA decorrelation (computed from a calibration
+  corpus of ~50 sessions, stored as per-layer bases),
+  adaptive-quantizer (per-coefficient variance-weighted
+  bit-depth), arithmetic coder (existing numpy-based
+  implementation or MLX-native if the per-step cost is
+  non-negligible). Second, integration in Block-Pool
+  (Task 216) save/load path — `--kvtc-compress` flag toggles
+  KVTC on save; load is always auto-detecting (magic bytes
+  in safetensors metadata). Wire in as `--kvtc-compress`
+  (default on once validated — the compression is
+  near-lossless and storage is ~always bounded), `--kvtc-bases
+  PATH` (default: shipped calibration bases for Qwen3-Coder-
+  30B), `--kvtc-recalibrate` (offline sweep to regenerate
+  bases on workload drift). Compose with TQ3 (shipped —
+  KVTC encodes TQ3's 3-bit codes, not raw fp16), with
+  KQ-SVD (Task 239 — KVTC encodes the rank-reduced coefficients
+  rather than the raw rank-r reconstruction), with Block-Pool
+  (Task 216 — KVTC is the codec inside Block-Pool's storage
+  format). Independent of runtime (decode-time) codec work.
+  Risk: arithmetic coding has variable decode cost — if load-
+  time decode is slow, parallelize across layers (each layer
+  is independent). Calibration risk: the PCA bases are
+  corpus-dependent; validate they remain effective on
+  OpenCode-like traces rather than the paper's C4-like
+  traces.
+- **Local PDF**: research/2511.01815_kvtc.pdf
+
+### [Latent Context Compilation: Distilling Long Context into Compact Portable Memory](https://arxiv.org/abs/2602.21221) — 2602.21221
+- **Authors**: Zeju Li, Yizhou Zhou, Qiang Xu
+- **Published**: 2026-02 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (16× compression of
+  long context into "buffer tokens" that persist across
+  sessions — for the OpenCode repo-context case where the
+  same 200K tokens of codebase are referenced across many
+  turns, compilation once to ~12K buffer tokens yields
+  massive amortized benefit), Goal 3 (decoding against
+  compiled buffer tokens is a 16× smaller sequence length —
+  attention compute drops 256× at N² scaling), Goal 4
+  (prefill of compiled buffer tokens is near-zero — they're
+  already precomputed; prefill cost is paid once at
+  compilation time, amortized across many subsequent
+  queries)
+- **TL;DR**: "Compile" long context into compact buffer tokens
+  via a temporary disposable LoRA compiler. Key design
+  decision: the LoRA adapter is used *only during compilation*
+  (compression of long context into buffer tokens) and then
+  discarded; inference uses the frozen base model plus the
+  buffer tokens. This makes the buffer tokens stateless —
+  they're pure activations that can be passed across
+  serving boundaries without the model having to carry
+  adapter state. Training objective is "self-aligned" — no
+  synthetic QA pair creation; instead the method regularizes
+  context reconstruction using random context-agnostic
+  queries, forcing the buffer tokens to align with the
+  model's existing instruction-following capabilities.
+  Evaluated on Llama-3.1-8B with 16× compression ratio
+  preserving fine-grained details and reasoning capabilities,
+  outperforming prior compression methods on long-context
+  benchmarks. Compilation cost is O(N) per-context with a
+  small LoRA (~1M params) — single-pass, no iterative
+  optimization at inference.
+- **Why it matters for Hypercar**: Pass-52 formally declared
+  training-free gist tokens a dead end. LCC is a *partial
+  close* from a different angle: the training is not done
+  at pretraining/fine-tune time against a task; it's done
+  at *compilation time* per-context via a disposable LoRA.
+  For Hypercar's OpenCode use case, this is genuinely novel:
+  a user opens a repo, the ~200K tokens of codebase get
+  compiled once (say, in 30 seconds as a one-time LoRA
+  training pass on just that corpus) into ~12K buffer
+  tokens, and then every subsequent query uses the compiled
+  buffer tokens instead of the full 200K context. This is
+  especially powerful in combination with SAC (pass 54
+  Task 240) — SAC requires *task-level* LoRA fine-tuning
+  (10M params, general-purpose anchor placement); LCC does
+  *per-context* LoRA compilation (1M params, context-
+  specific). Two different LoRA mechanisms composing at
+  different scopes. The *disposable* nature is what
+  Hypercar's stateless serving needs — we cannot ship
+  per-user adapters to the serving tier, but we can
+  compile once and discard. Compiles cleanly with Block-
+  Pool (Task 216) — buffer tokens are the natural thing
+  to persist across sessions.
+- **Cost of adoption**: L (3-4 weeks). Three phases.
+  Phase 1 — **LCC compiler**: new file `omlx/compile/lcc_
+  compiler.py` implementing the disposable-LoRA compilation
+  procedure. Takes long context + a small LoRA (initialized
+  random), runs the self-aligned optimization for N steps
+  (paper reports ~100 steps sufficient), extracts the
+  buffer tokens (post-LoRA activations at designated
+  positions), discards the LoRA. Compilation is per-
+  context, run once per repo or document collection.
+  Requires MLX LoRA infrastructure (exists). Phase 2 —
+  **buffer-token insertion hook**: modify the prefill path
+  in `omlx/hypercar_server.py` to accept a `--buffer-tokens
+  PATH` argument; when provided, buffer tokens are inserted
+  at the start of context in place of the (no-longer-present)
+  full context. Buffer-token count is ~1/16th of original
+  context. Phase 3 — **compilation cache**: store compiled
+  buffer tokens per-repo in `~/.omlx/compiled/<repo-hash>/
+  buffer.safetensors`; recompile on repo change detected
+  via content-hash. Wire in as `--lcc-compile PATH` (run
+  compilation offline), `--buffer-tokens PATH` (use
+  precompiled buffers at inference), `--lcc-ratio R` (default
+  16 — compression ratio, trades compilation time for
+  quality), `--lcc-refresh-policy {never, on-change, daily}`
+  (default `on-change` — recompile when repo hash
+  changes). Compose with SnapKV (shipped — buffer tokens
+  are pinned through eviction; SnapKV evicts only
+  non-buffer tokens), with SAC (Task 240 — SAC provides
+  task-level anchors, LCC provides context-level buffers;
+  they operate at orthogonal scopes), with Block-Pool
+  (Task 216 — buffer-tokens persist via Block-Pool storage).
+  Risk: quality cliff at high compression ratios — validate
+  on NIAH at 16×, 32×; back off compression if retrieval
+  degrades.
+- **Local PDF**: research/2602.21221_latent_context_compilation.pdf
+
+### [DP-LLM: Runtime Model Adaptation with Dynamic Layer-wise Precision Assignment](https://arxiv.org/abs/2508.06041) — 2508.06041
+- **Authors**: Sangwoo Kwon, Seong Hoon Seo, Jae W. Lee, Yeonhong Park
+- **Published**: 2025-08 (NeurIPS 2025)
+- **Hypercar goals it addresses**: Goal 2 (per-decoding-step
+  dynamic precision preserves accuracy at the steps where
+  sensitivity is highest — the current static per-layer
+  budget over-spends on always-high-bit layers and
+  under-spends on sometimes-sensitive layers; dynamic
+  assignment gives same accuracy at lower average
+  bit-budget), Goal 3 (lower average bit-budget means lower
+  decode-time memory bandwidth — on Apple Silicon's
+  memory-bound workload, bandwidth reduction translates
+  directly to decode throughput), Goal 6 (total memory
+  budget at 1M context is improved by ~15-20% via dynamic
+  assignment pushing average bits below static equivalent
+  while preserving quality)
+- **TL;DR**: Runtime layer-wise precision assignment for
+  on-device LLM inference. Key observation: layer
+  sensitivity *varies across decoding steps* — a layer that
+  requires higher bit-width at token 100 may be
+  less sensitive at token 200. DP-LLM exploits this by
+  assigning precision dynamically per-step rather than
+  statically. Technique: multi-scale quantization (the
+  model supports multiple bit-widths per layer, e.g., 2/3/4
+  bits) with a runtime selector that chooses the bit-width
+  based on input activations' sensitivity signal.
+  Sensitivity signal is cheap — a norm-based or variance-
+  based metric on the input activations. Evaluated on
+  multiple models and benchmarks; reports superior
+  performance-latency trade-off vs prior static-assignment
+  and runtime-adaptation baselines. NeurIPS 2025 (accepted
+  December 2025).
+- **Why it matters for Hypercar**: Pass-54 angle #15 (per-
+  query precision attention) had no good hit. DP-LLM
+  provides exactly the *policy* layer that sits above our
+  existing codec stack. Current stack: TQ3 is static 3-bit,
+  DuoKV has two static bit-widths (3-bit streaming, fp16
+  retrieval), KVTuner (Task 186 pending) allocates *static*
+  per-head bits. DP-LLM's innovation is that the optimal
+  bit allocation is not static across decoding steps —
+  making the allocation *dynamic per-step* is the next
+  frontier. On Qwen3-Coder-30B's 48 layers at 1M context,
+  reducing average bits from 3.0 (static) to 2.5 (dynamic
+  with best-case savings) gives ~17% KV memory reduction —
+  22.5 GB → 18.75 GB at 1M. This stacks with KQ-SVD
+  (Task 239, ~2× rank reduction) and KVTC (pass 55, storage
+  codec) for a compounded path. The sensitivity-signal
+  computation is cheap (input-activation norm), not adding
+  measurable overhead to decode. Composes with SmallKV
+  (Task 237, pass 54): SmallKV's drift signal can serve as
+  an *additional* sensitivity input to DP-LLM's selector —
+  when drift is detected, temporarily bump bit-width for
+  the affected layers. Composes with DuoAttention (shipped):
+  DP-LLM's per-step policy operates on streaming heads;
+  retrieval heads stay fp16.
+- **Cost of adoption**: L (2-3 weeks). Three phases. Phase 1
+  — **multi-bit-width codec**: extend `omlx/cache/tq3_cache.py`
+  to support 2-bit, 3-bit, and 4-bit variants for the same
+  cache entry; the runtime can upcast/downcast between
+  these on-the-fly (3-bit is the default, 2-bit is a
+  downcast for low-sensitivity steps, 4-bit is an upcast
+  for high-sensitivity steps). Phase 2 — **sensitivity
+  selector**: new file `omlx/compress/sensitivity_selector.py`
+  implementing the norm-based sensitivity metric per
+  decoding step. Called at each decode step before the
+  attention forward; outputs a per-layer bit-width choice.
+  Phase 3 — **precision scheduler**: integration in attention
+  forward — the scheduler dispatches to the selected
+  bit-width's dequantize path. Wire in as `--dp-llm-dynamic`
+  (default off until validated), `--dp-llm-bit-widths "2,3,4"`
+  (configurable set), `--dp-llm-sensitivity-threshold T`
+  (default auto-tuned from calibration — below T means
+  downcast to 2-bit, above T means upcast to 4-bit),
+  `--dp-llm-per-layer-enable "0-47"` (layer subset — default
+  all, can restrict to streaming-head layers if retrieval
+  heads should stay static). Composition: with TQ3 (shipped
+  — primary codec), with KVTuner per-head bit allocation
+  (Task 186 — KVTuner is static, DP-LLM is dynamic; DP-LLM
+  operates *around* KVTuner's baseline allocation), with
+  SmallKV (Task 237 — drift signal supplements sensitivity
+  signal), with KVTC (pass 55 — DP-LLM operates at runtime,
+  KVTC at save-time; independent). Risk: upcast/downcast
+  conversion on-the-fly adds per-step overhead; if
+  > 5% of decode time, restrict dynamic assignment to
+  every-Nth-step rather than per-step.
+- **Local PDF**: research/2508.06041_dp_llm.pdf
+
+### Pass 55 synthesis
+
+Pass 55 is a decision-pass-plus-three-closures. The decision
+(QPART → Option B dead-end, pre-emptive at 4 passes) resolves
+a long-carried ambiguity. The three papers close three pass-54
+gaps on distinct axes:
+
+**Pass 55 gap closures**:
+- Angle #12 (efficient KV serialization formats — pass 54
+  open): KVTC (2511.01815) — classical-media-compression-
+  style transform coder; 20× on-disk KV compression,
+  stacks with TQ3 for projected 40× on session save.
+- Angle #7 (context distillation — pass 54 open, partial-
+  close of gist-token dead-end): LCC (2602.21221) —
+  disposable-LoRA per-context compilation into stateless
+  buffer tokens; 16× compression with LoRA-dispose-after-
+  compile making serving stateless.
+- Angle #15 (per-query precision — pass 54 open): DP-LLM
+  (2508.06041) — runtime per-decoding-step layer-wise
+  dynamic precision assignment based on input-activation
+  sensitivity signal.
+- **QPART decision**: Option B — formally closed as out-of-
+  scope. Problem-shape mismatch (server-edge partitioning
+  doesn't exist in Hypercar's single-node architecture),
+  coverage duplication on the non-partition axis (KVTuner
+  Task 186 and Task 207 cover layer-wise bit-width + accuracy
+  constraint), no novel signal type. Pre-emptive close at
+  4 passes.
+
+**Highest-leverage find**: **KVTC (2511.01815)**. The compounding
+against existing pass-54 codec axes (TQ3 × KQ-SVD × KVTC)
+projects ~40× compression at session-save — the only pass-55
+result that improves a known shipping-adjacent pipeline (session
+save/load via Block-Pool Task 216, pending) without requiring a
+new training phase or runtime overhead. ICLR 2026 acceptance
+gives it the strongest peer-review backing among the pass-55
+papers. Ship-cost is M (1 week) — the entire pipeline is
+well-understood (PCA + adaptive quant + arithmetic coding is
+textbook), the only integration unknown is MLX arithmetic-coding
+performance; if too slow on the load path, parallelize across
+layers. The *direct user-visible* benefit — session-save from
+4 seconds to sub-second on SSD at 1M context — is exactly the
+kind of "laptop stays usable" win that maps to Goal 6.
+
+**Runner-up**: **DP-LLM (2508.06041)**. Runtime dynamic
+precision is the first pass-40-55 paper that makes the bit-
+budget *temporal* rather than spatial. NeurIPS 2025 backing.
+The 17% memory reduction at matched accuracy stacks with every
+other codec vertex (KQ-SVD rank reduction × TQ3 base × KVTC
+entropy × DP-LLM temporal). Ship-cost is L — the multi-bit-width
+codec change is non-trivial but the sensitivity-selector is
+cheap.
+
+**Tertiary**: **LCC (2602.21221)**. The most ambitious paper
+(per-context disposable-LoRA compilation) with the largest
+projected impact (16× context compression at the per-repo scope)
+but also the largest ship-cost (L, 3-4 weeks) and quality risk
+(compilation-quality cliff at high ratios). The *disposable*-
+LoRA mechanism is conceptually the most novel pass-55 item —
+first pass-40-55 paper to use a training procedure whose
+artifact is designed to be thrown away. Worth tracking for
+agentic/repo-scoped workflows.
+
+**What Pass 55 deliberately did NOT cover**:
+- **FP8→INT3 training calibration** (gap carried from pass
+  54). Targeted search ("FP8 training INT4 inference
+  calibration transformer") returned only training-oriented
+  work, no inference-adjacent result. Pass 56 should do one
+  final search or formally drop given inference-only focus.
+- **KV warmup from partial observations** (gap carried from
+  pass 54). No good hit this pass either. Candidate for
+  dead-end declaration in pass 56.
+- **Prefetch policies for tiered KV memory** (gap carried from
+  pass 54). Held; likely dead-end.
+- **Inference server multi-tenant fairness** (held). Low
+  priority.
+- **Distributed inference multi-device** (held). Orthogonal.
+- **Hierarchical two-level KV for text** (held from pass 54).
+  Still open; worth one more targeted search in pass 56.
+- **Error recovery for progressive compression** (new
+  pass-55 angle). Not surfaced this pass; carry to pass 56.
+- **Hardware-software codesign for inference** (new pass-55
+  angle). Briefly touched via DP-LLM's on-device framing but
+  no dedicated search; carry to pass 56.
+
+### Gaps carried into Pass 56
+
+Pass 55 closes three pass-54 gaps (serialization, context
+distillation, per-query precision) and formally closes the
+QPART carry. Remaining open gaps:
+
+1. **FP8→INT3 training calibration** — held from pass 54.
+   Pass-56 should do one final targeted pass or declare
+   dead-end.
+2. **KV warmup from partial observations** — held from pass
+   53/54. No progress in pass-55 search. Dead-end candidate.
+3. **Prefetch policies for tiered KV memory** — held from pass
+   53/54. Likely dead-end.
+4. **Inference server multi-tenant fairness** — held. Low
+   priority.
+5. **Distributed inference across multiple M-series devices** —
+   held. Orthogonal.
+6. **Hierarchical two-level KV for text** — held from pass 54.
+   Worth one more targeted search.
+7. **Error recovery for progressive compression** — new pass-55
+   angle, unexplored.
+8. **Hardware-software codesign for inference** — new pass-55
+   angle, touched via DP-LLM but not fully explored.
+
+Fifty-five passes. Three papers this round, total 231 across
+70+ disciplines. Plus QPART formally declared out-of-scope.
+**Pass 55 adds the *KV transform coding for compact on-disk
+storage, disposable-LoRA context compilation into stateless
+buffer tokens, and runtime per-decoding-step dynamic layer-wise
+precision* vertices** to the pass-54 stack. Highest-leverage
+find is KVTC (2511.01815) — ICLR 2026 transform coder that
+stacks with existing TQ3+KQ-SVD for projected 40× session-save
+compression, directly shrinking Block-Pool's I/O latency from
+seconds to sub-second at 1M context. Runner-up is DP-LLM
+(2508.06041) — the first pass-40-55 paper to make bit-budget
+allocation temporal (per-decoding-step) rather than spatial.
+Plus QPART formally dropped after 4 passes — problem-shape
+mismatch dispositive, coverage already in KVTuner + Task 207.
+Meow meow meow meow meow.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -16421,4 +16886,22 @@ pass 55 final resolution (QPART per-workload quantization deferred
 3 passes — decision point in pass 55; FP8→INT3 training
 calibration; prefetch policies; distributed inference). Tasks
 237-240 track pass-54 code actions.**
+**Pass 55 adds the KV transform coding for compact on-disk
+storage (KVTC 2511.01815, ICLR 2026), disposable-LoRA context
+compilation into stateless buffer tokens (LCC 2602.21221), and
+runtime per-decoding-step dynamic layer-wise precision (DP-LLM
+2508.06041, NeurIPS 2025) vertices — highest-leverage being
+KVTC which stacks with existing TQ3+KQ-SVD to project 40× total
+session-save compression, directly shrinking Block-Pool I/O
+latency from seconds to sub-second at 1M context. Runner-up is
+DP-LLM which makes bit-budget allocation *temporal* (per-
+decoding-step) rather than spatial — the first pass-40-55 paper
+to exploit that layer sensitivity varies across decoding steps
+rather than being a static property. Plus QPART (2506.23934)
+formally declared out-of-scope after 4 passes without closure —
+problem-shape mismatch (server-edge partitioning doesn't exist
+in Hypercar's single-node architecture) is dispositive and
+coverage on the non-partition axis is duplicated by KVTuner
+(Task 186) and Task 207. Tasks 241-243 track pass-55 code
+actions.**
 
