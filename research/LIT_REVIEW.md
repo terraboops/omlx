@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-22 (pass 53)_
+_Last updated: 2026-04-22 (pass 54)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -15715,6 +15715,457 @@ prompt-length vulnerability axis our current gates underweight.
 Meow meow meow meow.
 
 
+## Pass 54 — 2026-04-22 — Goal 1 Long-Tail: Streaming Summarization, Small-Model Attention Compensation, Provable Low-Rank Attention, Semantic Anchor Compression
+
+Long-tail pass (54th). Four papers addressing four distinct
+pass-53 open gaps. Continuing the long-tail regime's pattern of
+wide rather than deep: gap #5 (streaming summarization — held
+from pass 53), gap #4 (self-verification of compressed output —
+held from pass 53), plus two new codec/eviction primitives not
+previously surfaced. Pass 54 closes two held gaps and adds two
+orthogonal axes to the codec decomposition.
+
+The four papers map to angles from the pass-53 direction list:
+1. Gap #5 (Streaming summarization — held from pass 53):
+   **closed** by Adaptive Context Compression (2603.29193) —
+   importance-aware memory selection + coherence-sensitive
+   filtering + dynamic budget allocation for long-running
+   conversational workloads, evaluated on LOCOMO/LOCCO/LongBench.
+2. Gap #4 (Self-verification of compressed output — held from
+   pass 53): **closed** by SmallKV (2508.02751) — cross-scale
+   attention-matching compensation, where a small assist model
+   provides global-attention signal and marginal-token scores
+   that the compressed large model uses to self-verify its own
+   eviction decisions at runtime.
+3. **New codec-vertex**: KQ-SVD (2512.05916) — provable low-rank
+   decomposition of the attention matrix (not keys alone) via
+   closed-form SVD, targeting the true inner-product redundancy.
+   First paper in the pass-40-53 codec arc with a closed-form
+   fidelity guarantee.
+4. **New anchor-vertex**: Semantic-Anchor Compression / SAC
+   (2510.08907) — training-based selection of in-context anchor
+   tokens that aggregate surrounding KV via bidirectional attention
+   modification; an alternative to gist tokens that requires
+   neither a full retraining nor a distillation head (just a
+   small learnable embedding vector).
+
+### [Developing Adaptive Context Compression Techniques for Large Language Models (LLMs) in Long-Running Interactions](https://arxiv.org/abs/2603.29193) — 2603.29193
+- **Authors**: Payal Fofadiya, Sunil Tiwari
+- **Published**: 2026-03 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (adaptive compression
+  during long-running sessions is precisely the 1M-context
+  workload — rather than one-shot prefill of a 1M context, the
+  practical case is a long chain of OpenCode turns accumulating
+  toward a large cache), Goal 3 (dynamic budget allocation at
+  each turn keeps per-turn decode cost bounded as context grows —
+  directly addresses "constant across context window"), Goal 2
+  (coherence-sensitive filtering reduces the quality cliff that
+  appears in current eviction stack when a multi-turn
+  conversation's topical focus shifts)
+- **TL;DR**: Framework for KV-cache management during
+  *long-running* (multi-turn, multi-hour) LLM sessions that
+  combines three mechanisms: (a) **importance-aware memory
+  selection** — scores historical tokens by a composite of
+  recency, attention weight, and user-utility signal; (b)
+  **coherence-sensitive filtering** — prevents eviction of tokens
+  whose removal would break conversational coherence (measured
+  by an auxiliary coherence embedding distance); (c) **dynamic
+  budget allocation** — the cache budget is re-negotiated at each
+  turn based on observed conversational phase (open-ended
+  exploration → narrow task execution → debugging → etc). Evaluated
+  on LOCOMO (long-conversation QA), LOCCO (continuous-coding
+  corpus), and LongBench. Reports consistent reductions in token
+  usage and inference latency with preserved answer quality and
+  improved conversational stability vs existing memory-compression
+  baselines.
+- **Why it matters for Hypercar**: Closes pass-53 gap #5
+  (streaming summarization). Our current SnapKV/DuoKV stack is
+  one-shot: we evict at the prefill → decode transition and again
+  periodically on a fixed schedule. This paper's *conversational-
+  phase* signal is what we're missing — OpenCode sessions have
+  distinct phases (explore → edit → test → debug) and eviction
+  budgets should vary by phase. The coherence-filtering component
+  is the part we haven't even named — we lose cross-turn coherence
+  today when an early system-prompt instruction is evicted
+  mid-session. For 1M-context agentic workflows this is the most
+  directly-applicable paper of pass 54. Low ship-cost because the
+  primitives (attention-weight scoring, recency) already exist in
+  our stack — the additions are a coherence-embedding check and
+  a phase-classifier hook.
+- **Cost of adoption**: M (5-7 days). Three phases. Phase 1 —
+  **conversational-phase classifier**: add a lightweight phase
+  detector in `omlx/hypercar_server.py` that tracks turn-level
+  features (turn length, tool-call fraction, new-topic
+  embedding-distance) and classifies each turn into one of
+  {explore, edit, test, debug, idle}. Phase 2 — **phase-conditional
+  budget**: extend `omlx/patches/snapkv.py` with a phase-indexed
+  budget table (default: explore=80%, edit=60%, test=40%, debug=50%,
+  idle=20% of baseline cache size); the eviction call reads the
+  current phase and adjusts the keep-k accordingly. Phase 3 —
+  **coherence filter**: add an optional coherence-preserving
+  hard-veto on eviction — tokens whose eviction would drop the
+  per-turn coherence embedding (sentence-embedding of turn vs
+  prior turns) below a threshold are pinned. Wire in as
+  `--adaptive-context` (default off until validated) with
+  `--phase-classifier {heuristic, learned}` (default `heuristic`
+  — the learned variant requires a 500-session training trace,
+  added later), `--coherence-threshold {0.5..0.9}` (default 0.7),
+  `--phase-budget-override "phase:ratio,..."` (escape hatch for
+  tuning). Composes with DuoKV (shipped — per-head classification
+  is orthogonal), with shot-eviction (Task 234 — shots are a
+  finer-grained boundary than phases), and with Continuum TTL
+  (Task 217 — phases supply TTL at turn-level, Continuum supplies
+  TTL at task-level). Risk: phase classifier may misclassify
+  leading to over-eviction; mitigate via fallback-to-baseline-budget
+  on classification confidence < 0.6.
+- **Local PDF**: research/2603.29193_adaptive_context_compression.pdf
+
+### [SmallKV: Small Model Assisted Compensation of KV Cache Compression for Efficient LLM Inference](https://arxiv.org/abs/2508.02751) — 2508.02751
+- **Authors**: Yi Zhao, Yajuan Peng, Cam-Tu Nguyen, Zuchao Li, Xiaoliang Wang, Hai Zhao, Daoyi Dong
+- **Published**: 2025-08 (v2 2026-01, arxiv preprint)
+- **Hypercar goals it addresses**: Goal 2 (cross-scale attention
+  matching provides a runtime self-check that the compressed
+  large model's eviction decisions align with the uncompressed
+  small model's — the first pass-54 paper with a mechanism for
+  *detecting* compression-induced quality loss at inference
+  time), Goal 1 (1.75-2.56× throughput at long context per paper,
+  achieved by preserving marginal tokens rather than evicting
+  them), Goal 3 (marginal-token-aware eviction preserves decode
+  throughput by avoiding over-eviction of tokens that, while
+  individually small-weight, collectively matter)
+- **TL;DR**: KV compression compensation method that leverages a
+  small assist model (7B) to provide missing information to a
+  large compressed model (70B). Two mechanisms: (a) **saliency-
+  shift compensation** — during decoding, the small model tracks
+  global attention patterns on the full cache while the large
+  model operates on a compressed cache; attention-matrix
+  similarity between scales is exploited to detect when the
+  large model's compressed attention *would* miss an important
+  token that the small model's full-attention sees. (b)
+  **marginal-information compensation** — the small model's
+  attention scores approximate the large model's scores on
+  *marginal* tokens (the ones individually small-weight but
+  collectively important — the "over-compression" failure mode).
+  Paper shows 1.75-2.56× throughput improvement on
+  LongBench/GSM8K/BBH/MT-Bench under aggressive compression.
+- **Why it matters for Hypercar**: Closes pass-53 gap #4
+  (self-verification of compressed output at runtime). Today
+  Hypercar has no runtime signal that eviction decisions are
+  *wrong* — we trust SnapKV+CAOTE+BUZZ's scoring. SmallKV's
+  cross-scale attention-matching gives us exactly that signal:
+  a small model on a full cache produces an attention pattern
+  that, if it diverges from the compressed large model's pattern,
+  flags a likely-bad eviction. On M4 Pro we have the memory
+  headroom to run a small assist model alongside Qwen3-Coder-30B
+  (e.g., Qwen2.5-Coder-0.5B on a full cache is ~1-2 GB). The
+  *marginal-information* finding is also directly relevant —
+  our current over-compression failure modes (aggressive TQ3 at
+  64K) match the paper's described pattern. Even without the
+  full small-model integration, the *scoring primitive*
+  (attention-matrix similarity between compressed and
+  uncompressed paths) is worth porting as a standalone
+  diagnostic for when eviction is being too aggressive.
+- **Cost of adoption**: L (2-3 weeks). Three phases. Phase 1 —
+  **assist-model integration**: add a parallel inference path in
+  `omlx/hypercar_server.py` running a small model (Qwen2.5-Coder-
+  0.5B or a distilled 100M-param model) on the full-attention
+  path with the compressed large-model path. Shared prompt
+  tokenization, independent attention compute. New file
+  `omlx/assist/small_model_runner.py`. Phase 2 — **attention-
+  similarity bridge**: at each decode step, compute cosine
+  similarity between the small-model's attention pattern and the
+  large-model's compressed attention pattern; when similarity
+  drops below threshold, flag a potential compression error.
+  Use the flag as a signal to (a) reduce eviction aggressiveness
+  for the next N steps, (b) log to a drift monitor. Phase 3 —
+  **marginal-token recovery**: when the large model's compressed
+  cache has evicted a token the small model still ranks highly,
+  either re-fetch the token from session-save storage or use
+  the small model's own KV as a fallback. Wire in as
+  `--assist-small-model PATH` (default off — requires separate
+  0.5B model download), `--assist-similarity-threshold {0.6..0.9}`
+  (default 0.75), `--assist-recovery-mode {log, soft-pin,
+  refetch}` (default `soft-pin` — pin the flagged token for N
+  more steps). Compose with SnapKV (shipped — SmallKV's signal
+  becomes a score-boost term in SnapKV's top-K), with DuoAttention
+  (shipped — retrieval heads already get 2× budget, SmallKV
+  should apply only to retrieval heads since streaming heads
+  don't need the attention-pattern check). Risk: doubling
+  inference compute for 0.5B model is ~10% of 30B compute, but
+  the marginal benefit may not justify the cost for
+  short-context workloads; gate by context-length threshold
+  (default: engage only at context > 16K).
+- **Local PDF**: research/2508.02751_smallkv.pdf
+
+### [KQ-SVD: Compressing the KV Cache with Provable Guarantees on Attention Fidelity](https://arxiv.org/abs/2512.05916) — 2512.05916
+- **Authors**: Damien Lesens, Beheshteh T. Rakhshan, Guillaume Rabusseau
+- **Published**: 2025-12 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (low-rank KV
+  compression is orthogonal to TQ3's product-quantization
+  approach — stacking both could give 6-8× total compression
+  vs TQ3's 5.3× alone, bringing 1M context into 35 GB envelope
+  with room to spare), Goal 2 (closed-form provable attention-
+  fidelity guarantees are the first pass-54 paper with a *proof*
+  that the approximation preserves attention outputs — stronger
+  than empirical-only claims in other codec papers), Goal 6 (48
+  GB fit is tight; the 2-4× additional memory saving from
+  low-rank KV compounds with TQ3 to give substantial headroom
+  for the co-tenancy case)
+- **TL;DR**: Low-rank KV cache compression with a closed-form
+  solution for the optimal low-rank decomposition of the
+  attention matrix. Prior low-rank methods (keys alone, or joint
+  key-query embedding) miss the fundamental dependence of
+  attention on query-key inner products; KQ-SVD performs SVD
+  directly on the attention matrix, targeting the true
+  redundancy source. Extends to value-output-projection
+  interactions, preserving the full attention-output pipeline
+  rather than just the intermediate attention scores. Evaluated
+  on LLaMA2-7B/13B, LLaMA3-8B, Mistral-7B on C4. Reports
+  preserved accuracy at ranks that prior low-rank methods cannot
+  match. Includes formal approximation-error bound on the
+  attention output (not just the attention matrix) — the proof
+  is the paper's primary contribution.
+- **Why it matters for Hypercar**: Pass-40-53 codec arc covered
+  quantization (TurboQuant, KIVI, CommVQ), residual-dedup
+  (DeltaKV), vector-DB storage (RetroInfer), windowed-RoPE (A²ATS),
+  online subspace (OjaKV), and 2-bit (MiniKV — deferred).
+  Low-rank *with a provable fidelity bound* is a new vertex —
+  OjaKV is online (streaming-approximate) but not closed-form-
+  optimal; KQ-SVD is static-optimal. For session-save workflows
+  (Task 216 Block-Pool), a provably-optimal low-rank projection
+  can be precomputed once per session and reused across many
+  decode steps, amortizing the SVD cost. Composes with TQ3:
+  low-rank projection first (r=64 of 128), then 3-bit
+  quantization of the rank-projected tensor. Projected saving:
+  2× from rank halving × 5.3× from 3-bit = 10.6× total,
+  vs 5.3× TQ3 alone. At 1M context this turns 22.5 GB KV into
+  ~11 GB, freeing 11 GB for the 7 GB SliceMoE model reduction
+  with 4 GB spare — the 48 GB fit becomes comfortable rather
+  than marginal.
+- **Cost of adoption**: M (1-2 weeks). Three files. First, new
+  file `omlx/compress/kq_svd.py` with the closed-form SVD
+  decomposition applied once at session-save time; stores the
+  low-rank factors alongside the quantized KV. Second,
+  integration in `omlx/cache/tq3_cache.py` with an optional
+  low-rank front-end that projects K, V to rank-r before
+  quantization; the attention computation then uses the
+  low-rank reconstruction. Third, a calibration routine that
+  picks per-layer rank r to minimize cumulative attention error
+  subject to a memory budget. Wire in as `--kq-svd-rank R`
+  (default off; R=64 at 3-bit gives projected 10.6× compression),
+  `--kq-svd-calibrate` (offline calibration sweep), `--kq-svd-per-
+  layer-rank {fixed, sensitivity-weighted}` (default
+  `sensitivity-weighted` — allocates more rank to layers whose
+  attention is higher-variance). Compose with TQ3 (shipped,
+  primary codec path), with DuoKV (the fp16 retrieval path can
+  skip the low-rank compression; apply only to the 3-bit
+  streaming path), with session-save (Task 216 — the SVD
+  decomposition is cheap enough to apply at save time rather
+  than load time, making load instant). Risk: SVD cost scales
+  as O(N²d) which is 1M × 128 × 1M ≈ 1.3 × 10^14 FLOPs for
+  1M context — too expensive to apply every decode step.
+  Mitigation: apply only at session-save (once), or at
+  post-eviction compaction (every N steps, amortized). Validate
+  that low-rank + 3-bit quantization doesn't stack errors
+  catastrophically — paper doesn't study this composition.
+- **Local PDF**: research/2512.05916_kq_svd.pdf
+
+### [Autoencoding-Free Context Compression for LLMs via Contextual Semantic Anchors (SAC)](https://arxiv.org/abs/2510.08907) — 2510.08907
+- **Authors**: Luoxin Gao, Jie Zeng, Xiaoqing Zheng, Xuanjing Huang, Xipeng Qiu
+- **Published**: 2025-10 (arxiv preprint)
+- **Hypercar goals it addresses**: Goal 1 (anchor-token based
+  compression preserves the full attention pattern rather than
+  constructing an independent compressed representation — this
+  is what gist tokens attempted but couldn't achieve without
+  retraining; SAC achieves it with a small learnable embedding
+  vector), Goal 2 (question-answering and long-context
+  summarization benchmarks show consistent improvements vs
+  autoencoder-based compression), Goal 3 (anchor tokens reduce
+  effective sequence length processed per decode step — direct
+  compute reduction, not just memory)
+- **TL;DR**: Context compression that selects *anchor tokens*
+  from the original input sequence (rather than introducing
+  synthetic compression tokens) and aggregates the context's KV
+  into the anchor tokens' KV via bidirectional attention. Two
+  designs: (a) a **learnable anchor embedding** vector attached
+  to each selected anchor token marks it as a compression
+  carrier; (b) a **bidirectional attention modification** lets
+  the anchor attend forward and backward (vs the normal causal-
+  only attention) so that it can aggregate context from the full
+  surrounding window. The scheme is *autoencoding-free* — no
+  reconstruction loss during training; instead the model is
+  fine-tuned directly on downstream tasks with the compressed
+  representation. Consistently outperforms baselines (LongLLMLingua,
+  ICAE) across compression ratios and model sizes on
+  question-answering and long-context summarization.
+- **Why it matters for Hypercar**: Pass-52 formally declared
+  training-free gist tokens a dead end. SAC offers a middle path:
+  it's *not* training-free (requires a small learnable embedding
+  + task-specific fine-tune), but the training is small (the
+  anchor embedding is ~128 params per anchor-rank; the LoRA-style
+  task fine-tune is ~10M params for the whole model). For
+  Hypercar's code-generation-focused workload, a one-time
+  task-specific fine-tune on a curated code-completion + code-
+  intelligence + tool-call dataset would be a reasonable
+  investment. The bidirectional-attention design is also
+  conceptually interesting: it's the first pass-54 paper that
+  modifies attention causality — every other KV-compression
+  paper takes the causal mask as given. For the OpenCode use
+  case, anchors could be placed at function signatures, class
+  definitions, and tool-call boundaries — natural aggregation
+  points. Composes with SnapKV (shipped — SnapKV's scoring can
+  be seeded with anchor-priority tokens) and with SDAG (Task
+  233 — document boundaries can double as anchor locations).
+- **Cost of adoption**: L (3-4 weeks). Three phases. Phase 1 —
+  **anchor selection policy**: new file `omlx/anchors/selector.py`
+  with rule-based anchor placement (function signatures, class
+  defs, tool-call boundaries, every-N-tokens fallback). Phase 2
+  — **bidirectional attention hook**: modify the MLX attention
+  mask construction to allow bidirectional attention at anchor
+  positions only (anchor attends to past and future within a
+  window, but non-anchor tokens remain causal). New file
+  `omlx/attention/anchor_mask.py`. Phase 3 — **task fine-tune**:
+  LoRA fine-tune Qwen3-Coder-30B with anchor tokens on a 10K-
+  sample code-completion + tool-call dataset. Wire in as
+  `--anchor-compress` (default off until validated) with
+  `--anchor-ratio {8,16,32}` (default 16 — one anchor per 16
+  context tokens), `--anchor-weights PATH` (default:
+  fine-tuned-weights file), `--anchor-selection {rule-based,
+  learned}` (default `rule-based`). Compose with Block-Pool
+  session store (Task 216 — anchors persist across session
+  save/load). Risk: the task fine-tune is the longest piece;
+  on-device fine-tuning of Qwen3-Coder-30B requires MLX LoRA
+  infrastructure which we have. Quality validation is critical
+  — a bad fine-tune loses general coding ability; mitigation is
+  a merge-back option that reverts anchor-LoRA if HumanEval
+  drops > 2 pp.
+- **Local PDF**: research/2510.08907_semantic_anchor_compression.pdf
+
+### Pass 54 synthesis
+
+Pass 54 is another unusually wide pass like 53 — four papers,
+four distinct angles, no single category-defining result. The
+long-tail regime's rhythm: each pass closes a different held gap
+rather than pushing deeper into one axis. Pass 54 closes two
+pass-53 held gaps (streaming summarization, self-verification)
+and opens two new codec-adjacent vertices (provable low-rank,
+anchor-token compression).
+
+**Pass 54 gap closures**:
+- Gap #5 (Streaming summarization — held from pass 53):
+  Adaptive Context Compression (2603.29193) — phase-aware
+  multi-turn eviction for LOCOMO/LOCCO/LongBench workloads.
+- Gap #4 (Self-verification of compressed output — held from
+  pass 53): SmallKV (2508.02751) — cross-scale attention-
+  matching compensation as a runtime self-check on
+  eviction decisions.
+- **New codec axis**: KQ-SVD (2512.05916) — closed-form low-
+  rank attention-matrix decomposition with provable fidelity
+  bound. Orthogonal to TurboQuant quantization; stacks to give
+  projected 10.6× compression at 1M context.
+- **New anchor axis**: SAC (2510.08907) — autoencoding-free
+  in-context anchor tokens with bidirectional attention,
+  partial-close of the formally-declared gist-token dead end
+  (SAC requires some training, not training-free, but training
+  is small and task-specific).
+
+**Highest-leverage find**: **SmallKV (2508.02751)**. Pass-53
+gap #4 (self-verification of compressed output at runtime) has
+been open since pass 52 — our stack has no runtime signal that
+eviction decisions are wrong. SmallKV provides exactly that:
+attention-matrix similarity between a small assist model on full
+cache and the compressed large model. On M4 Pro we have memory
+headroom for a 0.5B assist model (~1-2 GB) alongside
+Qwen3-Coder-30B (17.2 GB + 22.5 GB KV at 1M). The signal is
+*directly actionable* — it feeds back into SnapKV's score or
+soft-pins the flagged token. This is the only pass-54 paper that
+adds a *novel signal type* rather than a refinement of existing
+signals. The paper-reported 1.75-2.56× throughput on
+LongBench/GSM8K under aggressive compression is precisely the
+regime Hypercar operates in at 64K+.
+
+**Runner-up**: **KQ-SVD (2512.05916)**. Provable low-rank
+compression is the first pass-40-53 codec paper with a formal
+fidelity bound on the attention *output* (not just the attention
+matrix). Stacks with TurboQuant for 10.6× total compression.
+Ship-cost is M; the only risk is the SVD cost at 1M context,
+which is solvable by applying only at session-save time.
+
+**Tertiary**: **Adaptive Context Compression (2603.29193)**.
+Closes a held gap; the conversational-phase signal is new to our
+stack and is directly aligned with the OpenCode multi-turn
+workload. Moderate ship-cost, uncontroversial integration.
+
+**Quaternary**: **SAC (2510.08907)**. The highest-ship-cost of
+the pass-54 papers (3-4 weeks including a LoRA fine-tune). The
+bidirectional-attention modification is conceptually novel but
+the on-device training cost and risk of downstream regression
+both push this down the priority stack. Worth tracking and
+revisiting if a task-fine-tune budget becomes available.
+
+**What Pass 54 deliberately did NOT cover**:
+- **Profile-guided per-workload quantization** (QPART, pass 52
+  deferred, pass 53 deferred, pass 54 deferred again) —
+  should either ship QPART-port or drop as dead-end. Decision
+  point in pass 55.
+- **Low-precision training implications for inference** (gap
+  #5 pass 52, gap #2 pass 53 — held again). Training-adjacent,
+  low priority given inference-only focus.
+- **Prefetch policies for tiered KV memory** (gap #6 pass 53) —
+  surfaced multiple arxiv results (2504.06319, 2501.08192,
+  2603.08739, 2510.09665) but all already in corpus or
+  overlap substantially. No NEW prefetch-policy paper
+  discovered this pass.
+- **Inference server multi-tenant fairness** (gap #7 pass 53) —
+  held again; single-user workload deprioritizes.
+- **Distributed inference multi-device edge** — not searched,
+  orthogonal to single-M4-Pro target.
+
+### Gaps carried into Pass 55
+
+Pass 54 closes two pass-53 gaps (streaming summarization, self-
+verification of compressed output). Remaining open gaps:
+
+1. **Profile-guided per-workload quantization** — QPART
+   (2506.23934) deferred 3 passes now. **Pass 55 decision point:
+   either ship-as-task or declare dead-end.**
+2. **Low-precision training implications for inference** — held
+   from pass 53. No pass-54 search; pass 55 should do one
+   targeted pass or formally drop.
+3. **KV warmup from partial observations** — held from pass 53.
+   Pass-54 search surfaced KQ-SVD (closed-form reconstruction
+   *given* the full cache — not warmup) and PrHS 2602.08329
+   (pre-hoc sparsity — different problem). The specific gap
+   remains open.
+4. **Prefetch policies for tiered KV memory** — held from pass 53.
+   Pass-54 search found only already-corpus papers or adjacent
+   work. Likely dead-end on the specific learned-prefetch angle;
+   consider carrying to pass 55 as final check.
+5. **Inference server multi-tenant fairness** — held from pass
+   53. Single-user workload → low priority.
+6. **Distributed inference across multiple M-series devices** —
+   new long-tail gap. Pass 55 could search "multi-device LLM
+   inference Apple Silicon 2026" if user has two Macs.
+7. **Hierarchical two-level KV (summary + detail)** — partial
+   hit on HERMES (2601.14724) and HybridKV (2604.05887) this
+   pass, but video-focused and multimodal-focused respectively.
+   LLM-text-only hierarchical-KV remains an open angle.
+
+Fifty-four passes. Four papers this round, total 228 across
+70+ disciplines. **Pass 54 adds the *adaptive conversational-
+phase compression, cross-scale small-model self-verification,
+provable low-rank attention-matrix decomposition, and
+autoencoding-free semantic-anchor compression* vertices** to the
+pass-53 stack. Highest-leverage find is SmallKV (2508.02751) —
+the first pass-40-53 paper to provide a *runtime self-
+verification* signal for eviction decisions via cross-scale
+attention-pattern matching, directly actionable on M4 Pro's
+spare-memory headroom. Runner-up is KQ-SVD (2512.05916) — the
+first pass-40-53 codec paper with a closed-form provable
+fidelity bound on attention outputs, stacking with TurboQuant
+to project 10.6× total compression. Meow meow meow meow meow.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -15951,4 +16402,23 @@ win the long-tail regime is designed to surface. Runner-up is
 KVFundaBench which quantifies the prompt-length vulnerability
 axis our current gates underweight. Tasks 233-236 track pass-53
 code actions.**
+**Pass 54 adds the adaptive conversational-phase compression
+(2603.29193), cross-scale small-model self-verification (SmallKV
+2508.02751), provable low-rank attention-matrix decomposition
+(KQ-SVD 2512.05916), and autoencoding-free semantic-anchor
+compression (SAC 2510.08907) vertices — highest-leverage being
+SmallKV which provides the *first* runtime self-verification
+signal for eviction decisions in the pass-40-53 arc via cross-
+scale attention-pattern matching between a 0.5B assist model
+on full cache and the compressed 30B target. Runner-up is KQ-
+SVD which provides the first provable fidelity bound on
+attention *output* (not just attention matrix) in the codec
+arc, stacking with TurboQuant to project 10.6× total
+compression at 1M context. Pass 54 closes two held gaps from
+pass 53 (streaming summarization via 2603.29193, self-
+verification via 2508.02751) and carries forward four gaps for
+pass 55 final resolution (QPART per-workload quantization deferred
+3 passes — decision point in pass 55; FP8→INT3 training
+calibration; prefetch policies; distributed inference). Tasks
+237-240 track pass-54 code actions.**
 
