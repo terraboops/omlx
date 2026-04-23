@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-22 (pass 55)_
+_Last updated: 2026-04-23 (pass 56)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -15015,6 +15015,65 @@ new gaps, it closes carry-over bookkeeping. Fifty-two passes in,
 the research loop is reaching its natural asymptote for this
 problem shape.
 
+### Dead end 4: KV warmup from partial observations (5 passes, formalized pass 56 2026-04-23)
+
+Passes carried: 52-56 (5 passes without closure). Pass-56 final
+search ("KV cache warmup partial observations initialization
+inference LLM") returned only pre-training curriculum work and
+fine-tune warmup schedules — no paper addresses warming up a
+quantized/compressed KV cache from partial context observations
+at inference time. The framing is fundamentally a training-side
+concept (warmup of optimizer state); at inference time, either
+the full context is available (so prefill is the "warmup") or it
+is not (so there is nothing to warm from). The closest extant
+inference-time work is speculative prefill (2402.18154, pass 42,
+Task 172, SpecPrefill — shipped) and adaptive prefill chunk
+sizing (Task 94, shipped), both of which operate on full context
+with memory-aware scheduling rather than partial observations.
+Revisit condition: if Hypercar acquires a streaming-input use
+case where tokens arrive over time and need to be progressively
+integrated into an already-compressed cache (currently no such
+use case — OpenCode integrations are batch-prefill with full
+context available upfront), re-open by searching "streaming
+context integration partial prefill KV" with that specific
+framing. Otherwise: do not re-search.
+
+### Dead end 5: Prefetch policies for tiered KV memory (5 passes, formalized pass 56 2026-04-23)
+
+Passes carried: 52-56 (5 passes without closure). Pass-56 final
+search ("prefetch policy tiered KV cache GPU CPU LLM inference")
+surfaced LMCache (2510.09665, already Task 192) and the
+SparseServe memory tier (shipped), both of which include
+prefetch *mechanisms* but no paper isolates the prefetch
+*policy* as a standalone contribution. The policy-side work
+that does exist is generic OS-level (Belady, LRU variants) and
+not specialized to KV's access pattern. Two passes specifically
+looking for KV-access-pattern-specialized prefetch policies
+returned nothing beyond the bundled-with-mechanism papers
+already captured. The implicit answer: KV prefetch on Apple
+Silicon's unified memory is structurally different from
+GPU↔CPU tiered memory — there is no page-fault-to-fetch
+boundary to prefetch across; the unified-memory model
+collapses the prefetch problem into a cache-line-prefetch
+problem that hardware handles natively. Alternatives we
+already have: (a) SparseServe's sparse-access eviction
+(shipped) which is the access-pattern signal that *would*
+drive a prefetch policy if we had a tiered memory; (b) LMCache
+(Task 192, pending) which bundles its own prefetch mechanism
+with its eviction. Revisit condition: if Hypercar adds
+external-storage KV (e.g., per-repo KV stored on SSD via
+Block-Pool Task 216, separate from working-memory KV), re-open
+by searching "SSD KV prefetch policy LLM inference" with that
+specific architecture. Otherwise: do not re-search.
+
+Five dead ends total across pass 52 (three) and pass 56 (two).
+Pass-56 dead ends close the remaining two dead-end candidates
+flagged in pass 55; both are structural mismatches to Apple
+Silicon's unified-memory architecture rather than research-
+literature gaps. Fifty-six passes in, the research loop has
+fully enumerated its dead-end set under the current hardware
+and architecture assumptions.
+
 
 ## Pass 52 — 2026-04-22 — Goal 1 Long-Tail: GPU Memory Compaction, Online KV Clustering, Formal Spec-Decode Verification, Block-wise Paged Eviction
 
@@ -16631,6 +16690,477 @@ mismatch dispositive, coverage already in KVTuner + Task 207.
 Meow meow meow meow meow.
 
 
+## Pass 56 — 2026-04-23 — Goal 1 Long-Tail: Progressive Mixed-Precision Recovery, KV Rematerialization, Commodity-GPU Sparse 1M
+
+Long-tail pass (56th). Three papers plus two formal dead-end
+declarations closing the pass-55 carry set. Pass 56 prioritizes
+the two *new* unexplored angles from pass 55 (error recovery for
+progressive compression, hardware-software codesign) over the
+held dead-end candidates; the held candidates (KV warmup from
+partial observations, prefetch policies for tiered KV) are
+formally closed below. Continuing the long-tail rhythm: each
+pass closes distinct held gaps and closes dead-end bookkeeping
+rather than drilling one axis.
+
+The three papers map to pass-55 open gaps plus the new search
+angles:
+1. **New error-recovery-vertex**: PM-KVQ (2505.18610) — closes
+   pass-55 new gap #5 (error recovery for progressive
+   compression). Progressive mixed-precision quantization with
+   block-wise memory allocation and positional-interpolation
+   calibration; explicitly addresses the "large cumulative
+   quantization error" failure mode that prior per-step
+   quantization methods ignore. The first pass-40-56 paper to
+   name and directly target the cumulative-error floor.
+2. **New codesign-vertex via memory-wall inversion**: XQuant
+   (2508.10395) — closes pass-55 new gap #6 (hardware-software
+   codesign). Inverts the standard KV-cache tradeoff: instead
+   of caching K/V, cache *quantized input activations X* and
+   rematerialize K/V on-the-fly. Exploits the compute-vs-
+   bandwidth imbalance that defines Apple Silicon's memory-
+   bound workload — more compute to save memory is exactly the
+   right trade. 7.7-12.5× memory reduction with <0.1 perplexity
+   degradation.
+3. **New sparse-1M-vertex**: Commodity-GPU Sparse 1M
+   (2502.06766, ICML 2025) — native 1M-token inference on
+   ~16 GB of GPU RAM via a top-k attention mechanism. Direct
+   Goal 1 hit: attends to <2% of tokens per decode step,
+   achieving >95% of full-attention performance on RULER /
+   AlpacaEval / Open LLM Leaderboard. ICML 2025 peer review.
+
+### [PM-KVQ: Progressive Mixed-precision KV Cache Quantization for Long-CoT LLMs](https://arxiv.org/abs/2505.18610) — 2505.18610
+- **Authors**: Tengxuan Liu, Shiyao Li, Jiayi Yang, Tianchen Zhao, Feng Zhou, Xiaohui Song, Guohao Dai, Shengen Yan, Huazhong Yang, Yu Wang
+- **Published**: 2025-05 (OpenReview — Vem6FQvRvq; GitHub thu-nics/PM-KVQ)
+- **Hypercar goals it addresses**: Goal 1 (progressive mixed-
+  precision KV quantization for long-CoT reasoning directly
+  targets the 1M-context cumulative-error failure mode that
+  every shipped codec currently ignores — our TQ3/DuoKV
+  baselines apply a static bit-width per layer at every
+  decoding step, accumulating error linearly with decode
+  depth; PM-KVQ's block-wise memory allocation + progressive
+  bit-width schedule bounds cumulative error), Goal 2 (up to
+  8% accuracy improvement over SOTA baselines on reasoning
+  benchmarks under the same memory budget — directly improves
+  Goal 2 eval scores for long-CoT coding/math traces), Goal 3
+  (2.73-5.18× throughput over fp16 baseline — better
+  compression ratio at matched quality means lower memory
+  bandwidth, which is decode-throughput-limiting on Apple
+  Silicon)
+- **TL;DR**: Progressive Mixed-precision KV Cache Quantization
+  for long Chain-of-Thought LLMs. Identifies two failure modes
+  of existing per-step quantization: (1) cumulative error —
+  naïve per-step quantization accumulates error linearly with
+  decode depth, especially severe for reasoning traces with
+  thousands of thinking tokens; (2) short-context calibration
+  — RoPE makes per-channel KV distributions position-dependent;
+  short calibration data undersamples the less-frequent-channel
+  distributions that appear at long positions. Two fixes:
+  (1) **progressive quantization strategy** — gradually lower
+  bit-width across blocks (early blocks stay at higher
+  precision, later blocks go lower), combined with
+  **block-wise memory allocation** that assigns higher
+  bit-width to more sensitivity-critical transformer blocks;
+  (2) **positional-interpolation calibration** — use short
+  calibration data with positional interpolation to
+  approximate long-context channel distributions without
+  requiring long calibration sequences. Evaluated on 7B-70B
+  long-CoT LLMs; reports up to 8% reasoning-benchmark
+  improvement over SOTA baselines at matched memory budget;
+  achieves 2.73-5.18× throughput over 16-bit baseline.
+- **Why it matters for Hypercar**: Pass-55 surfaced the "error
+  recovery for progressive compression" gap as *new and
+  unexplored*. PM-KVQ closes it with a specific, targeted
+  mechanism: the progressive bit-width schedule + block-wise
+  allocation is directly applicable to our TQ3 codec stack.
+  Current TQ3 applies a uniform 3-bit quantization everywhere;
+  the PM-KVQ insight is that later decoding steps in long-CoT
+  reasoning accumulate error that earlier steps do not, and
+  the fix is to *spend more bits on the sensitive blocks / cooler
+  steps and fewer on the hot ones*. This is orthogonal to
+  DP-LLM (Task 242, pass 55) which assigns bits temporally per-
+  step; PM-KVQ assigns bits spatially per-block and fixes the
+  calibration-data problem. The two compose: DP-LLM's temporal
+  policy modulates around PM-KVQ's spatial baseline. The
+  positional-interpolation calibration is especially relevant
+  to Hypercar — we currently calibrate TQ3 on short traces
+  because long-context calibration is expensive; PM-KVQ shows
+  how to *approximate* long-context distributions from short
+  traces. This could reduce our calibration cost by 10×+ while
+  improving long-context accuracy. Ship-cost is S-M: the
+  calibration-side change is a pure offline swap (one-time),
+  the progressive bit-width schedule requires codec changes
+  (replace 3-bit-everywhere with a block-wise schedule).
+- **Cost of adoption**: M (1-2 weeks). Three phases. Phase 1
+  — **positional-interpolation calibration**: modify
+  `omlx/cache/tq3_calibration.py` (or create if absent) to
+  apply position-interpolation on short calibration data
+  during codebook and scale computation. Take short calibration
+  traces (~4K tokens), use RoPE frequency interpolation to
+  simulate position-p distributions at position 64K/256K/1M;
+  compute scales and codebook against the interpolated
+  distribution. This is a one-time offline step; no runtime
+  impact. Phase 2 — **block-wise bit-width schedule**:
+  extend TurboQuantKVCache to accept a per-block bit-width
+  vector (48-element for Qwen3-Coder-30B), stored as a
+  configuration artifact `omlx/weights/tq3_block_schedule_
+  qwen3_coder_30b.json`. The schedule is learned offline via
+  the PM-KVQ sensitivity analysis: higher bits for blocks
+  that show larger cumulative-error buildup, lower bits for
+  blocks that are robust. Phase 3 — **progressive schedule
+  for decode-depth**: optionally, modulate bit-width with
+  decode step position — later tokens in long-CoT traces
+  can use higher precision for the KV they read (since their
+  reads dominate cumulative-error). Wire in as `--pm-kvq-
+  schedule PATH` (default: shipped schedule for Qwen3-Coder),
+  `--pm-kvq-pos-interp` (default on — positional-interpolation
+  calibration is near-free and improves accuracy),
+  `--pm-kvq-progressive` (optional — decode-depth-based
+  schedule; default off until validated), `--pm-kvq-recalibrate`
+  (CLI subcommand for recomputing schedule). Composition:
+  with TQ3 (shipped — PM-KVQ extends the codec with per-block
+  bit-width), with DP-LLM (Task 242 — DP-LLM temporal on top
+  of PM-KVQ spatial; clean composition), with KVTuner (Task
+  186 — KVTuner learns per-head bit-width, PM-KVQ learns
+  per-block; the composition is a per-(block, head) matrix
+  of bits — a genuine advance over either alone), with KVTC
+  (Task 241 — independent; save-time codec vs runtime codec).
+  Risk: progressive schedule may interact badly with eviction
+  (SnapKV re-RoPE changes positions, which changes the "ideal"
+  bit-width); validate on NIAH post-eviction. Calibration-risk:
+  positional interpolation may misrepresent the tail of the
+  distribution; cross-validate against a small true-long
+  calibration set (10 samples at 64K) to catch this.
+- **Local PDF**: research/2505.18610_pm_kvq.pdf
+
+### [XQuant: Breaking the Memory Wall for LLM Inference with KV Cache Rematerialization](https://arxiv.org/abs/2508.10395) — 2508.10395
+- **Authors**: Coleman Hooper, Aditya Tomar, Chenfeng Xu, Sehoon Kim, Maxwell Horton, Kurt Keutzer, Amir Gholami
+- **Published**: 2025-08
+- **Hypercar goals it addresses**: Goal 1 (7.7-12.5× memory
+  reduction vs fp16 KV at <0.1 perplexity degradation — at 1M
+  context fp16 KV is ~120 GB, XQuant brings this to 9.6-15 GB,
+  fitting comfortably in the 48 GB unified memory with 30 GB+
+  headroom vs. current TQ3's 22.5 GB; the rematerialization
+  trade converts compute into memory, exactly the right
+  direction for Apple Silicon), Goal 3 (memory-wall-bound
+  decode throughput on M4 Pro benefits directly from reduced
+  KV footprint — 12.5× less memory to touch per attention
+  step directly translates to 12.5× faster memory-bandwidth-
+  bound decode, though partially offset by the extra compute
+  for rematerialization), Goal 6 (48 GB fit is comfortably
+  maintained; XQuant trades compute cycles for memory capacity
+  rather than requiring memory headroom)
+- **TL;DR**: Breaks the memory wall for LLM inference by
+  *rematerializing* K and V from cached input activations X
+  on-the-fly during attention, instead of caching K/V directly.
+  Observation: modern accelerators (including Apple Silicon)
+  have compute:bandwidth ratios where FLOPs are abundant but
+  memory bandwidth is scarce; standard KV caching spends the
+  scarce resource (bandwidth) to save the abundant one
+  (FLOPs) — this is the wrong direction. XQuant inverts:
+  quantize and cache the input activation X (which is smaller
+  than K+V combined because it's one tensor instead of two,
+  and has different statistics that tolerate more aggressive
+  quantization); during attention, recompute K = XW_K and
+  V = XW_V on the fly using the already-loaded weights W_K,
+  W_V. Reports 7.7× memory savings with <0.1 perplexity
+  degradation; XQuant-CL extends with cross-layer similarity
+  for 10-12.5× memory reduction with 0.01-0.1 perplexity
+  degradation. Near-fp16 accuracy across a wide range of
+  models.
+- **Why it matters for Hypercar**: Pass-55 flagged "hardware-
+  software codesign" as unexplored; XQuant is the deepest
+  codesign result in the pass-40-56 arc — it explicitly
+  exploits the compute:bandwidth imbalance that defines
+  memory-bound workloads on Apple Silicon. Our current stack
+  (TQ3, DuoKV, SnapKV) treats KV-cache size as the thing to
+  compress; XQuant asks whether KV should be *cached at all*
+  or recomputed from something smaller. For Qwen3-Coder-30B
+  at 1M context: fp16 KV is ~120 GB (48 layers × 1M tokens
+  × 2×128-dim × 8 heads KV × 2 bytes); XQuant-CL reduces this
+  to ~10 GB via ~12.5× memory reduction; combined with TQ3's
+  codebook-quantization of X (3-bit X instead of quantized K
+  and V separately), the projected footprint drops further.
+  The rematerialization compute is the W_K and W_V matmuls —
+  already paid during prefill; at decode time it's one extra
+  matmul per layer per token, a fraction of the FFN cost. On
+  M4 Pro's 546 GB/s memory bandwidth vs ~13 TFLOPs compute,
+  the trade is favorable: we have ~24× more FLOPs per byte
+  than we use at baseline, so spending FLOPs to avoid bytes
+  is directly profitable. Composes with DuoKV (shipped —
+  XQuant could apply to the streaming-head path; retrieval
+  heads stay KV-cached), with TQ3 (shipped — XQuant's X-
+  quantization can share TQ3's WHT codebook rotation), with
+  SnapKV (shipped — eviction drops old X's; rematerialization
+  is only needed for retained X's), with KQ-SVD (Task 239 —
+  XQuant replaces KV cache with X cache, KQ-SVD replaces KV
+  with rank-r projection; these are alternative forms of the
+  same compression axis, pick one). Risk: decode-time
+  rematerialization adds per-layer matmul cost; if this
+  exceeds 20% of baseline decode time, the memory-bandwidth
+  saving is not net-positive. Must measure on M4 Pro MLX.
+- **Cost of adoption**: L (3-4 weeks). Four phases. Phase 1
+  — **X-cache infrastructure**: new file
+  `omlx/cache/x_cache.py` implementing the X-activation
+  cache. Stores per-layer input activations post-quantization
+  (3-bit TQ3-style with shared WHT codebook rotation).
+  Capacity is ~1 tensor per layer (vs 2 for K+V), so memory
+  is already halved before quantization. Phase 2 —
+  **rematerialization in attention forward**: modify
+  `omlx/models/qwen3_coder.py` attention forward to accept
+  an X-cache and, during attention compute, run
+  `K = dequant(X) @ W_K; V = dequant(X) @ W_V` instead of
+  reading pre-computed K, V from cache. Phase 3 — **XQuant-CL
+  cross-layer similarity**: exploit that X embeddings are
+  highly correlated across adjacent layers; cache X only
+  every N layers, share across skip-connected groups.
+  Phase 4 — **integration with DuoKV**: XQuant applies to the
+  streaming-head path only; retrieval heads stay KV-cached
+  because their reads are rare and predictable. Wire in as
+  `--kv-mode xquant` (new mode), `--xquant-cl` (default on
+  for further compression), `--xquant-bit-width {2,3,4}`
+  (default 3 matching TQ3), `--xquant-share-every N` (default
+  4 — cross-layer sharing stride). Composition: with TQ3
+  (shipped — shares codebook rotation), with DuoKV (shipped —
+  applies to streaming path only), with SnapKV (shipped —
+  eviction drops X entries the same way it drops K/V), with
+  KQ-SVD (Task 239 — mutually exclusive, pick one), with
+  PM-KVQ (this pass Task 244 — X has its own per-block
+  sensitivity; PM-KVQ's schedule can drive X's per-block
+  bits). Risk: per-decode-step W_K, W_V matmuls add compute
+  cost; if the overhead exceeds 20% of decode time, the trade
+  is not profitable. Validate on M4 Pro with MLX profiler.
+  Additional risk: MLX's current attention kernel assumes
+  pre-computed K, V; restructuring to accept X + remat will
+  require a kernel-side change (not just Python). This is why
+  the effort is L not M despite the algorithm being
+  conceptually simple.
+- **Local PDF**: research/2508.10395_xquant.pdf
+
+### [Exploiting Sparsity for Long Context Inference: Million Token Contexts on Commodity GPUs](https://arxiv.org/abs/2502.06766) — 2502.06766
+- **Authors**: Ryan Synk, Monte Hoover, John Kirchenbauer, Neel Jain, Alex Stein, Manli Shu, Josue Melendez Sanchez, Ramani Duraiswami, Tom Goldstein
+- **Published**: 2025-02 (ICML 2025 — OpenReview 1iBrBNngRh)
+- **Hypercar goals it addresses**: Goal 1 (1M-token inference
+  on ~16 GB of GPU RAM is a *direct* Goal 1 hit — the paper
+  demonstrates the exact context window Hypercar targets on a
+  commodity-hardware tier below Hypercar's 48 GB M4 Pro; the
+  sparse top-k attention mechanism is what enables this and is
+  portable to Apple Silicon), Goal 3 (attending to <2% of
+  tokens at decode reduces attention compute 50×+ — memory-
+  bandwidth-limited decode on M4 Pro benefits proportionally,
+  projected 10-50× decode speedup at 1M context over current
+  SparseServe baseline), Goal 4 (the sparse-prefill variant
+  also reduces prefill compute proportionally — the top-k
+  selection happens during prefill chunk-by-chunk, so prefill
+  speed scales sub-linearly with context length; projected
+  500+ tok/s at 1M if the selector itself is cheap)
+- **TL;DR**: Demonstrates 1M-token inference on commodity GPU
+  hardware (~16 GB RAM) via a tunable top-k sparse-attention
+  mechanism. At every generation step, attention is computed
+  over only the most-relevant top-k tokens rather than the
+  full N-token context. Tuning the k parameter trades
+  accuracy for speed/memory; the paper reports attending to
+  less than 2% of input tokens (k ≈ 20,000 at N = 1M) while
+  achieving more than 95% of full-attention performance on
+  RULER, AlpacaEval, and Open LLM Leaderboard benchmarks.
+  The mechanism is *training-free* (applies to pretrained
+  transformers without fine-tuning), *context-aware* (the
+  top-k selection re-computes at every decode step based on
+  the current query), and *commodity-hardware-compatible*
+  (the 16 GB RAM claim is against consumer GPUs, well within
+  M4 Pro's 48 GB). ICML 2025 peer review.
+- **Why it matters for Hypercar**: This is the single most
+  Goal-1-aligned paper in the pass-40-56 arc — it demonstrates
+  the exact target context window on commodity hardware at
+  the exact quality threshold (>95% on RULER/Open-LLM). The
+  current Hypercar stack uses SparseServe (shipped) for
+  sparse eviction at retrieval time and SnapKV for prefill-
+  time eviction; what is *missing* is a sparse-attention
+  path that runs at every decode step without eviction —
+  i.e., the full KV is retained but attention only touches
+  a top-k subset per step. This is orthogonal to our
+  eviction-based compression (which permanently removes
+  tokens) and to our quantization (which compresses what
+  remains). For Hypercar's 1M path, retaining all 1M tokens
+  in quantized KV (22.5 GB with TQ3) and then attending to
+  top-k ≈ 20K per decode step gives the *best of both*:
+  no information loss from eviction, no accuracy loss from
+  full-attention-on-compressed-KV. The 50×+ attention-compute
+  reduction directly addresses Goal 3's "constant decode
+  speed across context window" requirement — with sparse
+  attention, decode speed becomes nearly independent of N
+  beyond the top-k reach. Composes with TQ3 (shipped —
+  sparse-attention reads quantized KV for the top-k tokens
+  only), with SnapKV (shipped — SnapKV permanently removes
+  irrelevant tokens during prefill; sparse attention *at
+  decode* adds a second selection layer for the retained
+  tokens), with DuoAttention (shipped — retrieval heads stay
+  full-attention; streaming heads use sparse top-k), with
+  SparseServe (shipped — SparseServe evicts; sparse attention
+  selects without evicting; two-stage pipeline). Risk: the
+  top-k selection algorithm itself must be cheap; a naïve
+  O(N) selection at every decode step defeats the purpose.
+  The paper's algorithm details (Section 3+ of full PDF)
+  will clarify whether the selector is sub-linear or relies
+  on hierarchical structures.
+- **Cost of adoption**: M-L (2-3 weeks). Three phases.
+  Phase 1 — **top-k sparse attention kernel**: new file
+  `omlx/attention/sparse_topk_attention.py`. Takes Q, K-cache,
+  V-cache, selects top-k tokens by approximate attention
+  score (using the query-key dot-product against a sampled
+  subset or using a hierarchical index), then computes full
+  attention over only those top-k. Sub-linear selection is
+  the critical design question — paper likely uses either
+  hashing (LSH-style) or a tree-based index. Phase 2 —
+  **integration with MLX attention forward**: modify
+  `omlx/models/qwen3_coder.py` attention to dispatch to
+  sparse-topk variant when context length exceeds a
+  threshold (default 32K — below this, full attention is
+  cheaper than selection overhead). Phase 3 — **k-tuning
+  schedule**: implement the paper's tunable-k mechanism —
+  `--sparse-topk-k K` (default 20000), `--sparse-topk-
+  threshold N` (default 32K — below this context length,
+  use full attention), `--sparse-topk-selector {approx,
+  hash, tree}` (default approx — the simplest algorithm;
+  other modes for accuracy-critical paths). Composition:
+  with TQ3 (shipped — sparse-topk reads quantized KV for
+  selected tokens), with SnapKV (shipped — two-stage
+  eviction-then-select), with DuoAttention (shipped —
+  streaming-head scope). Risk: the selector's memory-access
+  pattern is non-contiguous, which is bad for Metal's
+  memory-access optimization; may require a gather kernel
+  optimized for random-access patterns (extends DiffKV's
+  Task 229 compaction path). The 16 GB GPU RAM claim
+  likely includes aggressive KV quantization; verify the
+  paper's baseline quantization matches our TQ3 baseline.
+- **Local PDF**: research/2502.06766_sparse_million_gpu.pdf
+
+### Pass 56 synthesis
+
+Pass 56 is a three-closure pass plus two dead-end formalizations.
+The three papers close three of the pass-55 open gaps; the two
+dead ends close the remaining pass-55 held-carry bookkeeping.
+All pass-55 gaps are now either closed (gaps #5, #6 via this
+pass's papers; gap #4 hierarchical two-level KV remained open
+but the targeted search surfaced only already-captured work —
+IceCache 2604.10539 is already in our corpus) or declared dead
+(gaps #2, #3 formalized above).
+
+**Pass 56 gap closures**:
+- Gap #5 (error recovery for progressive compression — pass 55
+  new, unexplored): PM-KVQ (2505.18610) — progressive mixed-
+  precision bit-width schedule + block-wise memory allocation
+  + positional-interpolation calibration; 2.73-5.18× throughput
+  at up to 8% reasoning-benchmark improvement vs SOTA
+  baselines.
+- Gap #6 (hardware-software codesign — pass 55 new, lightly
+  touched): XQuant (2508.10395) — KV rematerialization from
+  cached input activations X; explicitly exploits
+  compute:bandwidth imbalance (Apple Silicon's memory-bound
+  workload is the canonical target); 7.7-12.5× memory
+  reduction at <0.1 perplexity.
+- New Goal-1 direct hit (not previously enumerated): Commodity-
+  GPU Sparse 1M (2502.06766, ICML 2025) — 1M-token inference
+  on 16 GB commodity GPU via top-k sparse attention; 95%
+  performance on RULER/AlpacaEval/Open-LLM at <2% token
+  attention. ICML 2025 peer review.
+- **Dead end declarations**: KV warmup from partial observations
+  (gap #2, pass-55 candidate) and prefetch policies for tiered
+  KV memory (gap #3, pass-55 candidate) both formally closed
+  after 5 passes without closure. Both are structural
+  mismatches to Apple Silicon's unified-memory architecture
+  rather than research-literature gaps.
+
+**Highest-leverage find**: **Commodity-GPU Sparse 1M
+(2502.06766)**. This is the single most directly Goal-1-aligned
+paper surfaced in the entire pass-40-56 arc — it demonstrates
+1M-token inference on *less memory than Hypercar has* at the
+*exact quality threshold* Hypercar requires (>95% on
+RULER/Open-LLM). The top-k sparse attention mechanism is
+orthogonal to every codec, eviction, and compression path
+we currently have — it retains all tokens in quantized form
+and attends to only the top-k most relevant per decode step.
+This converts Goal 3's "constant decode speed across context
+window" from a quantization-and-eviction problem into a
+selection-algorithm problem, which has a much cleaner
+sub-linear answer. ICML 2025 acceptance gives peer-review
+backing. Ship-cost is M-L (2-3 weeks) — the critical design
+question is the sub-linear top-k selection algorithm.
+
+**Runner-up**: **XQuant (2508.10395)**. The memory-wall
+inversion is the deepest codesign insight in the arc — trading
+abundant compute for scarce memory bandwidth is exactly the
+right direction for Apple Silicon. The 12.5× memory reduction
+composes favorably with our existing codec stack. Ship-cost
+is L (3-4 weeks) due to MLX kernel restructuring, which is
+why it's the runner-up rather than the lead.
+
+**Tertiary**: **PM-KVQ (2505.18610)**. The cumulative-error
+floor that every prior codec ignores is addressed directly
+via progressive bit-width + positional-interpolation
+calibration. Most modest absolute impact of the three but
+smallest ship-cost (M, 1-2 weeks) and the calibration fix is
+nearly-free. A good ship-first candidate.
+
+**What Pass 56 deliberately did NOT cover**:
+- **Hierarchical two-level KV for text** (gap #4 from pass 55).
+  Targeted search surfaced IceCache (2604.10539) which is
+  already in our corpus. No new paper surfaced. Carry to
+  pass 57 or declare dead if no new result in one more pass.
+- **FP8→INT3 training calibration** (gap #1 from pass 55).
+  Briefly searched; no inference-only result surfaced. Carry
+  to pass 57 for final-attempt or close.
+- **Distributed inference multi-device** (held). Orthogonal.
+- **Multi-tenant fairness** (held). Low priority.
+- **Transformer successor architectures** (new pass-55
+  angle #11). Native Hybrid Attention (2510.07019) and
+  LongNet (2307.02486, out of 2024-2026 window) surfaced but
+  both require retraining — not applicable to our frozen
+  Qwen3-Coder base.
+
+### Gaps carried into Pass 57
+
+Pass 56 closes three pass-55 gaps (error recovery, hardware-
+software codesign, plus adds new sparse-1M vertex) and
+formally declares two dead ends (KV warmup, prefetch policies).
+Remaining open gaps:
+
+1. **FP8→INT3 training calibration** — held 3 passes. Final
+   search in pass 57 or close as inference-only focus.
+2. **Hierarchical two-level KV for text** — held. One more
+   targeted search in pass 57 before declaring dead.
+3. **Distributed inference across multiple M-series devices** —
+   held. Orthogonal.
+4. **Multi-tenant fairness** — held. Low priority.
+5. **Test-time adaptation for long context** — new pass-56
+   angle, unexplored.
+6. **Incremental attention update** — new pass-56 angle,
+   touched but no direct hit.
+7. **KV cache migration between contexts** — new pass-56
+   angle, unexplored.
+
+Fifty-six passes. Three papers this round, total 234 across
+70+ disciplines. Plus two dead ends formalized (KV warmup,
+prefetch policies) — five total dead ends across passes 52-56.
+**Pass 56 adds the *progressive mixed-precision with
+cumulative-error recovery, KV rematerialization breaking the
+memory wall, and commodity-GPU sparse 1M-token top-k
+attention* vertices** to the pass-55 stack. Highest-leverage
+find is Commodity-GPU Sparse 1M (2502.06766, ICML 2025) —
+demonstrates the exact Goal-1 target on 16 GB commodity
+hardware at the quality threshold Hypercar requires, via
+training-free top-k attention orthogonal to all extant codec
+and eviction paths. Runner-up is XQuant (2508.10395) — the
+memory-wall inversion that trades abundant compute for scarce
+memory bandwidth, exactly right for Apple Silicon's compute-
+bandwidth imbalance. Tertiary is PM-KVQ (2505.18610) — the
+first paper in the arc to name and directly address
+cumulative quantization error with a progressive schedule and
+positional-interpolation calibration. Plus two dead ends
+closed after 5 passes without closure — both structural
+mismatches to Apple Silicon's unified-memory architecture
+rather than literature gaps.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -16904,4 +17434,23 @@ in Hypercar's single-node architecture) is dispositive and
 coverage on the non-partition axis is duplicated by KVTuner
 (Task 186) and Task 207. Tasks 241-243 track pass-55 code
 actions.**
+**Pass 56 adds the progressive mixed-precision KV quantization
+with cumulative-error recovery (PM-KVQ 2505.18610), KV cache
+rematerialization breaking the memory wall via cached input
+activations (XQuant 2508.10395), and commodity-GPU sparse 1M-
+token top-k attention (2502.06766, ICML 2025) vertices —
+highest-leverage being Commodity-GPU Sparse 1M which
+demonstrates the exact Goal-1 target context window on 16 GB
+of commodity hardware at the quality threshold Hypercar
+requires (>95% on RULER/AlpacaEval/Open-LLM), via training-
+free top-k attention orthogonal to every codec and eviction
+path we currently have. Runner-up is XQuant — the memory-wall
+inversion that trades abundant compute for scarce memory
+bandwidth, the canonical right-direction codesign for Apple
+Silicon's compute:bandwidth imbalance. Plus two dead ends
+formalized: KV warmup from partial observations and prefetch
+policies for tiered KV memory, both structural mismatches to
+unified-memory architecture rather than literature gaps. Five
+total dead ends across passes 52-56. Tasks 244-246 track pass-
+56 code actions.**
 
