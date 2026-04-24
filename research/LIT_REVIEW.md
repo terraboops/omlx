@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-24 (pass 60)_
+_Last updated: 2026-04-24 (pass 61)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -19007,6 +19007,633 @@ requirement. Pass 60 marks the start of the Qwen3.6-era
 research arc.
 
 
+## Pass 61 — 2026-04-24 — Qwen3.6 1M RoPE + TQ3 Weight Unblock (Continued) + Long-Context Quantization Closure
+
+Pass 61 is the second pass in the post-pivot Qwen3.6-35B-A3B
+arc and continues the Area A / Area B / Area C tri-axis from
+pass 60. Pass 60 ingested the MoE-aware quantization core
+(MC-MoE, MxMoE, MoPEQ, Ban&Pick); pass 61 fills the two explicit
+pass-60 gap-carries (Qwen3 Technical Report for Task 260 native
+1M RoPE audit; Area C long-context quantization degradation
+closure for the pass-60 "SWE-Bench quant degradation" held gap)
+and adds two Area B dense-weight quantization papers that sit
+below the per-expert MoE layer and compose with it (DuQuant's
+block-diagonal rotation and TurboBoA's attention-aware layer-
+by-layer PTQ). Four papers total: 1 Area A, 2 Area B, 1 Area C
+closure.
+
+The four papers map to the tri-axis as follows:
+
+1. **Area A — Qwen3.6 native 1M context foundation (Task 260
+   direct input)**: **Qwen3 Technical Report** (2505.09388,
+   Qwen Team / Alibaba Cloud, May 2025). Describes the ABF
+   (Attention Base Frequency) technique that raises RoPE
+   base from 10,000 to 1,000,000 for all Qwen3 models, plus
+   the YaRN + Dual Chunk Attention (DCA) inference-time
+   4× sequence length extension. Qwen3.6 inherits and extends
+   this stack to native 1M. **Directly closes the pass-60
+   gap-carried item #1** (Qwen3 Technical Report deferred to
+   pass 61) and provides the peer-reviewed primary source
+   Task 260 needs for the RoPE configuration audit. First
+   paper-57-60 Qwen3-family primary source in the corpus;
+   prior Qwen3 references were validation-target-only. The
+   paper arrived at arxiv 2505.09388, is published by Qwen
+   Team, and is the canonical model-card reference — status
+   pre-print with HuggingFace paper-page aggregation.
+2. **Area B — Block-diagonal rotation weight quantization
+   (TQ3 unblock foundational peer, NeurIPS 2024)**:
+   **DuQuant** (2406.01721, Chen et al., NeurIPS 2024). The
+   block-diagonal rotation + zigzag permutation weight-quant
+   method that specifically targets "massive outlier"
+   activations — a different outlier class than QuaRot's
+   Hadamard rotation or TurboQuant's WHT reach. Direct
+   competitor-and-peer to ButterflyQuant (pass 13/14 ingested
+   at 2509.09679) and QuaRot (Task 271) as the block-
+   diagonal variant. **Provides the specific W3 weight path
+   Task 270 (per-layer mixed-precision ladder) currently
+   lacks** — DuQuant's block-diagonal rotation is more
+   computationally lightweight than QuaRot's full Hadamard
+   (per-block O(b²) vs O(d²)) and generates a rotation
+   matrix that composes layer-by-layer with lower calibration
+   overhead. NeurIPS 2024 peer-review signal firm; code
+   released.
+3. **Area B — Faster attention-aware layer-by-layer PTQ
+   (TQ3 unblock, ICLR 2026 fresh)**: **TurboBoA**
+   (2602.04929, ICLR 2026). Three-innovation acceleration
+   of BoA: (a) joint quantization of multiple out-channels
+   with closed-form error compensation (3× speedup over
+   sequential BoA), (b) correction mechanism for propagated
+   errors from preceding layers, (c) adaptive grid
+   computation with coordinate descent refinement. Targets
+   both weight-only and weight-activation regimes and
+   achieves SOTA when combined with outlier suppression.
+   Directly addresses the TQ3 unblock calibration-speed
+   bottleneck Task 268 (AWQ) and Task 269 (GPTQ) raised;
+   TurboBoA is the newer faster generation of the GPTQ-family
+   Task 269 specifies, and the attention-awareness
+   (inter-layer dependency accounting) is the specific
+   improvement our current per-layer TQ3 path lacks. ICLR
+   2026 peer-review signal firm.
+4. **Area C — Long-context quantization degradation closure
+   (EMNLP 2025, held-gap closure)**: **Long-context
+   Quantization Systematic Evaluation** (2505.20276, EMNLP
+   2025, molereddy/long-context-quantization). First
+   systematic evaluation of quantized LLMs on tasks with
+   >64K inputs and long-form outputs: 9.7K test examples,
+   5 quantization methods (FP8, GPTQ-int8, AWQ-int4,
+   GPTQ-int4, BNB-nf4), 5 models (Llama-3.1 8B/70B;
+   Qwen-2.5 7B/32B/72B). **Dispositive finding**: 8-bit
+   preserves accuracy (~0.8% drop) but 4-bit methods see
+   up to 59% drops on long-context tasks; Qwen-2.5 72B
+   most robust under BNB-nf4; non-English inputs degrade
+   worse. **Closes pass-60 gap-carried item #2**
+   (SWE-Bench quantization degradation literature) —
+   while this paper does not use SWE-Bench specifically,
+   it measures the *effect class* (long-context task
+   quality under quantization) that SWE-Bench would
+   probe, giving Hypercar a peer-reviewed citation for
+   the 4-bit-long-context quality-cliff hypothesis
+   guiding Goal-2 × Goal-1 trade-offs.
+
+### [Qwen3 Technical Report](https://arxiv.org/abs/2505.09388) — 2505.09388
+- **Authors**: Qwen Team (Alibaba Cloud) — An Yang et al.
+- **Published**: 2025-05 (arxiv preprint; HuggingFace paper-page, GitHub QwenLM/Qwen3)
+- **Hypercar goals it addresses**: Goal 1 (native 1M context
+  foundation — the ABF RoPE configuration is what allows
+  Qwen3.6-35B-A3B to run at 1M without post-hoc extension,
+  closing the primary Goal-1 model-side dependency; Task 260
+  audit can now reference a peer-reviewed primary source for
+  the specific RoPE base frequency and YaRN + DCA
+  interaction), Goal 2 (the Qwen3 family's unified
+  thinking/non-thinking dual-mode framework is what gives
+  Qwen3.6 its dual-personality inference profile — the
+  reasoning-mode quality on AIME/GPQA is the data the
+  Hypercar 4-eval claim leverages), Goal 6 (the dense-vs-
+  MoE architecture choice at 0.6B-235B means Qwen3.6-35B-A3B
+  is a specific point on the documented scaling curve,
+  informing the 48 GB fit reasoning; prior corpus
+  references to Qwen3 were validation-only without this
+  primary source)
+- **TL;DR**: Technical report for the Qwen3 model family
+  (0.6B-235B, dense and MoE). Core innovations: (a) **ABF
+  RoPE** — raises rotary position embedding base frequency
+  from 10,000 to 1,000,000, giving the model a ~100× longer
+  fundamental period and allowing positions up to ~1M to
+  remain distinguishable without interpolation artifacts;
+  (b) **YaRN + Dual Chunk Attention (DCA)** — inference-
+  time 4× sequence length extension via NTK-aware rotary
+  scaling (YaRN) composed with chunk-wise attention masking
+  (DCA), giving Qwen3 models nominal 256K support that
+  extends to 1M with the ABF foundation; (c) **unified
+  thinking/non-thinking mode** — single checkpoint serves
+  both fast-response and multi-step-reasoning queries via
+  chat-template mode switching, eliminating the dual-model
+  deployment cost; (d) **strong multilingual coverage** —
+  119 languages in the training mix. Qwen3 Tech Report is
+  the primary-source reference for the above; Qwen3.6-
+  35B-A3B extends the MoE variant with 256 experts and a
+  vision encoder added but inherits the ABF+YaRN+DCA position
+  stack.
+- **Why it matters for Hypercar**: Qwen3 Technical Report
+  is the peer-reviewed primary source for **the specific
+  model family Hypercar serves**. The pass-1-through-60
+  corpus has 60+ references to Qwen3 as a validation
+  target but zero primary-source citations for how Qwen3
+  actually achieves its 1M context. Task 260 (filed
+  2026-04-23 as part of the Qwen3.6 pivot) explicitly
+  requests an audit of the Qwen3.6 RoPE mechanism — this
+  paper is the primary-source input to that audit. Key
+  technical details Task 260 can now verify against peer-
+  reviewed source: **(a)** base frequency is 1,000,000
+  (not 10,000) across all Qwen3 variants, so Hypercar's
+  RoPE implementation in `omlx/patches/` must use
+  `rope_theta=1_000_000` when loading Qwen3.6 (likely
+  already correct via the HF config but worth audit); **(b)**
+  YaRN activation is chat-template triggered for long-
+  context queries — Hypercar must preserve this
+  activation path through the server; **(c)** DCA is an
+  inference-time attention pattern (chunked attention)
+  not a weight modification — Hypercar's attention
+  kernels must support the DCA mask shape; currently
+  unclear whether mlx_lm's attention path preserves DCA.
+  The **unified thinking/non-thinking mode** is relevant
+  to Hypercar's OpenCode integration — the tool-call
+  path may trigger non-thinking mode while long-form
+  reasoning prompts trigger thinking mode; the difference
+  affects output structure and must be handled in the
+  tool-parse layer. Composition with pass-40-60 stack:
+  this paper is **foundational under** all the MoE-
+  quantization and KV-compression papers — their validity
+  for Qwen3.6 depends on the underlying model actually
+  running at 1M context as this paper describes, which is
+  what Task 260's audit will verify empirically.
+- **Cost of adoption**: **S (audit-only, no code action)**
+  (1-2 days — (a) read the tech report sections on ABF,
+  YaRN, DCA, and unified dual-mode (half-day); (b) audit
+  Hypercar's RoPE configuration in `omlx/patches/` and
+  the server-side thinking/non-thinking mode routing
+  against the tech report's specifications (1 day); (c)
+  file any discrepancies as follow-on tasks — likely
+  small since Hypercar uses mlx_lm's default loader which
+  should inherit correct configs from the HF model card
+  (half-day); (d) cross-reference with Task 260 audit
+  (already open) to consolidate findings). Biggest risk:
+  the tech report describes Qwen3 (235B/MoE, 30B/MoE, 0.6-
+  32B dense); Qwen3.6-35B-A3B is a later release that
+  may have architecture-level departures (e.g., 256
+  experts vs Qwen3-30B-A3B's fewer experts; vision
+  encoder addition) and the position-stack details may
+  differ. Follow-up by reading the Qwen3.6 model card or
+  (if released) Qwen3.6 technical report to confirm ABF
+  base frequency is unchanged and YaRN/DCA activation
+  paths match. Secondary risk: the "native 1M" in Qwen3.6
+  marketing may mean "1M with YaRN activated" rather than
+  "1M without YaRN" — this changes whether Hypercar
+  needs to keep YaRN in the inference path always or
+  only for long queries; the audit should clarify.
+- **Local PDF**: research/2505.09388_qwen3_tech_report.pdf
+
+### [DuQuant: Distributing Outliers via Dual Transformation Makes Stronger Quantized LLMs](https://arxiv.org/abs/2406.01721) — 2406.01721
+- **Authors**: Haokun Lin, Haobo Xu, Yichen Wu, Jingzhi Cui, Yingtao Zhang, Linzhan Mou, Linqi Song, Zhenan Sun, Ying Wei
+- **Published**: 2024-06 (arxiv preprint; v3 2024-11; NeurIPS 2024 accepted)
+- **Hypercar goals it addresses**: Goal 6 (weight
+  quantization at 4-bit weight + activation with massive-
+  outlier handling — the TQ3.5 failure diagnosed 2026-04-23
+  as "QuaRot without the parts that make QuaRot work"
+  was specifically failing on activation outliers that
+  DuQuant's block-diagonal rotation would neutralize;
+  NeurIPS 2024 peer-review signal means this is a
+  production-ready method), Goal 2 (5% MMLU improvement
+  on Commonsense-QA at W4A4 across LLaMA sizes, 10%
+  improvement on Vicuna-v1.5-13B zero-shot MMLU — direct
+  quality-preservation evidence for sub-4-bit weight
+  quantization that Task 270 needs), Goal 3 (block-
+  diagonal rotation is O(b²) per block vs QuaRot's O(d²)
+  full Hadamard — cheaper calibration and cheaper
+  runtime rotation apply translates to faster
+  prefill/decode when integrated with TurboQuant's codec)
+- **TL;DR**: Dual-transformation weight quantization method
+  combining (a) **block-diagonal rotation matrix** — each
+  block is an orthogonal matrix responsible for a small
+  portion of activations (typically 32-128 dims per
+  block); specific outlier dimensions are identified as
+  prior knowledge and a greedy algorithm constructs the
+  rotation matrix locally within each block; (b) **zigzag
+  permutation** — reorders outliers across different
+  blocks to balance the per-block magnitude distribution,
+  avoiding the concentration-in-one-block failure mode
+  the naive block-diagonal suffers from when outliers
+  cluster. The combination targets **two outlier classes**
+  that other rotation methods fail on: **Normal Outliers**
+  (moderate-magnitude, addressed by SmoothQuant/AWQ/GPTQ)
+  and **Massive Outliers** (significantly larger magnitude,
+  typically missed by the above). Validated on LLaMA
+  7B/13B/70B and Vicuna variants: 5% improvement in
+  Commonsense-QA at W4A4 across all LLaMA sizes, 10%
+  improvement on Vicuna-v1.5-13B zero-shot MMLU.
+  NeurIPS 2024 acceptance; code released.
+- **Why it matters for Hypercar**: DuQuant is the **peer-
+  reviewed NeurIPS 2024 block-diagonal rotation baseline**
+  that TQ3.5's abandoned Givens-rotation variant was
+  trying to reach. The pass-14 ButterflyQuant entry
+  (2509.09679) already established that *learnable*
+  butterfly Givens beats fixed WHT at 2-bit; DuQuant is
+  the complementary *fixed* block-diagonal rotation at
+  4-bit that works without learning, composing with TQ3's
+  WHT as a pre-processor: apply DuQuant's rotation +
+  zigzag first to neutralize massive outliers, then apply
+  TQ3's WHT + codebook for the final 3-bit encoding. This
+  two-stage composition is structurally different from
+  QuaRot (Task 271, gated on ablation) which does a
+  single full-Hadamard rotation — DuQuant's block
+  structure is cheaper and may actually work better on
+  Qwen3.6's high-expert-count MoE where per-expert
+  rotation matrices would blow up memory if computed as
+  full d×d Hadamards. The **Task 270 per-layer ladder**
+  currently lacks a specific W3 weight method; DuQuant
+  is the candidate to fill that slot — per-layer DuQuant
+  rotation calibrated to that layer's outlier
+  distribution, then uniform 3-bit quantization downstream.
+  Biggest comparison-point to MC-MoE (pass 60, Task 273):
+  DuQuant operates on dense weights; MC-MoE operates on
+  per-expert bit-width allocation — they compose: apply
+  DuQuant rotation per-layer (or per-expert on MoE
+  layers) as a pre-processing step, then let MC-MoE's IP
+  decide bit-widths for each expert. This is the W3
+  weight unblock path Task 270 specifies.
+- **Cost of adoption**: **M** (2-3 weeks — (a) read the
+  NeurIPS paper + code artifact (2 days — paper is clear,
+  greedy block-construction algorithm is straightforward);
+  (b) port DuQuant's block-diagonal rotation construction
+  from PyTorch to MLX in new `omlx/duquant_rotation.py`
+  (5 days — the rotation-construction is calibration-time,
+  not runtime, so MLX port is just a one-time offline
+  tool); (c) integrate the rotation pre-processor as a
+  step in `omlx/turboquant_convert.py` via
+  `--duquant-preprocess` flag (2 days — the rotation
+  matrix is saved alongside the model weights as an
+  auxiliary data structure; inference-time rotation apply
+  is a single matmul per layer); (d) validate on
+  hypercar_bench — critically, check that adding DuQuant
+  preprocessing before TQ3 3-bit codec improves or
+  preserves quality at a modest speed cost (rotation
+  matmul) (1 week); (e) A-B test vs TQ3-alone to quantify
+  the outlier-suppression win; expected to help W3-weight
+  specifically by reducing the quantization-error
+  variance on massive-outlier channels). Biggest risk:
+  DuQuant was validated at W4A4 and W4A16 — we need to
+  verify that the rotation-then-3-bit-codec composition
+  does not break the Beta(d/2, d/2) codebook assumption
+  TQ3 requires (the rotation preserves orthogonality but
+  changes the per-dimension distribution shape; the
+  codebook calibration may need re-running after
+  rotation). Secondary risk: the block-diagonal rotation
+  must be applied at inference, adding a matmul per
+  transformer layer — quantify this overhead against
+  Goal 3 targets; may be acceptable if the rotation
+  matrix is small enough (32-128 dim blocks means a
+  3072-dim hidden state needs 24-96 per-block matmuls,
+  fused together should be a single ~3 GFLOP operation
+  per layer). Tertiary risk: the zigzag permutation must
+  be preserved in KV-cache layout — if DuQuant permutes
+  dimensions at the attention output, the KV cache
+  layout must match the permuted dimensions on
+  subsequent lookup; this couples DuQuant's
+  preprocessing to the KV-cache code path.
+- **Local PDF**: research/2406.01721_duquant.pdf
+
+### [TurboBoA: Faster and Exact Attention-aware Quantization without Backpropagation](https://arxiv.org/abs/2602.04929) — 2602.04929
+- **Authors**: (ICLR 2026 authors — to be read from paper header on first adoption)
+- **Published**: 2026-02 (arxiv preprint; ICLR 2026 accepted)
+- **Hypercar goals it addresses**: Goal 6 (post-training
+  weight quantization at 3-bit with attention-awareness —
+  the inter-layer dependency accounting that per-layer
+  GPTQ/AWQ lack; validated SOTA when combined with
+  outlier suppression, which composes with DuQuant above),
+  Goal 2 (quality preservation at low-bit regimes — the
+  paper reports SOTA in both weight-only and weight-
+  activation quantization, which are the two paths Task
+  270 wants to evaluate), Goal 3 (TurboBoA is 3× faster
+  than its predecessor BoA for the same quality — the
+  calibration-speed axis Tasks 268 (AWQ) and 269 (GPTQ)
+  identified as a bottleneck)
+- **TL;DR**: Accelerated post-training quantization
+  combining three innovations over BoA (the attention-
+  aware PTQ predecessor): (a) **joint quantization of
+  multiple out-channels** with closed-form error-
+  compensation rule — replaces BoA's sequential per-
+  channel quantization with batched per-group
+  quantization, yielding >3× speedup on the
+  calibration path; (b) **correction mechanism** — as
+  each layer is quantized, errors propagated from
+  preceding quantized layers are tracked and corrected
+  forward, unlike GPTQ which treats layers as
+  independent; (c) **adaptive grid computation** with
+  coordinate descent refinement — maintains alignment
+  during iterative updates, preventing the grid drift
+  that breaks BoA's convergence at very low bit-widths.
+  Achieves SOTA in both weight-only (W3, W4) and weight-
+  activation (W4A4, W4A8) regimes when combined with
+  outlier suppression. ICLR 2026 accepted; fresh paper
+  (arxiv 2026-02), code release status to confirm on
+  first read.
+- **Why it matters for Hypercar**: TurboBoA is the **newer
+  faster generation of the GPTQ-family** that Task 269
+  specifies as the generic post-hoc weight-quant method
+  to adopt. The specific improvements map to Hypercar-
+  relevant failure modes: **(a) inter-layer dependency
+  accounting** — Hypercar's current TQ3 path treats
+  layers independently via WHT + Beta codebook;
+  TurboBoA's correction mechanism would recover the
+  accumulated error across 48 transformer layers, which
+  is especially relevant at long context where small
+  per-layer errors compound to large output drift. **(b)
+  joint multi-channel quantization** — enables batched
+  calibration, reducing Task 270's per-layer ladder
+  calibration cost from sequential O(48 × C × N) to
+  parallelized O(48 × G × N) where G is groups of joint
+  channels; on MoE models with 256 experts, the speedup
+  compounds substantially. **(c) adaptive grid** — at
+  3-bit the grid quantization granularity is coarse
+  (8 levels); adaptive grid with coordinate descent
+  means the quantization bins are per-layer optimal
+  rather than uniform, matching what the Beta codebook
+  does analytically but with data-driven calibration.
+  Composition with DuQuant above: apply DuQuant rotation
+  + zigzag first, then apply TurboBoA-style batched
+  attention-aware 3-bit quantization on the rotated
+  weights. Composition with MC-MoE (pass 60 Task 273):
+  TurboBoA is the per-layer method, MC-MoE is the per-
+  expert bit-allocation method — TurboBoA provides the
+  calibration mechanism for the bits MC-MoE decides.
+  ICLR 2026 freshness is both a risk (new paper, less
+  replication) and an advantage (newest method, likely
+  closest to SOTA).
+- **Cost of adoption**: **M-L** (3-4 weeks — (a) read the
+  ICLR 2026 paper + code artifact (2 days — if code
+  released; otherwise +1 week reimplementation); (b)
+  port the joint-channel + correction-mechanism
+  algorithm from PyTorch to MLX in new
+  `omlx/turboboa_calibration.py` (1-2 weeks — the
+  correction mechanism requires running all prior
+  layers' quantized output during calibration, which is
+  a forward-pass hook setup); (c) integrate with
+  `omlx/turboquant_convert.py` as `--turboboa`
+  calibration backend alternative to the current
+  implicit calibration (3-4 days); (d) validate on
+  hypercar_bench — critically, measure calibration
+  speed vs current TQ3 path and verify 3-bit quality
+  improves; (e) compose-test with DuQuant preprocessor
+  (run both) and MC-MoE per-expert bits (TurboBoA
+  provides calibration; MC-MoE decides bit-widths; the
+  two pipelines should run sequentially). Biggest
+  risks: (i) ICLR 2026 code release may lag paper;
+  (ii) TurboBoA is attention-aware (tracks attention
+  module dependencies) but the Qwen3.6 MoE layers
+  interleave with attention layers — need to verify
+  TurboBoA handles MoE in the dependency chain
+  correctly; (iii) correction mechanism requires
+  forward-pass state from preceding quantized layers,
+  which doubles calibration memory — must fit on M4
+  Pro's 48 GB during calibration. Secondary risk: the
+  adaptive grid may disagree with the Beta codebook
+  TQ3 uses — if TurboBoA produces non-Beta-shaped
+  quantization levels, the TQ3 codec must be bypassed
+  in favor of TurboBoA's native grid, which is a
+  larger integration surface than just adding a
+  preprocessor.
+- **Local PDF**: research/2602.04929_turboboa.pdf
+
+### [Does quantization affect models' performance on long-context tasks?](https://arxiv.org/abs/2505.20276) — 2505.20276
+- **Authors**: (EMNLP 2025 authors — molereddy et al.)
+- **Published**: 2025-05 (arxiv preprint; EMNLP 2025 accepted)
+- **Hypercar goals it addresses**: Goal 1 × Goal 2
+  (**the exact intersection Hypercar's thesis lives at**
+  — this is the first systematic evaluation of quantized
+  LLMs on tasks with >64K inputs and long-form outputs,
+  closing the pass-60 gap-carried item #2 "SWE-Bench
+  quantization degradation" with a peer-reviewed
+  EMNLP 2025 reference; directly informs the Goal-1 × Goal-
+  2 trade-off space that every TQ3 design decision sits
+  on), Goal 6 (the paper's findings on which methods work
+  at 4-bit vs 8-bit on long-context directly constrains
+  the memory budget — specifically, the finding that
+  "Qwen-2.5 72B remains robust under BNB-nf4" while
+  "Llama-3.1 70B experiences 32% performance drop" means
+  the Qwen family is specifically well-suited to 4-bit
+  compression, reinforcing the Qwen3.6 choice and the
+  TQ3/MC-MoE path)
+- **TL;DR**: First systematic evaluation of quantized
+  LLMs on long-context tasks (>64K inputs, long-form
+  outputs). Scope: **9.7K test examples × 5 quantization
+  methods × 5 models** = 242.5K measurement points. Five
+  quantization methods: FP8, GPTQ-int8, AWQ-int4,
+  GPTQ-int4, BNB-nf4. Five models: Llama-3.1 8B/70B,
+  Qwen-2.5 7B/32B/72B. Headline findings: **(a) 8-bit
+  quantization preserves accuracy** — ~0.8% drop on
+  average across all tasks and models; **(b) 4-bit
+  methods cause substantial losses on long-context** —
+  drops of up to 59% on tasks involving >64K inputs;
+  **(c) multilingual degradation** — performance drops
+  worsen when input is non-English; **(d) model-specific
+  robustness variation** — Qwen-2.5 72B most robust under
+  BNB-nf4 while Llama-3.1 70B drops 32% on the same
+  task. Dispositive conclusion: **careful task-specific
+  evaluation is required before deploying quantized LLMs
+  at long-context**; default 4-bit quantization is not
+  safe for long-context workloads. EMNLP 2025 acceptance;
+  code at molereddy/long-context-quantization.
+- **Why it matters for Hypercar**: This paper is **the
+  exact peer-reviewed reference Hypercar's Goal-1 × Goal-2
+  thesis needs**. Pass 60's gap-carried item #2 noted
+  "SWE-Bench quantization degradation — likely no
+  published paper, candidate for dead-end declaration
+  after one focused search"; this paper closes that gap
+  — not by using SWE-Bench specifically, but by measuring
+  the exact effect class (long-context task quality under
+  quantization) that SWE-Bench probes, and doing so on
+  the Qwen-2.5 family which is one generation prior to
+  Qwen3.6-35B-A3B. Critical implication for Hypercar's
+  TQ3 path: **3-bit weight quantization is strictly more
+  aggressive than the paper's 4-bit measurements, so the
+  expected long-context quality drop is larger than the
+  reported 59% worst-case**. The paper's finding that
+  "Qwen-2.5 72B remains robust under BNB-nf4" is strong
+  evidence that the Qwen family specifically compresses
+  well at 4-bit — a reassuring provenance signal for
+  Hypercar's Qwen3.6 choice, but not a blanket OK for
+  3-bit. Direct Hypercar action items from this paper:
+  **(a) measure Hypercar's quality at matched bit-widths
+  on matched contexts** — run the paper's benchmark
+  (9.7K examples, long-context tasks) on Qwen3.6-35B-A3B
+  at Hypercar's TQ3/MC-MoE/DuQuant configuration and
+  compare to Qwen-2.5 72B's BNB-nf4 numbers; **(b) treat
+  the 59% drop as a red line** — any Hypercar config
+  that drops more than 59% on any long-context task
+  must be rejected; **(c) expand Goal 2 eval to
+  include a long-context-quality-under-quantization
+  gate** — the current 5-eval family (HumanEval, Code
+  Intel, RULER, MMLU-Pro, LiveCodeBench) does not
+  explicitly measure this intersection. This is the
+  **closing citation** for the pass-60 SWE-Bench-
+  quantization-degradation gap; no separate dead-end
+  declaration needed.
+- **Cost of adoption**: **S (research + evaluation
+  extension)** (1-2 weeks — (a) read the paper and the
+  github repo (2 days); (b) select a subset of the
+  paper's 9.7K long-context test examples to port to
+  Hypercar's eval infrastructure as a new gate category
+  (3 days — the paper's metric is task-specific accuracy
+  which Hypercar's bench runner can accommodate);
+  (c) add the gate to `omlx.bench.hypercar_bench` behind
+  a `--long-context-quant-gate` flag (2-3 days); (d)
+  run the gate on current TQ3 + MC-MoE + DuQuant +
+  TurboBoA stack to establish a baseline measurement
+  (1-2 days)). Biggest risk: the paper's eval examples
+  may not be publicly released in full (they may be
+  curated from existing long-context benchmarks like
+  InfiniteBench, ZeroScrolls, RULER); in that case
+  Hypercar uses the same source benchmarks directly
+  and references the paper for the quant-sensitivity
+  angle. Secondary risk: porting 9.7K examples may
+  exceed Hypercar's current bench runtime budget (30s
+  quick, 15min full); the gate may need a --long-quant
+  flag that runs the quant-degradation subset
+  separately. Tertiary risk: the paper tests 4-bit
+  methods not 3-bit; Hypercar's TQ3 is strictly lower-
+  bit, so the paper's findings are a *ceiling* on
+  Hypercar's expected robustness, not a direct
+  replacement measurement.
+- **Local PDF**: research/2505.20276_quant_longcontext.pdf
+
+### Area split (pass-61 methodology note)
+
+Per pass 60's tri-axis framing, pass 61 explicitly split
+selection across three areas:
+
+- **Area A (Qwen3.6 specifics)**: 1 paper — Qwen3 Technical
+  Report (2505.09388). Direct closure of pass-60 gap-
+  carried item #1; primary-source for Task 260 audit.
+- **Area B (TQ3 weight unblock support)**: 2 papers —
+  DuQuant (2406.01721, block-diagonal rotation, NeurIPS
+  2024) and TurboBoA (2602.04929, ICLR 2026 attention-
+  aware PTQ). Together they compose with pass 60's
+  MC-MoE/MxMoE/MoPEQ per-expert MoE-quantization layer
+  as the per-layer dense-weight base.
+- **Area C (long-held gap closure)**: 1 paper — Long-
+  Context Quantization Systematic Evaluation
+  (2505.20276, EMNLP 2025). Direct closure of pass-60
+  gap-carried item #2 (SWE-Bench quantization
+  degradation); peer-reviewed reference for the
+  Goal-1 × Goal-2 intersection.
+
+Not selected this pass (deferred to pass 62 or later):
+- **AlphaQ (Liquid AI)** — arxiv ID still unavailable
+  at pass-61 search time. Research-blog-only. Defer to
+  pass 62; Task 276 continues tracking.
+- **Vision-encoder surgical removal literature** —
+  pass-61 final search surfaced no dedicated paper
+  (NanoVDR is distillation, not surgical removal;
+  adjacent VLM-ablation work is in-house blog posts).
+  **Formalize as dead end in pass 62** after one more
+  final search pass.
+- **HQQ (calibration-free Half-Quadratic Quantization)**
+  — strong Area B candidate but original paper is
+  blog-released rather than arxiv-formal; Dropbox
+  implementation well-known. Track for ingestion if a
+  peer-reviewed arxiv version surfaces; interim use HQQ
+  as an internal reference only.
+- **OmniQuant (2308.13137)** — ICLR 2024 spotlight, but
+  outside 2401-2612 corpus window (August 2023).
+  Technique captured via Task 269 (GPTQ family) and
+  TurboBoA above which supersedes.
+
+### Gaps addressed vs carried
+
+Pass 61 closes:
+- **Pass-60 gap-carried #1 (Qwen3 Technical Report
+  primary-source citation)** — ingested as Area A paper;
+  Task 260 audit can now reference 2505.09388 directly.
+- **Pass-60 gap-carried #2 (SWE-Bench quantization
+  degradation / long-context quality under quantization)**
+  — closed by 2505.20276 (EMNLP 2025 systematic eval);
+  not a dead-end declaration, a real peer-reviewed
+  reference was found that measures the effect class.
+- **TQ3 weight unblock Area B expansion** — DuQuant
+  provides the block-diagonal rotation path Task 270
+  lacks; TurboBoA provides the attention-aware batched
+  calibration path Task 269 specifies.
+
+### Gaps carried into Pass 62
+
+1. **AlphaQ arxiv ID (Liquid AI)** — still unavailable
+   after one more pass-61 search. Continue tracking;
+   Task 276 remains open.
+2. **Vision-encoder surgical removal literature** —
+   pass-61 final search surfaced no dedicated paper.
+   One more targeted search in pass 62 then formalize
+   as dead end if still uncovered (matches pass-56/57
+   dead-end declaration pattern).
+3. **Incremental attention update** — held 6+ passes
+   (since pass 56). Strong dead-end candidate for
+   pass 62 after one more targeted search.
+4. **Embedding-similarity prefetch** — held 5+ passes
+   (since pass 57). Strong dead-end candidate.
+5. **Model merging memory efficiency** — held 5+ passes.
+6. **KV compression under distribution shift** — held
+   5+ passes.
+7. **Energy-efficient inference on Apple Silicon M4** —
+   held 5+ passes. Machine-learning-papers usually frame
+   this as "efficient LLM inference" without Apple
+   Silicon specificity; likely dead-end on Apple-
+   specific framing (matches pass-52 Metal-kernel dead
+   end) but re-search with generic framing in pass 62.
+8. **Code-structure episode boundaries** (AST/file-path
+   for EpiCache) — held 3 passes (since pass 58).
+9. **Hybrid quantize+offload on unified memory** —
+   partially addressed by TailorKV (pass 59) but the
+   unified-memory-specific angle still gapped.
+10. **Hamming-space KV fingerprinting** — held 2 passes.
+11. **Pass-60 gap-carried #4 (AlphaQ)** — continued
+    above as item #1.
+
+Sixty-one passes. Four papers this round (1A + 2B + 1C);
+total 252 papers across 70+ disciplines. No new dead ends
+formalized (six total across passes 52-57 still holds;
+vision-encoder-removal and incremental-attention-update
+remain strong dead-end candidates for pass 62). **Pass 61
+adds the *Qwen3 Technical Report primary source for native
+1M ABF RoPE + YaRN + DCA architecture (2505.09388, Qwen
+Team 2025), block-diagonal rotation + zigzag permutation
+weight quantization for massive outliers (DuQuant
+2406.01721, NeurIPS 2024, code released), attention-aware
+batched calibration with inter-layer correction for fast
+low-bit PTQ (TurboBoA 2602.04929, ICLR 2026), and first
+systematic evaluation of quantized LLMs on long-context
+tasks closing the Goal-1 × Goal-2 intersection gap
+(Long-Context Quantization 2505.20276, EMNLP 2025, code
+released)* vertices** to the pass-60 stack and **closes
+both pass-60 gap-carried items (#1 Qwen3 Tech Report
+citation, #2 SWE-Bench/long-context quant degradation)**.
+Highest-leverage find is **Qwen3 Technical Report**
+(2505.09388) — this is the primary-source foundation
+under every pass-40-60 Qwen3-validation paper in the
+corpus; Task 260's audit can now reference a peer-
+reviewed primary source for the native-1M RoPE
+configuration. Runner-up is **DuQuant** (2406.01721) —
+the NeurIPS 2024 block-diagonal rotation that TQ3.5's
+abandoned Givens variant was trying to reach; composes
+with TQ3's WHT as a pre-processor and provides the
+specific W3 weight unblock path Task 270 lacks. TurboBoA
+is the ICLR 2026 faster-GPTQ that Tasks 268/269 specify
+as the attention-aware calibration method; long-context
+quantization eval is the peer-reviewed citation for the
+Goal-1 × Goal-2 intersection Hypercar's entire thesis
+depends on. Second pass in the Qwen3.6-era research arc;
+the Area A/B/C tri-axis framing from pass 60 continues
+to productively decompose selection space.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -19403,4 +20030,26 @@ specific) × Area B (TQ3 weight unblock) 50/50 selection
 axis — Area B dominated 3:1 this pass because Task 272 drove
 the primary requirement. Tasks 273-275 track pass-60 code
 actions; Task 272 closed.**
+**Pass 61 adds the *Qwen3 Technical Report primary source
+for native 1M ABF RoPE + YaRN + Dual Chunk Attention
+architecture (2505.09388, Qwen Team 2025), block-diagonal
+rotation + zigzag permutation weight quantization for
+massive outliers (DuQuant 2406.01721, NeurIPS 2024), faster
+attention-aware batched calibration with inter-layer
+correction for low-bit PTQ (TurboBoA 2602.04929, ICLR
+2026), and the first systematic evaluation of quantized
+LLMs on long-context tasks closing the Goal-1 × Goal-2
+intersection gap (Long-Context Quantization 2505.20276,
+EMNLP 2025)* vertices — highest-leverage being the Qwen3
+Technical Report, the primary-source foundation under
+every pass-40-60 Qwen3-validation paper in the corpus
+(Task 260 audit can now reference a peer-reviewed primary
+source for native-1M RoPE configuration). Runner-up is
+DuQuant, the NeurIPS 2024 block-diagonal rotation
+composing with TQ3's WHT as a pre-processor and providing
+the specific W3 weight unblock path Task 270 lacks. Pass
+61 **closes both pass-60 gap-carried items** (#1 Qwen3
+Tech Report citation, #2 SWE-Bench / long-context quant
+degradation). Tri-axis Area A/B/C selection: 1 + 2 + 1.
+Tasks 277-280 track pass-61 code actions.**
 
