@@ -524,7 +524,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## In Progress
 
-_(none)_
+- **Task 255**: LCB CoT bench validation (re-test Task 130(b) hypothesis now that Task 254 landed the CoT prompt in the bench codepath) — full bench run + offline analysis of response data (started 2026-04-23).
 
 
 
@@ -535,6 +535,13 @@ _(none)_
 
 ## Completed
 
+- **Task 254**: LiveCodeBench failure-mode instrumentation + prompt-codepath unification (2026-04-23)
+  - **Discovery (highest-value outcome)**: `hypercar_bench.py::phase3d_livecodebench` (line 1530) has its OWN inline prompt, **not** `LiveCodeBenchBenchmark.format_prompt()` from `omlx/eval/livecodebench.py`. Task 130(b) edited the latter thinking the former would take effect. The two codepaths had drifted. This invalidates Task 130(b)'s "CoT hypothesis falsified" conclusion — that bench run was measuring the bench's OLD, unchanged inline prompt. Task 130(b) Completed entry has been amended with a retraction.
+  - **Fix 1 — prompt unification** (`hypercar_bench.py:1530-1540`): bench's inline prompt now matches the CoT version from `livecodebench.py` — invites step-by-step reasoning, asks for a final ```python block. Comment added pointing at the canonical version so future drift is visible.
+  - **Fix 2 — instrumentation** (`hypercar_bench.py:1577-1587`): results.json now saves the FULL `code`, `response`, and `prompt` per problem (was: truncated `code[:100]`, no response, no prompt). Next bench run produces actually-diagnosable failure data.
+  - **Verification**: `.venv/bin/python -c "..."` inline assertion confirms CoT prompt applied, response+code saved, truncation removed. (No bench run yet — change is the prerequisite for the next bench run's data to be useful.)
+  - **Bench validation needed**: next `--full` run will produce the REAL first LCB measurement under CoT. Expected pattern: if CoT helps, LCB > 30%. If it doesn't, results.json now contains full responses per failing problem so we can characterize the actual failure mode (wrong algorithm? truncation? extraction bug? capability ceiling?).
+  - **Follow-up threads**: (i) once the next bench has data, analyze failures offline — look at what the model actually wrote for each failing problem; (ii) if CoT DOES help, Task 130(b)'s hypothesis is un-falsified after all and we got back 10+ LCB percentage points for free; (iii) consider a test that asserts the two LCB prompts stay in sync, to prevent future drift.
 - **Task 253 Phase 5**: Centralize MODEL_ID into `omlx/model_constants.py` (2026-04-23)
   - New file `omlx/model_constants.py` (~40 lines): single source of truth for model IDs. Defines `DEFAULT_MODEL_ID`, `SERVER_DEFAULT_MODEL_ID`, `BENCH_DEFAULT_MODEL_ID`, plus named constants for current (Qwen3-Coder 8bit/4bit) and planned (Qwen3.6 4bit/8bit) targets.
   - Migrated top 2 call sites: `omlx/bench/hypercar_bench.py:48` and `omlx/hypercar_server.py:295` now import from the registry.
@@ -552,7 +559,8 @@ _(none)_
     - `test_extractor_prefers_last_code_block_over_draft` — draft code blocks during reasoning don't pollute extraction
   - All 7 TestLiveCodeBench tests PASS (`.venv/bin/python -m pytest tests/test_eval.py::TestLiveCodeBench -v` → 7/7).
   - **Bench validated (2026-04-23T15:54 PDT, `--full`, 1386s, ALL GATES PASSED)**: **LiveCodeBench 6/20 (30%) — IDENTICAL to Run 87 baseline.** Every one of the 20 problems produced the same pass/fail. Other gates unchanged: MMLU-Pro 62/100, HumanEval 19/20 (95%), RULER 100%, NIAH/SnapKV/Tool-Call all PASS. No regression; no improvement.
-  - **Hypothesis FALSIFIED**: the "no explanations" directive was NOT the bottleneck. Likely reasons: (a) temperature=0 greedy decode (`omlx/eval/base.py:182`) makes the model extremely robust to surface-level prompt rewording; (b) Qwen3-Coder may already reason internally regardless of prompt; (c) the real ceiling is raw model capability on competitive programming, not prompt shape.
+  - **⚠️ RETRACTION (2026-04-23 via Task 254)**: the "hypothesis falsified" conclusion is **not actually supported** by this bench. The bench's Phase 3d uses its OWN inline prompt in `hypercar_bench.py:1530` — NOT the `LiveCodeBenchBenchmark.format_prompt()` method I edited in `omlx/eval/livecodebench.py`. The two codepaths had drifted. My Task 130(b) prompt change was inert for the bench measurement. The bench prompt already did NOT say "no explanations" before my change; it said "Provide only the complete Python code in a ```python block" (also restrictive, but different wording). Task 254 unifies both prompts and re-runs the bench will be needed to actually test the CoT hypothesis. Keeping this entry as-is for accurate historical record; see Task 254 for the real first CoT validation run.
+  - **Hypothesis STATUS AFTER RETRACTION**: untested on the bench. The livecodebench.py prompt change is still valid (for the unused class API); the bench-side change lands via Task 254.
   - **Net value of the change**: the prompt is now aligned with the model's actual behavior (no more self-sabotaging instruction the model was ignoring anyway), plus 3 new contract tests guard the prompt/extractor relationship. The change is SAFE to keep (no regression) but does NOT move the LCB gate.
   - **Real next step for LCB**: since prompt wording is not the lever, try one of — (i) best-of-N sampling with temperature > 0 + pick by local test-case pass; (ii) few-shot examples for the specific problem classes that fail (DP, greedy optimization, modular arithmetic tricks); (iii) harder intervention — swap LCB to a smaller model-friendlier subset or accept 30% as the Qwen3-Coder-30B floor and target a different weak gate. Filed as follow-up priority candidate for future cycles.
 - **Task 177**: [CRITICAL REGRESSION] SnapKV NIAH FAIL at 49% keep — closed out, resolved by Runs 86-87 (2026-04-23)
@@ -4845,3 +4853,71 @@ Model-migration pass — not a research pass. Target model pivot from `mlx-commu
 - **Verify**: (a) `omlx/moe_offload.py` unit tests cover ExpertOffloadStore mmap correctness (bit-exact output vs in-memory baseline for 10 random expert loads), HotExpertCache LRU correctness, and prefetch-hook scheduling. (b) `omlx/bench/hypercar_bench.py --model mlx-community/Qwen3.6-35B-A3B-4bit --moe-hot-cache-size 32 --moe-offload-path /tmp/qwen36_experts.bin` loads successfully. (c) Peak Metal memory with `--moe-hot-cache-size 32` < 10 GB for Qwen3.6-35B-A3B 4-bit (vs ~17.5 GB full-resident baseline). (d) NVMe cold-expert load latency < 5ms per access (measured via instrumentation; baseline reference: M4 Pro NVMe random 4KB read ~50µs, expert block ~5MB so ~1ms read + overhead). (e) Decode throughput regression < 10% vs full-resident baseline at 4K context on the same hardware (single-user interactive workload; higher regression acceptable at 1M where we're memory-bound anyway). (f) `hypercar_bench --full --moe-hot-cache-size 32` passes all 11 gates on Qwen3.6-35B-A3B-4bit (quality preservation is the hard gate — offloading must not change outputs, only latency). (g) Tested composition: `--moe-hot-cache-size 32` + SliceMoE (Task 221) stacks correctly with no output divergence vs SliceMoE alone. (h) Stress test: sustained 30-minute run with diverse prompts does not exceed 12 GB peak Metal (cold-expert thrashing guard).
 - **Effort**: L (1 week — mmap-backed ExpertOffloadStore 2 days, HotExpertCache + prefetch integration 2 days, composition with SliceMoE 1 day, benchmark + stress validation 2 days)
 - **Depends on**: Task 257 (Qwen3.6 smoke test) as hard prerequisite. Task 262 (MoE re-validation at 256 experts) as soft prerequisite — understanding routing statistics from 262 informs the initial HotExpertCache size default. Task 221 (SliceMoE) is independent but compositional; offloading works with or without SliceMoE active, and the two compose multiplicatively for active-memory reduction.
+
+## TQ3 weight quantization unblock tasks (2026-04-23)
+
+Diagnostic + literature triage identified that our TQ3.5 weight quantization is QuaRot without the parts that make QuaRot work. Evidence refuting the "error compounds across 40 layers" hypothesis: 4-bit WHT-rotated ALSO produces garbage ("is is is"), so the villain is rotation plumbing, not bit-width or depth. We're missing: AWQ or GPTQ calibration, RMSNorm fusion, online Hadamard in QK^T/down_proj. Skip-list and seed mismatches between converter and runtime are live footguns.
+
+### 265. Rotation-off ablation — decisive test of whether WHT rotation helps at all
+- **Goal**: 6 (unblock TQ3 weights = ~3-4 GB on 35B), Goal 2 (diagnosis determines 2-day vs 2-week fix)
+- **Derived from**: Diagnostic agent 2026-04-23: TQ3.5 rotates activations at each Linear entry and un-rotates at exit, so the residual stream lives in un-rotated basis. QuaRot requires R fused into RMSNorm for activations to live in rotated space end-to-end. Our rotation may be injecting noise rather than removing it. Evidence: 4-bit WHT-rotated ALSO produces garbage ("is is is"), refuting "3-bit depth compounding".
+- **Change**: Add `--no-rotate` flag to `omlx/turboquant_convert.py` (around line 227 where rotation seed is set) that forces `R = I`. Expose via `--weight-mode turbo35-norotate` in `omlx/cli.py` and wire through `omlx/engine/batched.py`. Instrumentation only.
+- **Verify**: Run `omlx serve --weight-mode turbo35-norotate` on `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit`, generate text on 3 BENCHMARKS.md Run 20 prompts. Compare: (a) native MLX 3-bit (similar if rotation is net-noise), (b) TQ3.5-with-rotation baseline (better if rotation helps). **Outcome branching**: if `--no-rotate` matches native 3-bit, rotation is net-harmful — fix is AWQ/GPTQ on unrotated weights (Tasks 268, 269). If worse than native 3-bit, rotation is theoretically correct but plumbed wrong — need full QuaRot port (Task 271).
+- **Effort**: S (0.5h instrumentation + 0.5h run + 0.5h analysis)
+- **Depends on**: Nothing. First-move task.
+
+### 266. Depth sweep — empirically test "error compounds across 40 layers" hypothesis
+- **Goal**: 2 (validate/refute BENCHMARKS.md's unfounded claim), Goal 6 (if few sensitive layers, mixed-precision wins)
+- **Derived from**: Diagnostic agent 2026-04-23: BENCHMARKS.md Run 20 conjectures "errors compound through 40 layers" with zero measurement. The `--fp16-layers` flag at `omlx/patches/turboquant_weights.py:94` makes this trivially testable but was never run. Lyapunov sensitivity (Task 207, pass 46) predicts a few specific layers dominate, not uniform degradation.
+- **Change**: Write `omlx/bench/tq3_weight_depth_sweep.py` that runs `--weight-mode turbo35` with `fp16_layers ∈ {0, 4, 12, 24, 36, 40}` on Qwen3-Coder-30B-A3B. Measure HumanEval pass@1 + coherence at each point. Plot quality vs # quantized layers. Interpret: linear degradation = depth compounding; step function = few sensitive layers (→ Task 270); flat-at-broken = rotation plumbing (→ Task 265 confirms).
+- **Verify**: Quality curve published to `bench/snapshots/tq3_depth_sweep.json`. Curve shape determines next action.
+- **Effort**: S (1h script + benchmark runs)
+- **Depends on**: Nothing. Parallel with Task 265.
+
+### 267. Fix skip-list and seed mismatches between converter and runtime
+- **Goal**: 2 (prevent silent corruption from live footguns)
+- **Derived from**: Diagnostic agent 2026-04-23 found two bugs: (a) `omlx/patches/turboquant_runtime.py:99-105` adds "router" to `_SKIP_PATTERNS`; `omlx/turboquant_convert.py:131-138` does NOT. Model with `router` linear gets rotated weights + un-rotated activations = broken matmul. (b) Seed mismatch: `turboquant_weights.py:113` uses `hash(full_name)`, `turboquant_convert.py:227` and `turboquant_runtime.py:159` use `seed=in_dim`. Offline-converted + runtime-patched = different R.
+- **Change**: (1) Move `_SKIP_PATTERNS` into new `omlx/turboquant_shared.py` (or `omlx/turboquant_linear.py`), import from all three sites. Add "router", "conv1d" to converter skip list. (2) Standardize seed to `seed=in_dim` everywhere, OR serialize R matrices into converted safetensors alongside quantized weights (preferred — removes seed dependence).
+- **Verify**: `grep -rn '_SKIP_PATTERNS' omlx/` shows one definition. Cross-path test: convert offline with `--weight-mode turbo35`, load with same flag, generate — bit-identical to fresh convert without save/load round-trip.
+- **Effort**: S (1h)
+- **Depends on**: Nothing. Pure cleanup — land before 268/269 to avoid confounding.
+
+### 268. AWQ-style per-channel activation scaling for TQ3 weights
+- **Goal**: 6 (enable 3-bit weights = ~3-4 GB on 35B), Goal 2 (recover quality at 3-bit)
+- **Derived from**: Unblocker-survey 2026-04-23: AWQ (arXiv:2306.00978) protects top ~1% of channels by activation magnitude via per-channel scale `s` applied before RTN. Orthogonal to WHT rotation (AWQ scales in rotated basis). Empirically recovers 3-5 pp at 3-bit. Our TQ3.5 has zero outlier protection.
+- **Change**: New `omlx/tq_weight_awq.py`: (1) calibration on 128 samples × 2K tokens from Code-Search-Net + code-review set, capture per-linear input activation abs-max per channel. (2) compute `s = (|X|.mean(axis=0))^α / (|W|.mean(axis=0))^(1-α)` with α=0.5. (3) fold: `W' = W @ diag(s^{-1})`, adjusted input: `X' = X * s`. (4) quantize `W'` with existing TQ3.5 pipeline. Add `--act-scale calib.npz` flag to `omlx/turboquant_convert.py`.
+- **Verify**: HumanEval pass@1 ≥ 50% on Qwen3-Coder-30B-A3B with `--weight-mode turbo35 --act-scale calib.npz` (vs fp16 ~95%, vs broken TQ3.5 ~0%). Coherent on BENCHMARKS.md Run 20 prompts (no "vet vet"). Stacks cleanly with WHT rotation.
+- **Effort**: M (1-2 days — 0.5d calibration corpus, 0.5d AWQ computation, 0.5d integration, 0.5d validation)
+- **Depends on**: Task 267 (skip-list/seed). Soft-dep Task 265 (informs rotation-vs-no-rotation).
+
+### 269. GPTQ-style iterative Hessian column reconstruction for TQ3 weights
+- **Goal**: 6 (enable 3-bit weights), Goal 2 (gold-standard — GPTQ at 3-bit on LLaMA-70B is within 1 pp of fp16 per paper)
+- **Derived from**: Unblocker-survey 2026-04-23: GPTQ (arXiv:2210.17323) does Hessian-approximated iterative column reconstruction. Post-hoc, calibration-only (~128 samples). Composes ON TOP of WHT rotation — rotate first, then GPTQ the rotated weight. Dispositive fix for post-hoc 3-bit PTQ.
+- **Change**: New `omlx/gptq_quant.py`: (1) Hessian `H = 2 X^T X / N` per linear from calibration activations. (2) Cholesky of `H + λI` (ridge regularization). MLX lacks native Cholesky — use numpy round-trip on ~4096×4096 matrix (~2s/layer, one-time). (3) Sequential column-wise quantization with error compensation: `W[:, j] -= err[:, j-1] @ H_inv[j-1, j:]`. (4) Hook into `omlx/turboquant_convert.py` via `--gptq` flag. Pre-rotate with WHT if `--weight-mode turbo35`, then GPTQ the rotated weights.
+- **Verify**: HumanEval pass@1 within 5pp of fp16. RULER retention at 4K/16K unchanged from fp16. Calibration runtime per layer < 30s. Memory < 20GB during calibration.
+- **Effort**: M (2-3 days — 1d GPTQ with MLX/numpy Cholesky, 0.5d calibration harness, 0.5d convert.py integration, 1d validation)
+- **Depends on**: Task 267. Task 268 AWQ should run first (lighter, informs whether GPTQ still needed). Composes with 268 — AWQ scales + GPTQ iteration on rotated weights is the full post-hoc stack.
+
+### 270. Per-layer / per-expert mixed-precision ladder (Unsloth-style + Lyapunov-informed)
+- **Goal**: 6 (active memory with targeted fp16 islands), Goal 2 (protect sensitive few layers that dominate quality)
+- **Derived from**: Unblocker-survey 2026-04-23 + Task 207 (Lyapunov sensitivity, pass 46, arXiv:2603.20991). "One projection out of 468 induces 20,000x perplexity spike" — direct diagnosis for uniform 3-bit failure. Unsloth Dynamic 2.0 is empirical SOTA for per-layer mixed-precision GGUF. KVTuner (Task 186) is the KV-side analog; this applies same idea to weights.
+- **Change**: (1) Build sensitivity probe `omlx/tq_weight_sensitivity.py` that measures per-layer (and per-MoE-expert) perplexity delta when that layer/expert goes 3-bit vs fp16. (2) Compute Lyapunov contraction condition as cheap proxy. (3) Produce `config.json` per-layer bit-width: sensitive layers stay fp16, medium 4-bit, insensitive 3-bit. Target average ≤ 3.5 bits. (4) Wire via `--bit-ladder config.json` flag in `omlx/turboquant_convert.py`. Per-expert extension: MoE hot experts get higher precision.
+- **Verify**: HumanEval within 2pp of fp16 at average bit-width ≤ 3.5. On Qwen3.6-35B-A3B 256-expert, hot experts get higher precision than cold ones. Memory at 1M context reduces ≥ 2.5 GB vs uniform 4-bit MLX.
+- **Effort**: M (3-4 days — 1d sensitivity probe, 1d Lyapunov integration, 1d MoE per-expert extension, 1d validation)
+- **Depends on**: Task 266 (depth sweep informs sensitive layers). Task 268 or 269 (need working 3-bit path for "insensitive" slot). Task 257 if applying to Qwen3.6.
+
+### 271. Full QuaRot port — RMSNorm fusion + online Hadamard in QK^T and down_proj
+- **Goal**: 6 (enable genuine sub-4-bit weights), Goal 2 (if rotation is theoretically right but plumbed wrong, fix plumbing)
+- **Derived from**: Diagnostic agent 2026-04-23 + QuaRot paper (arXiv:2404.00456, pass 5, Task 41). QuaRot requires: (a) R fused into preceding RMSNorm scale — activations live in rotated space end-to-end. (b) online Hadamard in QK^T (attention) and down_proj (FFN) to protect intermediate products. Our TQ3.5 does neither. **CONTINGENT** on Task 265 showing rotation actually helps — if rotation is net-noise, skip entirely.
+- **Change**: (1) RMSNorm fusion: modify `omlx/patches/turboquant_runtime.py` to multiply R into preceding RMSNorm's weight during conversion. (2) Online Hadamard in QK^T: after q_proj/k_proj, apply Hadamard to Q and K before `Q @ K.T`. (3) Online Hadamard in down_proj input: apply Hadamard to FFN intermediate before down_proj. (4) Single shared rotation across entire model to enable fusion.
+- **Verify**: HumanEval within 3pp of fp16 at 3-bit weights + 3-bit activations (W3A3). Coherent on BENCHMARKS.md Run 20 prompts. Correctness: fp16 vs quantized hidden-state cosine similarity > 0.98 at each layer.
+- **Effort**: L (1-2 weeks — 3d RMS fusion, 3d online Hadamard attention, 2d online Hadamard FFN, 3d validation + debugging)
+- **Depends on**: Task 265 **GATE** (if rotation is net-noise, skip entirely). Tasks 267, 268, 269.
+
+### 272. Research pass — MC-MoE and MoQE for MoE-aware expert-specific quantization
+- **Goal**: 6 (256-expert Qwen3.6 is where per-expert bit allocation pays off most)
+- **Derived from**: Unblocker-survey 2026-04-23: **MC-MoE** (arXiv:2410.06270) combines per-expert Hessian-aware bit allocation with expert activation frequency. Reports 2.54-bit average on Mixtral with <1 pp loss. **MoQE** (arXiv:2310.02410) does per-expert quantization with activation-frequency-aware bit allocation. Neither in LIT_REVIEW.md despite ~10 passes touching MoE. MoE axis that GPTQ+AWQ alone don't address.
+- **Change**: Research-only task for next research cron pass: download MC-MoE (2410.06270) and MoQE (2310.02410), add to `research/LIT_REVIEW.md` with standard per-paper format. Evaluate applicability to Qwen3.6-35B-A3B's 256-expert layout. File follow-on implementation tasks if applicable.
+- **Verify**: Both papers cited in LIT_REVIEW.md. Clear ship/defer decision per paper.
+- **Effort**: S (research only, 1 cron pass)
+- **Depends on**: Nothing — next research cron can pick up.
