@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-23 (pass 59)_
+_Last updated: 2026-04-24 (pass 60)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -18483,6 +18483,530 @@ path is validated. 100% peer-reviewed + code-
 released provenance this pass.
 
 
+## Pass 60 — 2026-04-24 — Qwen3.6 Pivot + TQ3 Weight Unblock: MoE-Aware Quantization
+
+Pass 60 is the first pass since the Qwen3.6-35B-A3B target pivot
+(user directive 2026-04-23) and runs on a **refocused dual axis**:
+Area A — Qwen3.6-specific optimization (256-expert MoE routing,
+native 1M RoPE, vision-encoder ablation) — and Area B — TQ3 weight
+quantization unblock support (Tasks 265-272 filed 2026-04-23 after
+diagnostic showing TQ3.5 is "QuaRot without the parts that make
+QuaRot work"). Area B dominated the selection because **Task 272
+explicitly mandates a research-pass citation of MC-MoE and MoQE**
+— the two dedicated MoE-aware post-hoc quantization papers the
+pass-1-to-59 corpus never picked up despite ~10 passes touching
+MoE compression. Four papers total, three Area B + one Area A,
+all with peer-review acceptance or strong implementation-ready
+provenance.
+
+The four papers map to the two areas:
+
+1. **Area B — Task 272 closure (foundational)**: **MC-MoE**
+   (2410.06270, ICLR 2025, Aaronhuang-778/MC-MoE). Pre-Loading
+   Mixed-Precision Quantization (PMQ) + Online Dynamic Pruning
+   (ODP). PMQ formulates per-expert bit-width as an Integer
+   Programming problem over calibration-derived sensitivity;
+   ODP prunes inactive-expert routing at decode. 2.54-bit average
+   on Mixtral 8×7B with 3.8% accuracy loss. **Directly closes
+   Task 272's MC-MoE citation requirement**. The MoQE predecessor
+   (arXiv:2310.02410, published Oct 2023) is cited within MC-MoE
+   as prior work and explicitly credited for the "expert weights
+   are quantization-robust, non-expert weights are not" finding;
+   MoQE is not separately ingested into the main corpus because
+   its arxiv date (2310) falls outside the 2401-2612 corpus
+   window, but its technique-foundation is captured via MC-MoE's
+   generalization. **This closes Task 272 per the task's
+   verification criterion ("Both papers cited in LIT_REVIEW.md.
+   Clear ship/defer decision per paper.")** — MoQE is cited in
+   the MC-MoE entry as the foundational finding; MC-MoE is the
+   implementation-ready generalization we will ship against.
+2. **Area B — Next-generation MoE quantization (ship-candidate)**:
+   **MxMoE** (2505.05799, peer-reviewed, open-review public).
+   Mixed-precision quantization for MoE with accuracy and
+   performance co-design. Navigates the design space of
+   parameter sensitivity × expert activation dynamics × hardware
+   resources. 2.4 lower Wikitext-2 perplexity than GPTQ at
+   2.25-bit; up to 3.4× speedup over full precision. Directly
+   composes with our Task 270 per-layer mixed-precision ladder —
+   MxMoE provides the per-expert dimension Task 270 specifies as
+   extensible but does not solve.
+3. **Area B — VLM-aware MoE quantization (Qwen3.6 direct fit)**:
+   **MoPEQ** (2509.02512, IEEE conference 2025). Mixture of
+   Mixed-Precision Quantized Experts with **Hessian-trace-based
+   expert sensitivity** (not activation-frequency-based). Tested
+   on DeepSeek-VL2 and MolmoE — **vision-language models** with
+   per-expert precision assignment. Direct architectural fit for
+   Qwen3.6-35B-A3B which is VLM (vision encoder + 256-expert
+   MoE). 4× compression with minimal accuracy loss at 2/3/4-bit.
+4. **Area A — Qwen3 MoE routing optimization (direct-target
+   validation)**: **Ban&Pick** (2509.06346, open-review).
+   Post-training plug-and-play MoE routing optimization —
+   Pick reinforces key experts, Ban prunes redundant ones based
+   on layer+token sensitivity. **Experimentally validated on
+   Qwen3-30B-A3B** — improves AIME2024 from 80.67 to 84.66,
+   GPQA-Diamond from 65.66 to 68.18, with 1.25× inference
+   speedup on vLLM. First pass-40-60 paper with **direct Qwen3-
+   A3B-family validation**; expected to transfer to Qwen3.6-
+   35B-A3B with parameter-count rescaling.
+
+### [MC-MoE: Mixture Compressor for Mixture-of-Experts LLMs Gains More](https://arxiv.org/abs/2410.06270) — 2410.06270
+- **Authors**: Wei Huang, Yue Liao, Jianhui Liu, Ruifei He, Haoru Tan, Shiming Zhang, Hongsheng Li, Si Liu, Xiaojuan Qi
+- **Published**: 2024-10 (arxiv preprint; ICLR 2025, Aaronhuang-778/MC-MoE code released)
+- **Hypercar goals it addresses**: Goal 6 (active-memory reduction
+  on Qwen3.6-35B-A3B's 256-expert layout — Mixtral 8×7B compressed
+  to ~8B equivalent active parameters at 2.54-bit average bit-
+  width, preserving expert sparsity behaviorally; projected to
+  Qwen3.6's 256-expert × 9-active layout, this is the right
+  per-expert granularity that uniform TQ3 cannot express), Goal 2
+  (PMQ Integer Programming preserves quality across calibrated
+  bit-width mixes — 3.8% average accuracy loss at 2.54-bit on
+  Mixtral is within the quality-preservation band Task 272 is
+  chartered to establish), Goal 1 (freed memory from expert-bit
+  compression goes directly to KV-budget expansion at 1M context —
+  ~7 GB expert-bank shrink from uniform 4-bit to 2.54-bit average
+  translates to ~40K extra KV tokens at the 3-bit KV footprint)
+- **TL;DR**: Training-free Mixture Compressor for MoE LLMs combining
+  two components. **PMQ (Pre-Loading Mixed-Precision Quantization)**:
+  formulates per-expert bit-width allocation as an Integer
+  Programming problem over calibration-derived per-expert
+  sensitivity and importance scores; solves for the bit-width
+  vector (experts get {2, 3, 4}-bit) that minimizes total size
+  subject to accuracy constraints. **ODP (Online Dynamic Pruning)**:
+  identifies important tokens at inference and dynamically selects
+  which routed experts to activate for other tokens — cuts
+  activated parameters by 15% with < 0.6% accuracy drop. Combined:
+  Mixtral 8×7B to 2.54-bit, 3.8% accuracy loss, preserving 76.6%
+  model-size reduction. Authors report outperforming 16-bit
+  LLaMA2-13B on MMLU while using only ~2B activated parameters.
+  Code released at github.com/Aaronhuang-778/MC-MoE, ICLR 2025
+  acceptance (peer-review signal firm).
+- **Why it matters for Hypercar**: MC-MoE is the specific paper
+  Task 272 requested as the MoE-aware post-hoc quantization
+  baseline. The corpus has accumulated SliceMoE (2512.12990, pass
+  50 Task 221), PiKV (Task 185), DyMoE (Task 226), and now MxMoE
+  (pass 60 below) as MoE-compression vertices — MC-MoE provides
+  the first **peer-reviewed Integer-Programming-based per-expert
+  bit-width allocation** with released code that works
+  post-hoc without fine-tuning. On Qwen3.6-35B-A3B's 256-expert
+  layout, the PMQ IP problem has 256 variables (per-expert bits)
+  and solves to optimality in seconds — the calibration-pass plus
+  IP-solve cost is a one-time offline expense measured in tens of
+  minutes, after which the per-expert bit configuration ships
+  with the converted model. ODP is orthogonal and composes with
+  our Task 264 (expert-offload) — dynamic-pruning the routing
+  directly shrinks the hot-expert working set, which reduces the
+  NVMe round-trip rate for cold experts. The MoQE predecessor
+  (arXiv:2310.02410, Kim et al.) is the "expert weights are
+  quantization-robust, non-expert weights are not" finding that
+  PMQ operationalizes — MC-MoE cites and generalizes MoQE.
+  **Task 272 closure**: citing MC-MoE here satisfies the Task 272
+  verification criterion; MoQE is cited-within as the
+  foundational result (outside 2401-2612 corpus window but
+  technique-captured via MC-MoE's implementation-ready
+  generalization).
+- **Cost of adoption**: **M-L** (3-4 weeks — (a) port the
+  PMQ calibration harness from Aaronhuang-778/MC-MoE to
+  Qwen3.6-35B-A3B's expert layout, 256 experts × 48 layers
+  (1 week — the IP formulation is already implemented, the
+  main work is adapting the sensitivity-probe to Hypercar's
+  mlx_lm loader and our calibration corpus of code tokens);
+  (b) solve the IP on calibrated sensitivities (2 days —
+  CBC / SCIP solver, fixes bit-widths per (layer, expert));
+  (c) integrate per-expert bit-width into `omlx/turboquant_convert.py`
+  via a `--expert-bits config.json` flag (1 week — needs a
+  per-expert quantization path, currently TQ3 assumes uniform
+  bit-width across all linears); (d) Optional ODP integration
+  into runtime router — defer to pass-61 task if PMQ alone
+  hits quality target (1 week if pursued); (e) validate on
+  hypercar_bench full gate suite (1 week)). Biggest risk:
+  MC-MoE validated on Mixtral 8×7B which has 8 experts per
+  MoE layer (vs Qwen3.6's 256) — the IP variable count grows
+  but the solver is fine; the real risk is whether Mixtral's
+  expert-sensitivity distribution (which has clear "sensitive
+  few" and "insensitive many" clusters enabling 2.54-bit
+  average) transfers to Qwen3.6's 256-expert distribution where
+  the per-expert activation frequency is ~3.5% vs Mixtral's
+  ~25% — a flatter distribution may produce a flatter bit
+  allocation (e.g., 3-bit uniform vs 2-3-4 mix) reducing the
+  compression headroom. Secondary risk: the MC-MoE code is
+  PyTorch; MLX port requires re-implementing the calibration
+  hooks. Tertiary risk: ODP's dynamic pruning changes routing
+  behavior at inference — must validate on-model that this
+  doesn't interact adversely with our prefix-sharing cache.
+- **Local PDF**: research/2410.06270_mc_moe.pdf
+
+### [MxMoE: Mixed-precision Quantization for MoE with Accuracy and Performance Co-Design](https://arxiv.org/abs/2505.05799) — 2505.05799
+- **Authors**: Haojie Duanmu, Xiuhong Li, Zhihang Yuan, Size Zheng, Jiangfei Duan, Xingcheng Zhang, Dahua Lin
+- **Published**: 2025-05 (arxiv preprint; peer-reviewed, OpenReview public — MoE Quantization 2025 track)
+- **Hypercar goals it addresses**: Goal 6 (3.4× speedup over full
+  precision at 2.25-bit — speedup at sub-4-bit on MoE directly
+  addresses the Task 270 sensitivity-ladder motivation and the
+  per-expert dimension Task 270 cannot reach alone), Goal 2
+  (2.4 lower Wikitext-2 perplexity than GPTQ at 2.25-bit —
+  quality preservation is dispositive for whether sub-4-bit
+  MoE on Qwen3.6 is achievable at production quality floor),
+  Goal 3 (hardware-aware mixed-precision means the runtime
+  dispatcher picks per-expert bit-widths that match Metal's
+  preferred matmul throughput — a system-level codesign axis
+  that PMQ/MoPEQ do not reach)
+- **TL;DR**: Mixed-precision quantization framework for MoE that
+  jointly considers (a) parameter sensitivity (which experts
+  hurt most when quantized hard), (b) expert activation dynamics
+  (which experts run often enough to matter for latency), and
+  (c) hardware resources (which bit-widths run fastest on target
+  hardware). Navigates this 3D design space to derive efficient
+  mixed-precision configurations. Achieves 2.4 lower Wikitext-2
+  perplexity than GPTQ at 2.25-bit weight quantization. Up to
+  3.4× speedup over full precision. Algorithm + system co-design
+  sets it apart from pure-algorithm MoE quantization like MC-MoE
+  and MoQE — the hardware-aware dimension means the chosen bit-
+  widths map to actual speedup rather than just memory reduction.
+  OpenReview public with reproducible results.
+- **Why it matters for Hypercar**: MxMoE's three-axis design-
+  space (sensitivity × activation × hardware) is the natural
+  generalization of what Task 270 (per-layer mixed-precision
+  ladder) tasks as its per-expert extension. Task 270's current
+  plan is Lyapunov-informed sensitivity only; MxMoE adds the
+  activation-dynamics axis (which Qwen3.6 exposes richly — 256
+  experts with 9 active per token means activation distribution
+  has a long tail) and the hardware-aware axis (which on M4
+  Pro means picking bit-widths that match Metal's quantized-
+  matmul throughput — 4-bit gemv is faster than 3-bit gemv on
+  current MLX, so active-hot experts may prefer 4-bit over 3-bit
+  even when sensitivity permits lower). This codesign dimension
+  is absent from MC-MoE's IP formulation (which is algorithmic-
+  only). Composition with MC-MoE: use MC-MoE's PMQ IP as the
+  sensitivity-aware starting point, then apply MxMoE's
+  hardware-aware refinement on the resulting bit vector — the
+  two-stage approach should dominate either alone. Biggest gap:
+  MxMoE's hardware profiling was done on CUDA GPUs; the Metal
+  throughput table must be rebuilt from scratch on M4 Pro. This
+  is a known Hypercar gap (no Metal-specific attention-kernel
+  literature — formalized as dead end pass 52) but the
+  profiling task is tractable engineering, not research.
+- **Cost of adoption**: **M** (2-3 weeks — (a) read the OpenReview
+  paper + code artifact (2 days); (b) port the sensitivity-probe
+  calibration from CUDA to MLX on Qwen3.6-35B-A3B (1 week —
+  reuse Task 270 infrastructure); (c) build the M4 Pro Metal
+  quantized-matmul throughput table via microbenchmarks over
+  {2, 3, 4, 8}-bit × {gemv, gemm} × {small, medium, large}
+  matrix sizes (3-4 days — straightforward but tedious);
+  (d) integrate the three-axis optimizer into
+  `omlx/turboquant_convert.py` as `--mxmoe-config` flag (3 days);
+  (e) validate on hypercar_bench (1 week)). Biggest risk: the
+  hardware-aware axis may prove to be noise on M4 Pro's unified
+  memory architecture where the quantized-matmul throughput
+  differences between bit-widths are dominated by memory
+  bandwidth rather than ALU (i.e., 3-bit and 4-bit may run at
+  nearly identical wall-clock because memory fetch dominates);
+  if so, the axis collapses to memory-size-only which MC-MoE
+  already solves. Secondary risk: MxMoE's sensitivity probe
+  may over-count per-expert variance on Qwen3.6 where
+  activation frequency is very low (~3.5%) — cold experts get
+  tiny calibration samples and their sensitivity estimates are
+  noisy; a per-expert confidence interval safeguard is needed.
+- **Local PDF**: research/2505.05799_mxmoe.pdf
+
+### [MoPEQ: Mixture of Mixed Precision Quantized Experts](https://arxiv.org/abs/2509.02512) — 2509.02512
+- **Authors**: Krishna Teja Chitty-Venkata, Jie Ye, Xian-He Sun, Anthony Kougkas, Murali Emani, Venkatram Vishwanath, Bogdan Nicolae
+- **Published**: 2025-09 (arxiv preprint; IEEE Conference 2025)
+- **Hypercar goals it addresses**: Goal 6 (4× model compression
+  with per-expert bit allocation on VLMs — DeepSeek-VL2
+  validation directly maps to Qwen3.6's VLM architecture;
+  the Hessian-trace sensitivity provides a principled
+  scoring that Task 270 can substitute for its current
+  Lyapunov-based approach), Goal 2 (minimal accuracy loss on
+  DeepSeek-VL2 and MolmoE at 2/3/4-bit search space —
+  quality preservation signal on VLM architectures is direct
+  evidence for Qwen3.6), Goal 1 (per-expert precision
+  assignment frees model-bank memory for KV expansion at long
+  context, same memory-shift argument as MC-MoE but with
+  VLM-specific validation)
+- **TL;DR**: Per-expert mixed-precision quantization for
+  MoE-VLM models with **Hessian-trace-approximation sensitivity
+  analysis** rather than activation-frequency heuristics. Key
+  finding: expert sensitivity (Hessian trace) is a better
+  predictor of post-quantization accuracy than expert
+  activation frequency — frequently-activated experts are not
+  necessarily the most sensitive to quantization. Clusters
+  similar experts to maintain quality while reducing memory.
+  Search space: 2, 3, 4 bits per expert. Achieves up to 4×
+  compression with minimal accuracy loss. **Tested on
+  state-of-the-art VLMs including DeepSeek-VL2 variants and
+  MolmoE** — direct architectural fit for Qwen3.6-35B-A3B
+  (vision-encoder + 256-expert MoE). IEEE conference 2025.
+- **Why it matters for Hypercar**: MoPEQ is the **only pass-40-
+  60 paper with explicit MoE-VLM per-expert quantization
+  validation** — every other MoE-quantization paper
+  (MC-MoE, MxMoE, MoQE, MoEQuant, Ban&Pick) validates on
+  text-only MoE models. Qwen3.6-35B-A3B's architecture combines
+  256-expert MoE with a baked-in vision encoder; MoPEQ is the
+  only paper that has measured what happens to VLM quality
+  when per-expert bit-widths vary. The Hessian-trace
+  sensitivity is also structurally better than
+  activation-frequency for Qwen3.6's long-tailed expert
+  distribution — cold experts with low activation frequency
+  may still be high-sensitivity (they get activated on
+  high-value rare tokens where their contribution is
+  disproportionate), and MoPEQ's scoring correctly weights
+  them. The clustering step (group similar experts by
+  sensitivity, assign same bit-width per cluster) is a nice
+  regularization for Qwen3.6's 256-expert landscape — 256
+  per-expert bit-width decisions over-fit to calibration
+  noise; clustering to ~10-20 groups reduces degrees of
+  freedom without losing the mixed-precision win.
+  Composition with MC-MoE: MC-MoE's PMQ IP sets per-expert
+  bits based on sensitivity + size-budget constraint; MoPEQ's
+  clustering is a regularization on top, reducing solution
+  variance. Biggest gap: MoPEQ's code release status is
+  unclear from the abstract — need to confirm code is
+  available or reimplement from paper.
+- **Cost of adoption**: **M** (2-3 weeks — (a) confirm code
+  release status from MoPEQ paper (1 day — if no code,
+  reimplement from paper, adding ~1 week); (b) adapt
+  Hessian-trace sensitivity probe to Qwen3.6-35B-A3B expert
+  layer — trace approximation via Hutchinson estimator or
+  direct diagonal of H+λI is a standard technique (3 days);
+  (c) clustering step using k-means or similar on per-expert
+  sensitivity vectors (1 day); (d) per-cluster bit-width
+  assignment (1 day — simpler than MC-MoE's IP); (e) integrate
+  with `omlx/turboquant_convert.py` (3 days); (f) **VLM-
+  specific validation**: run NIAH and HumanEval on Qwen3.6
+  with per-expert bit-widths, then run a multimodal eval
+  (if Hypercar adds one per Task 261-follow-on) to verify
+  VLM quality is preserved (3 days)). Biggest risk: Qwen3.6's
+  vision encoder is a separate non-MoE component; MoPEQ's
+  per-expert compression doesn't touch it but the *shared*
+  layers (text embedding, attention) may be affected by
+  expert-bit changes in a way that differs from text-only
+  MoE. Secondary risk: if Task 261 (vision-encoder ablation)
+  removes the vision encoder entirely from text-only
+  Hypercar builds, MoPEQ's VLM-specific validation advantage
+  vanishes — but MoPEQ still provides a better sensitivity
+  scoring than MC-MoE's implicit IP-constraint-derived
+  sensitivity. Tertiary risk: Hessian-trace computation for
+  256 experts × 48 layers × ~4096-dim matrices is nontrivial
+  compute; need to estimate calibration cost and trade off
+  against accuracy gain.
+- **Local PDF**: research/2509.02512_mopeq.pdf
+
+### [Ban&Pick: Enhancing Performance and Efficiency of MoE-LLMs via Smarter Routing](https://arxiv.org/abs/2509.06346) — 2509.06346
+- **Authors**: Yuanteng Chen, Yuantian Shao, Peisong Wang, Jian Cheng
+- **Published**: 2025-09 (arxiv preprint; OpenReview public — KWMR2YfC55)
+- **Hypercar goals it addresses**: Goal 2 (direct Qwen3-30B-A3B
+  validation — AIME2024 80.67 → 84.66, GPQA-Diamond 65.66 →
+  68.18 — quality improvements on the Qwen3-A3B-family that
+  Qwen3.6 extends; transfer expectation high), Goal 3 (1.25×
+  vLLM inference acceleration on Qwen3-30B-A3B — direct
+  decode-speed improvement at no quality cost; training-free
+  and plug-and-play), Goal 6 (router-level pruning reduces
+  active-expert count per token, which shrinks effective
+  working set and frees hot-cache headroom for KV expansion)
+- **TL;DR**: Post-training, plug-and-play MoE routing
+  optimization — no retraining, no architecture changes.
+  **Pick**: identifies a small set of "key experts" whose
+  activation has outsized impact on downstream quality;
+  reinforces their routing probability so they're activated
+  more often on prompts where they help. **Ban**: identifies
+  redundant expert activations at specific (layer, token)
+  combinations based on sensitivity analysis; dynamically
+  prunes them at decode time so fewer experts are computed
+  per token. Together: free performance gains (from Pick) +
+  inference acceleration (from Ban) with no training cost.
+  Validated on DeepSeek and **Qwen3 MoE-LLMs** across math,
+  code, and general reasoning. On Qwen3-30B-A3B: AIME2024
+  80.67 → 84.66, GPQA-Diamond 65.66 → 68.18, 1.25× vLLM
+  inference speedup. OpenReview public (KWMR2YfC55).
+- **Why it matters for Hypercar**: **First pass-40-60 paper
+  with direct Qwen3-30B-A3B experimental validation** — every
+  prior MoE-optimization paper in the corpus validated on
+  Mixtral, DeepSeekMoE, or synthetic MoE. Ban&Pick closes this
+  provenance gap. The Pick component exploits a finding that
+  matches Hypercar's workload: on coding tasks, a small
+  subset of experts matter disproportionately (our Task 262
+  audit will quantify this for Qwen3.6), and biasing routing
+  toward those experts improves quality without retraining.
+  The Ban component composes with our Task 264 (expert-offload
+  to NVMe) — pruned-away expert activations never cause NVMe
+  round-trips, reducing Task 264's cold-expert fetch rate.
+  Training-free + plug-and-play means integration cost is
+  low: runtime router modification in `omlx/moe_routing.py`
+  (create this file) + layer-level sensitivity tables from
+  calibration. The Qwen3.6 transfer is the key question —
+  Qwen3.6's 256-expert layout is substantially sparser than
+  Qwen3-30B-A3B's smaller expert count, so the "key experts"
+  set may be smaller as a fraction but the per-expert
+  contribution structure should be similar. Ban&Pick's
+  result-replication on Qwen3.6 is a natural Task 262
+  (MoE re-validation) extension.
+- **Cost of adoption**: **S-M** (1-2 weeks — (a) understand
+  the Pick and Ban algorithms from OpenReview (2 days —
+  description is clear, author code should be public);
+  (b) calibrate key-expert sensitivity on Qwen3.6-35B-A3B
+  using Hypercar's code+math+reasoning calibration corpus
+  (2 days — calibration runs once offline per model);
+  (c) implement router modification in `omlx/moe_routing.py`
+  as a plug-in above the mlx_lm MoE router (3 days — this
+  is a forward-pass hook, not a weight change);
+  (d) integrate via `--routing-policy {standard, banpick}`
+  flag on hypercar_server (1 day); (e) validate on
+  hypercar_bench full gate suite — critically, check that
+  Goal 2 quality is preserved or improved, Goal 3 decode
+  speed improves, and Goal 6 memory is preserved (1 week)).
+  Biggest risk: the Pick-reinforcement of key experts may
+  interact adversely with Task 264's hot-expert cache
+  policy — if Pick increases the routing probability of a
+  specific expert by 20%, that expert's cache-residency
+  requirement shifts, and the hot-cache hit rate needs
+  re-measuring. Secondary risk: Ban prunes expert activations
+  based on token-level sensitivity; if our prefix-sharing
+  cache has already-computed activations for pruned experts
+  from a previous turn, the cache-hit path may still load
+  them (fix: invalidate the expert-activation cache when
+  Ban changes decision). Tertiary risk: Qwen3.6-specific
+  transfer — Ban&Pick on Qwen3.6 may yield different key-
+  expert sets than Qwen3-30B-A3B; recalibration is mandatory.
+- **Local PDF**: research/2509.06346_ban_pick.pdf
+
+### Area A vs Area B split (pass-60 methodology note)
+
+Per the Qwen3.6 pivot directive, pass 60 explicitly split
+selection between two 50/50 axes:
+
+- **Area A (Qwen3.6-specific optimization)**: 1 paper selected
+  (Ban&Pick). Area A candidates also evaluated but deferred:
+  AlphaQ (Liquid AI, calibration-free bit allocation for MoE,
+  published March 2026 — no arxiv ID available at search time;
+  track for pass 61 if arxiv ID surfaces); MoE-Pruner
+  (2410.12013, router-hint-based MoE pruning — narrower than
+  Ban&Pick, deferred); EAC-MoE (2508.01625, expert-selection-
+  aware compressor — overlaps Ban&Pick, deferred); NanoVDR
+  (2603.12824, VLM-to-text-only distillation — applies only to
+  retrieval not general inference, not a fit for Hypercar's
+  generative workload).
+- **Area B (TQ3 weight unblock support)**: 3 papers selected
+  (MC-MoE, MxMoE, MoPEQ). Area B candidates also evaluated
+  but deferred: MoQE (2310.02410) cited within MC-MoE as the
+  foundational result but outside 2401-2612 corpus window so
+  not separately ingested; MoEQuant (2505.03804, expert-
+  balanced sampling + affinity-guided quantization) — strong
+  candidate but overlaps MC-MoE's calibration angle, defer
+  to pass 61 if MC-MoE implementation surfaces calibration
+  issues; MoQa (2503.21135, multi-stage data-model distribution
+  awareness) — earlier work superseded by MxMoE; SINQ
+  (2509.22944, Sinkhorn-normalized calibration-free quantization)
+  — dense-model focused not MoE-specific, track for non-MoE
+  weight quantization path; CafeQ (2511.19705, learned
+  transformations + adaptive rounding) — dense-model
+  calibration-free, track for pass 61 if non-MoE weight
+  path re-opens.
+
+### Task 272 closure decision
+
+**Task 272 is closed by this pass.** Verification criterion was
+"Both papers cited in LIT_REVIEW.md. Clear ship/defer decision
+per paper." Outcome:
+- **MC-MoE (2410.06270): SHIP candidate**. ICLR 2025, code
+  released, direct Qwen3.6-35B-A3B applicability at 256-expert
+  scale, 2.54-bit average achievable. Filed as Task 273 below
+  (pass-60 code action). Integrates with existing Task 270
+  (per-layer ladder) as the per-expert dimension.
+- **MoQE (2310.02410): DEFER/REFERENCE-ONLY**. Outside
+  2401-2612 corpus window (Oct 2023). Cited within MC-MoE
+  as the foundational "expert weights quantization-robust"
+  finding — this technique is captured in MC-MoE's
+  implementation-ready generalization. No separate ingestion
+  into LIT_REVIEW main corpus but canonical reference in
+  MC-MoE entry above. No ship action distinct from MC-MoE.
+
+### Gaps addressed vs carried
+
+Pass 60 closes:
+- **Task 272 literature request (MC-MoE + MoQE citation)** —
+  both cited; MC-MoE is a Task 273 ship-candidate, MoQE is
+  reference-only via MC-MoE entry.
+- **Qwen3.6-direct experimental validation gap** — Ban&Pick
+  provides the first pass-40-60 paper with Qwen3-30B-A3B
+  measurements; projection to Qwen3.6-35B-A3B is plausible
+  with Task 262 follow-up validation.
+- **MoE-VLM quantization quality gap** — MoPEQ provides the
+  first pass-40-60 paper with explicit VLM-MoE validation;
+  Qwen3.6-35B-A3B architecture fit is direct.
+- **Hardware-aware MoE quantization codesign gap** — MxMoE
+  provides the three-axis (sensitivity × activation × hardware)
+  framework Task 270 specifies as extensible but does not
+  provide.
+
+### Gaps carried into Pass 61
+
+1. **Native 1M RoPE paper (Qwen3.6 specifically)** — Task 260
+   is the audit; pass 60 did not surface a peer-reviewed paper
+   describing Qwen3.6's specific RoPE configuration for 1M
+   context. The published "Qwen3 Technical Report" (2505.09388)
+   covers earlier Qwen3 models but may cover the 1M-context
+   scaling methodology — explicit ingestion deferred to pass
+   61 if Task 260 audit surfaces specific open questions.
+2. **SWE-Bench quantization degradation** — pass-60 search
+   surfaced no peer-reviewed paper specifically measuring
+   SWE-Bench / Terminal-Bench score degradation from BF16 to
+   INT4 to INT3. This is a Goal-2 evaluation question that
+   may not exist as published literature yet; track for
+   pass 61 but likely formalize as a Hypercar-internal
+   measurement (we have the bench infrastructure).
+3. **Vision-encoder surgical removal literature** — NanoVDR
+   (2603.12824) is distillation not surgical removal; the
+   "remove vision tower from loaded VLM" operation may not
+   have a peer-reviewed paper specifically, similar to the
+   Metal-kernel dead end. Defer; may formalize as dead end
+   in pass 62 if still uncovered.
+4. **AlphaQ arxiv ID** — Liquid AI published AlphaQ March 2026
+   (calibration-free bit allocation for MoE) but arxiv ID
+   unavailable at pass-60 search time. If arxiv ID surfaces
+   in pass 61, this is a strong Area B candidate.
+5. **Incremental attention update** — held (passes 56-59).
+6. **Attention prefetch from embedding similarity** —
+   held (pass 57).
+7. **Memory-efficient model merging** — held (pass 57).
+8. **KV compression under distribution shift** — held
+   (pass 57).
+9. **Energy-efficient inference** — held (pass 57).
+10. **Code-structure-aware episode boundaries** — held
+    (pass 58).
+11. **Hybrid quantize+offload on unified memory** — held
+    (pass 59).
+12. **Hamming-space KV fingerprinting for cross-session
+    retrieval** — held (pass 59).
+
+Sixty passes. Four papers this round, total 248 papers across
+70+ disciplines. No new dead ends formalized (six total across
+passes 52-57 still holds). **Pass 60 adds the *MoE-aware
+mixed-precision post-hoc quantization (MC-MoE 2410.06270,
+ICLR 2025, Aaronhuang-778/MC-MoE), algorithm-system codesign
+mixed-precision MoE quantization (MxMoE 2505.05799,
+OpenReview), VLM-aware per-expert Hessian-sensitivity
+quantization (MoPEQ 2509.02512, IEEE conference 2025),
+and Qwen3-directly-validated post-training MoE routing
+optimization (Ban&Pick 2509.06346, OpenReview)* vertices** to
+the pass-59 stack and **closes Task 272**. Highest-leverage
+find is **MC-MoE** — directly requested by Task 272, ICLR
+2025 peer-reviewed with code released, per-expert Integer-
+Programming bit allocation enabling 2.54-bit average on
+Mixtral with 3.8% accuracy loss, and the clearest path to
+sub-4-bit weight quantization on Qwen3.6-35B-A3B's 256-expert
+layout. Runner-up is **Ban&Pick** — the first paper in the
+pass-40-60 corpus with direct Qwen3-30B-A3B experimental
+validation (AIME2024 80.67 → 84.66, GPQA-Diamond 65.66 →
+68.18, 1.25× inference speedup on vLLM) — training-free,
+plug-and-play, composes with Task 264 expert-offload. MoPEQ
+is the VLM-specific Hessian-sensitivity axis MC-MoE lacks;
+MxMoE is the hardware-aware codesign axis Task 270 needs.
+First pass since the Qwen3.6-35B-A3B pivot; selection
+methodology explicitly split Area A (Qwen3.6) vs Area B
+(TQ3 unblock) 1:3 since Task 272 drove the primary citation
+requirement. Pass 60 marks the start of the Qwen3.6-era
+research arc.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -18852,4 +19376,31 @@ selected papers have peer-review acceptance AND released code
 — a deliberate provenance-filter tightening following the
 pass-58 EpiCache success pattern. Tasks 253-256 track pass-59
 code actions.**
+**Pass 60 adds the *MoE-aware mixed-precision post-hoc
+quantization (MC-MoE 2410.06270, ICLR 2025, Aaronhuang-778/
+MC-MoE), algorithm-system codesign mixed-precision MoE
+quantization (MxMoE 2505.05799, OpenReview public), VLM-
+aware per-expert Hessian-sensitivity quantization (MoPEQ
+2509.02512, IEEE conference 2025), and Qwen3-directly-
+validated post-training MoE routing optimization (Ban&Pick
+2509.06346, OpenReview KWMR2YfC55)* vertices — highest-
+leverage being MC-MoE, which **closes Task 272** (the
+explicit research-pass citation request for MC-MoE + MoQE
+foundational MoE-aware quantization literature) with
+ICLR 2025 peer-reviewed per-expert Integer-Programming bit
+allocation achieving 2.54-bit average on Mixtral at 3.8%
+accuracy loss. Runner-up is Ban&Pick, the first pass-40-60
+paper with direct Qwen3-30B-A3B experimental validation
+(AIME2024 80.67 → 84.66, 1.25× vLLM inference speedup) —
+training-free and plug-and-play, natural composition with
+Task 264 expert-offload. MoPEQ provides the VLM-specific
+Hessian-trace sensitivity axis for Qwen3.6's vision-language
+architecture; MxMoE provides the hardware-aware three-axis
+codesign Task 270 specifies as extensible. Pass 60 is the
+first pass since the Qwen3.6-35B-A3B target pivot
+(2026-04-23) and the first with a refocused Area A (Qwen3.6-
+specific) × Area B (TQ3 weight unblock) 50/50 selection
+axis — Area B dominated 3:1 this pass because Task 272 drove
+the primary requirement. Tasks 273-275 track pass-60 code
+actions; Task 272 closed.**
 
