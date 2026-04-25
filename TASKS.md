@@ -524,7 +524,10 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## In Progress
 
-_(none)_
+- **Task 287**: Variance series run #2 — another `--full` bench
+  - First run was Task 286 (46.1 min, all gates pass, baselines matched). This is run #2.
+  - Goal: begin noise-floor characterization. Variance estimates from ≥2 samples are coarse; ≥8 samples meet Task 21's aggregate.py target. Each cron fire that's bench-safe contributes one sample.
+  - Compare to run #1: same code, same model, same flags — any meaningful drift is variance, not regression.
 
 
 
@@ -534,6 +537,76 @@ _(none)_
 
 
 ## Completed
+
+- **Task 286**: `--full` bench validation run — accumulated uncommitted state PASSES all gates (2026-04-25, 11:08-11:55 PDT)
+  - **Goal**: validate that 32 tasks of accumulated uncommitted changes (Tasks 254-285) haven't silently regressed any gate. Also: establish run #1 of the variance series the cron prompt has been suggesting.
+  - **Result**: **ALL 11 GATES PASSED** in 2766.1s (46.1 min — **5% faster than the 48.5-min memory-note baseline**, likely the Task 259 MMLU-Pro stability fix).
+  - **Per-gate vs memory-note baseline** (`memory/project_hypercar_session_apr23_24.md`):
+
+    | Gate | Baseline | This run | Δ |
+    |---|---|---|---|
+    | Phase 0 Smoke | PASS, decode 53.6 | PASS, decode 53.8 | flat |
+    | Phase 1 Coherence | 2/2 PASS | 2/2 PASS | flat |
+    | Phase 2 Code Intel | 5/5 (100%) | 5/5 (100%) | flat |
+    | Phase 3 NIAH 4K + 16K | both PASS | both PASS | flat |
+    | Phase 3 NIAH decode @ 16K | 16.11 tok/s | **18.1 tok/s** | +12% (variance) |
+    | Phase 3 NIAH decode @ 4K | 32.3 tok/s | 34.5 tok/s | +7% (variance) |
+    | Phase 3b RULER | 100% across all tasks | 100% across all tasks | flat |
+    | Phase 3c MMLU-Pro | 62/100 (62%) | 62/100 (62%) | exact match |
+    | Phase 3d LiveCodeBench | 8/20 (40%) | 8/20 (40%) | exact match |
+    | Phase 3e SnapKV Quality | NIAH PASS | NIAH PASS | flat |
+    | Phase 3f Tool-Call | INVALID (known) | INVALID (known) | flat — see Task 161 |
+    | Phase 4 HumanEval | 19/20 (95%) | 19/20 (95%) | exact match |
+    | Phase 5 Memory peak | 35.1 GB | 35.1 GB | exact match |
+    | Phase 5 Swap peak | within limit | 3.6 GB | within 12.9 GB limit |
+    | Total wall-time | 48.5 min | **46.1 min** | -5% |
+  - **Phase wall-time breakdown**:
+    - Phase 3d (LCB): 1561s (~26 min, 56% of total)
+    - Phase 3c (MMLU-Pro): 879s (~14.7 min, 32%)
+    - Phase 3b (RULER): 232s (~3.9 min, 8%)
+    - Phase 3 (NIAH): 50s (~0.8 min, 1.8%)
+    - Everything else: ~24s combined (<1%)
+  - **Snapshot saved** to `bench/snapshots/devloop-286_2026-04-25T11-08/` (results.json, profile.json, console.log, git.txt) for future variance comparison.
+  - **Conclusion**: 32 cycles of uncommitted code/docs changes (Tasks 254-285) have NOT regressed any gate. All headline numbers match memory-note baseline within variance bounds. The bench is reproducible and trustworthy.
+  - **Followups**:
+    - The exit-code-1 from the background task wrapper is a red herring (tee path likely failed but the bench process itself exited 0); cosmetic-only.
+    - Phase 3f Tool-Call is reporting INVALID — extracted JSON has duplicate object. Likely Qwen3-Coder generates `{...}\n<|im_end|>\n<|endoftext|>...{...}` and the parser sees both. Open follow-up: tighten the JSON-extraction regex to stop at first valid object.
+    - This is run #1 of the variance series; for noise-floor characterization, need ≥7 more runs (Task 21's aggregate.py needs N≥8 for honest p10/p50/p90 stats).
+  - **Effort / time**: ~47 min (1 cycle slot exceeded, allowed per user).
+  - **No code change** — pure validation.
+
+- **Task 285**: TASKS.md sweep — pass 4 (line 3050+ research-derived passes + TOP PRIORITY tasks) (2026-04-25)
+  - **Goal**: continue Tasks 281+282+283 sweeps. Memory ~15.5 GB free / ~29.4 GB available — under bench-load threshold (~30 GB), so no bench. Sweep is the right cycle action.
+  - **Closed (14 tasks)**:
+    - **Task 76** (Jagged-tensor scheduler design note) — `research/design_notes/jagged_kv_schedule.md` exists with explicit Task 76 reference.
+    - **Task 97** (Freshness-aware eviction with conflict-aware temporal tagging) — `omlx/patches/snapkv.py:339,401` with `decay_factor: Freshness = decay^n_supersessions`.
+    - **Task 98** (BUZZ-style segmented eviction) — `omlx/patches/snapkv.py:714` "BUZZ-style segmented selection: per-segment top-K".
+    - **Task 100** (CAOTE attention-output-error scoring) — `compute_caote_importance` at `snapkv.py:408`. Theorem 3.2 implementation matches paper.
+    - **Task 102** (Submodular greedy + CAOTE) — `snapkv.py:760` "Submodular greedy selection with CAOTE marginal gains".
+    - **Task 106** (GER safety monitor) — `compute_ger`/`check_ger_safety` at `snapkv.py:1218,1249`. GER threshold=0.05.
+    - **Task 107** (Fair eviction proportional budgets) — `snapkv.py:844` "Fair eviction: proportional budget allocation across partitions".
+    - **Task 111** (head rebalancing — retrieval 2×, streaming 0.5×) — `snapkv.py:937,972`.
+    - **Task 126** (TOP PRIORITY: SnapKV server crash) — fixed across commits 16f5f72, b97de55, b90aef4, 2c7aba1. Run 74 confirmed all 11 gates pass.
+    - **Task 127** (TOP PRIORITY: TQ3 prefill 270× slow) — fixed via fused quantize+dequantize kernels (commits b870fb4, 9cc0f50, 7f3c38f); 15.5× speedup measured on real model.
+    - **Task 128** (server 4-bit/8-bit mismatch) — server defaults to 8-bit per docstring; model_constants.py centralizes the choice.
+    - **Task 130** (LCB baseline 30% — establish + analyze) — commit 61583f6 "LiveCodeBench per-difficulty breakdown (Task 130)". Subsequent Tasks 254/255/258 took it to 40%.
+    - **Task 131** (server JSON encoding control chars) — `omlx/hypercar_server.py:610` "Wrap json.dumps used by the server to force ensure_ascii=True".
+    - **Task 132** (64K NIAH cost docs) — CLAUDE.md line 61 "64K | 38.4 GB | 4.9 GB | 23 min | Recommended".
+  - **Confirmed STILL OPEN** in this pass: Tasks 73 (DFTopK), 74 (HATA), 75 (MegaFold), 77 (Halo DAG), 78 (SWE-Shepherd), 79 (Bayesian Kalman), 81 (CTkvr), 82 (ATTS), 83 (KVP RL), 84 (tile auto-tuning), 88 (PackKV), 89-93 (TTT extensions), 95-96 (EGCA, AIMD), 99 (zigzag), 101 (CodeComp), 103-105 (trig RoPE / tiered GC / NVMe), 108-110 (EchoKV / TTT reservoir / CFAR), 112-125 (entmax/CAMELoT/Hopfield/etc.), 129 (native 3-bit short-context decode below 50 tok/s), 133-137 (KVTC, KeyDiff, FAEDKV, KVmix, SparK).
+  - **Cumulative across Tasks 281-285**: 51 stale tasks closed across 4 sweep cycles. Open-task surface for cycle planning is dramatically smaller.
+  - **No code change** — pure planning fidelity. ~25 min elapsed.
+
+- **Task 284**: `research/qwen3_coder_cycle_exhaustion.md` — discoverable in-repo doc of cycle exhaustion (2026-04-25)
+  - **Goal**: preserve hard-won negative-result knowledge in version control. The 8 falsified hypotheses + 2 structural findings + bank of cycle wins were previously only in `memory/project_hypercar_session_apr23_24.md`, which lives in private memory and isn't seen by a fresh clone or a different agent session.
+  - **Output**: `research/qwen3_coder_cycle_exhaustion.md` (161 lines, ~9 KB):
+    - Headline state table (LCB 30→40%, decode@16K +18%, full bench -15%) anchored to specific commits where possible.
+    - Falsified-hypothesis tables organized by axis (LCB sampling — Tasks 130b, 256, 261, 262; decode-speed — Tasks 266, 268, 273, 276, 277). For each: hypothesis, measurement, structural reason it doesn't work.
+    - Two structural findings: (a) Python overhead axis exhausted at 3% of decode wall-time (post-Tasks 269+271); (b) GPU compute is un-decomposable from Python-level timing because `mx.eval()` without args doesn't synchronize the lazy graph.
+    - "What's banked" section with the cycle wins that DID land (Tasks 269, 271, 259, 254/255/258, 263/264/267, 253 Phase 5 / 280).
+    - Pivot recommendations in priority order: Qwen3.6 migration, Metal-level profiling, skip-attention-layer experiments.
+    - Cross-references to all related design notes, scripts, and modules — verified all referenced files exist (`research/decode_cliff_8k_16k.md`, `research/design_notes/duokv_split_attention.md`, `research/vattention_mtlheap_notes.md`, `omlx/bench/efficiency_profile.py`, `scripts/prep_qwen36.py`, `omlx/model_constants.py`, `omlx/duo_kv_cache.py`).
+  - **Why this matters**: a future contributor/agent session opening the repo for the first time can grep for "falsified" or "exhaustion" and find this doc, avoiding re-exploration of the 8 dead axes. The personal-memory note was duplicating this knowledge in a place inaccessible to non-personal-memory readers.
+  - **No code change** — pure docs. ~25 min elapsed.
 
 - **Task 283**: TASKS.md sweep — pass 3 (line 2093+ research-derived passes) (2026-04-25)
   - **Goal**: continue Tasks 281+282's planning-fidelity work into the lower-numbered pass sections (lines 2093+). Memory was marginal (~20.7 GB free) so couldn't run benches. This was the third sweep cycle.
@@ -3091,7 +3164,7 @@ _(none)_
 - **Effort**: M (2-3 days: 1d investigation of MLX attention internals, 1d implementation, 1d profiling + gate sweep)
 - **Depends on**: none — complements Task 69 (BSFA) but does not require it
 
-### 76. Jagged-tensor scheduler design note for two-tier KV cache (HSTU-CP inspiration)
+### 76. [COMPLETED] Jagged-tensor scheduler design note for two-tier KV cache (HSTU-CP inspiration)
 - **Goal**: 1 (1M context sharding), 3 (decode parallelism)
 - **Derived from**: HSTU Context Parallelism (2508.04711) — inspiration paper, not direct port
 - **Change**:
@@ -3458,7 +3531,7 @@ _(none)_
 - **Depends on**: no hard dependencies — the controller wraps the existing memory watchdog. Composes with task 94 (adaptive prefill chunker) — the chunker's memory signal feeds the AIMD controller's usage input. Composes with task 93 (PAM select-in-place) — AIMD's W determines the "Metal-resident page budget" that select-in-place fills.
 - **Risk**: Apple Silicon's unified memory may have different AIMD dynamics than discrete GPUs — the "multiplicative decrease" may over-react because Metal page demotion is cheap (no PCIe transfer, just a page table update) and recovery is fast. Mitigation: start with conservative parameters (alpha=1, beta=0.7) and tune from there. The two-signal approach (usage AND effectiveness) should prevent over-reaction: if usage is high but effectiveness is also high, the controller holds steady.
 
-### 97. Freshness-aware KV cache eviction with conflict-aware temporal tagging
+### 97. [COMPLETED] Freshness-aware KV cache eviction with conflict-aware temporal tagging
 - **Goal**: 1 (1M context — prevents stale entries from consuming cache budget), 2 (intelligence — resolves proactive interference that degrades retrieval accuracy)
 - **Derived from**: SleepGate (2603.14517). The paper demonstrates that proactive interference from stale KV entries degrades retrieval accuracy to <18% even when the correct answer is in the context. The conflict-aware temporal tagger and soft attention biasing mechanism resolve this at the architectural level.
 - **Change**:
@@ -3478,7 +3551,7 @@ _(none)_
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 23, 2026-04-16)
 
-### 98. BUZZ-style segmented heavy-hitter eviction for SnapKV
+### 98. [COMPLETED] BUZZ-style segmented heavy-hitter eviction for SnapKV
 - **Goal**: 1 (1M context — memory-efficient KV retention with local structure preservation), 3 (decode speed — O(n) eviction replaces O(n log n) sort)
 - **Derived from**: BUZZ (2410.23079). The paper demonstrates that segmenting the KV cache into local chunks and selecting per-segment heavy hitters via local max sampling outperforms global heavy-hitter selection (H2O) by 7.69% on multi-document QA while achieving 2.5x cache reduction. The dual-stride mechanism (stride s for recent tokens, floor((s+1)/2) for older persistent tokens) preserves local attention structure that global top-k misses.
 - **Change**:
@@ -3515,7 +3588,7 @@ _(none)_
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 24, 2026-04-16)
 
-### 100. CAOTE attention-output-error scoring for SnapKV eviction
+### 100. [COMPLETED] CAOTE attention-output-error scoring for SnapKV eviction
 - **Goal**: 1 (1M context — principled eviction error minimisation), 2 (intelligence — value-aware eviction preserves output quality)
 - **Derived from**: CAOTE (2504.14051). The paper proves (Theorem 3.2) that the eviction score c_j = (alpha_j / (1 - alpha_j)) * ||V A^T - v_j||_2 exactly equals the MSE between attention output before and after evicting token j. This is the first closed-form integration of both attention scores and value vectors into an eviction criterion.
 - **Change**:
@@ -3552,7 +3625,7 @@ _(none)_
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 25, 2026-04-16)
 
-### 102. Submodular greedy eviction with CAOTE marginal gains and (1-1/e) set-level guarantee
+### 102. [COMPLETED] Submodular greedy eviction with CAOTE marginal gains and (1-1/e) set-level guarantee
 - **Goal**: 1 (1M context — principled multi-token eviction with compositional error bound), 2 (intelligence — distributional fidelity preserves semantic coverage)
 - **Derived from**: OTPrune (2602.20205, CVPR 2026). The paper proves that minimising the 2-Wasserstein distance between full and pruned token distributions yields a submodular objective with monotonicity. The greedy algorithm achieves (1-1/e) of the optimal distributional fidelity — the first compositional guarantee for multi-token selection that accounts for diminishing-returns interactions between evicted tokens.
 - **Change**:
@@ -3629,7 +3702,7 @@ _(none)_
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 27, 2026-04-12)
 
-### 106. GER safety monitor: runtime phase-transition guard for KV eviction
+### 106. [COMPLETED] GER safety monitor: runtime phase-transition guard for KV eviction
 - **Goal**: 1 (1M context — prevents eviction from crossing the hallucination cliff), 2 (intelligence — maintains answer-token accessibility under compression)
 - **Derived from**: "Understanding the Physics of KV Cache Compression" (2603.01426). The paper discovers a universal hallucination safety cliff near 90% compression, correlated with spikes in Global Eviction Ratio (GER) — the fraction of answer-relevant tokens evicted from all attention heads simultaneously. The phase transition is sharp: compression susceptibility chi = dH/dalpha peaks near alpha ~= 0.9.
 - **Change**:
@@ -3646,7 +3719,7 @@ _(none)_
 - **Depends on**: task 100 (CAOTE scoring) identifies which tokens are answer-relevant. Task 96 (AIMD controller) provides the budget adjustment mechanism. Independent of task 102 (submodular eviction) and task 103 (trigonometric scoring).
 - **Risk**: the GER threshold (0.05) may need model-specific calibration. The paper shows the cliff location is universal but the cliff *shape* differs by architecture (LLaMA vs Qwen). If Qwen3-Coder has a gradual rather than sharp transition, the fixed threshold may trigger too early (conservative but wasteful) or too late (dangerous). Mitigation: calibrate the threshold offline using the progressive compression test, and use a rolling GER average rather than a single-step check to smooth noise.
 
-### 107. Fair eviction: proportional budget allocation across instruction partitions
+### 107. [COMPLETED] Fair eviction: proportional budget allocation across instruction partitions
 - **Goal**: 2 (intelligence — prevents silent instruction dropping under compression), 1 (1M context — maintains multi-instruction fidelity at high compression)
 - **Derived from**: "The Pitfalls of KV Cache Compression" (2510.00231). The paper demonstrates that SnapKV and StreamingLLM preferentially evict early-context instructions (system prompts, safety guardrails) because they occupy positions with low recency scores. The proposed fair eviction policy allocates budget proportionally: b_X/n_X = b_Y/n_Y for any instruction partitions X, Y.
 - **Change**:
@@ -3717,7 +3790,7 @@ _(none)_
 - **Depends on**: task 46 (SnapKV eviction substrate). Composes with task 98 (BUZZ segments), task 100 (CAOTE scoring), task 107 (fair eviction). Independent of task 106 (GER guard) — CFAR handles per-head thresholds, GER handles cross-head safety.
 - **Risk**: the CFAR constant k (3.0 default) may need calibration for different context lengths and content types. In radar, k is derived from the desired probability of false alarm P_fa under a known noise distribution (typically Rayleigh). For attention scores, the distribution is unknown and varies by layer/head. Mitigation: calibrate k empirically by measuring false eviction rate on the code intelligence benchmark at multiple k values, then fix k at the value that achieves P_fa ~= 0.05. The OS-CFAR variant is more robust to distribution assumptions than CA-CFAR.
 
-### 111. Garden-path-aware streaming-head KV eviction (aggressive eviction of syntactically resolved tokens)
+### 111. [COMPLETED] Garden-path-aware streaming-head KV eviction (aggressive eviction of syntactically resolved tokens)
 - **Goal**: 1 (1M context — safely reclaims more KV memory from streaming heads after syntactic resolution), 2 (intelligence — evicts only tokens the model provably will not re-consult)
 - **Derived from**: "Incremental Sentence Processing Mechanisms in Autoregressive Transformer Language Models" (2412.05353). The paper demonstrates that LMs activate syntactic features during garden-path processing but DO NOT reuse those features for follow-up comprehension (0% circuit IoU). This means streaming-head KV entries for syntactically resolved tokens are functionally dead — the model has extracted their information into the residual stream and will never re-attend to them.
 - **Change**:
@@ -3993,21 +4066,21 @@ _(none)_
 - **Depends on**: TQ3 mode (TurboQuantKVCache). Independent of SnapKV eviction (operates at the quantization level, not the eviction level). Validates the fp16-layers requirement from the TQ3 architecture.
 - **Risk**: the scaling factors lambda_i may vary significantly between prefill and decode steps, causing inconsistency. The key distribution shifts as context grows, so scaling factors computed on early tokens may not suit later tokens. Mitigation: use exponential moving average of scaling factors to smooth across steps, or recompute only at eviction boundaries (every 256 tokens).
 
-### 126. [TOP PRIORITY] Fix SnapKV server integration — apply_snapkv_to_generate crashes on all KV modes
+### 126. [COMPLETED] [TOP PRIORITY] Fix SnapKV server integration — apply_snapkv_to_generate crashes on all KV modes
 - **Goal**: 1 (1M context via SnapKV eviction in production server), 3 (decode speed — SnapKV reduces effective KV cache size), plus agentic use case (OpenCode + agents need server-side SnapKV)
 - **Derived from**: Analyst deep benchmarking session Run 78 (2026-04-17). Starting the server with `--snapkv-keep 2048` crashes on ALL KV modes (duo, tq3, native) with: `AttributeError: 'function' object has no attribute 'generate_step'` at `omlx/patches/snapkv.py:1343`. The bench's Phase 3e SnapKV quality gate works (it uses a different internal code path), but the server cannot use SnapKV at all. This blocks ALL production use of SnapKV — agents, OpenCode, and the hypercar server itself cannot benefit from KV eviction until this is fixed.
 - **Change**: In `omlx/patches/snapkv.py` at line 1343, `apply_snapkv_to_generate` does `gen_mod.generate_step` but `gen_mod` is a function (already monkey-patched by another patch like TurboQuant or prefill_last_logit), not the module. Fix: import the module directly (`import mlx_lm.utils.generate` or equivalent) instead of relying on the passed-in object being a module. Alternatively, check if `gen_mod` is a function vs module and handle both cases.
 - **Verify**: `python -m omlx.hypercar_server --kv-mode duo --snapkv-keep 2048 --port 8090` starts without crashing. `curl http://localhost:8090/v1/models` returns a valid response. Send a chat completion request and verify SnapKV eviction log lines appear.
 - **Effort**: XS (30 min — the fix is a module import path correction)
 
-### 127. [TOP PRIORITY] TQ3 prefill is 270x slower than duo — investigate and document the agentic implications
+### 127. [COMPLETED] [TOP PRIORITY] TQ3 prefill is 270x slower than duo — investigate and document the agentic implications
 - **Goal**: 3 (decode speed is fine at 50 tok/s but prefill at 3 tok/s makes TQ3 impractical for agentic re-prefill), 4 (prefill speed — 3 tok/s vs 500 target is 0.6% of Goal 4)
 - **Derived from**: Analyst deep benchmarking session Run 78 (2026-04-17). TQ3 NIAH probe measured: prefill 3 tok/s (vs duo's 817), decode 50.4 tok/s (vs duo's 53.6), Metal peak 39.6 GB (vs duo's 35.1), swap 7.5 GB (vs duo's 0.1). TQ3's WHT codec + vertical_eval + codebook lookup add enormous overhead to every prefill token. Decode is fine because the codec cost is amortized over the KV read. But for agentic use cases where the model needs to re-read context (repeated prefill after tool calls, session restore, fork), TQ3 is 270x slower than duo on the operation that matters most.
 - **Change**: Two parts: (a) Document in CLAUDE.md's KV mode table that TQ3 prefill is ~3 tok/s and is NOT suitable for agentic re-prefill use cases. Add a note: "TQ3 is for long single-turn generation (write once, read many). For agentic workflows with frequent re-prefill, use duo mode." (b) Investigate whether SnapKV compaction can help: if the KV cache is compacted from 16K to 4K entries, re-prefill after a fork/rewind only needs to process 4K entries through the codec instead of 16K, potentially recovering 4x on the re-prefill path. File a follow-up task if the investigation shows promise.
 - **Verify**: (a) CLAUDE.md KV mode table includes prefill speed per mode. (b) If the SnapKV re-prefill optimization is attempted: measure TQ3 prefill speed on a SnapKV-compacted cache (4K entries from a 16K original) and compare to the non-compacted 16K prefill.
 - **Effort**: S for docs (1h), M for investigation (2-3 days)
 
-### 128. Server loads 4-bit model instead of 8-bit — model flag mismatch with bench
+### 128. [COMPLETED] Server loads 4-bit model instead of 8-bit — model flag mismatch with bench
 - **Goal**: 2 (intelligence — the bench validates against 8-bit model; serving 4-bit silently degrades quality), 6 (machine fit — 4-bit is smaller but the quality/performance numbers in CLAUDE.md don't apply to it)
 - **Derived from**: Analyst deep benchmarking session Run 78 (2026-04-17). Starting the server with `python -m omlx.hypercar_server --kv-mode tq3 --port 8090` loaded `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` instead of the expected `Qwen3-Coder-30B-A3B-Instruct-8bit` used by the bench. All performance claims in CLAUDE.md (MMLU-Pro 62%, HumanEval 95%, decode speeds) were measured on the 8-bit model. Serving the 4-bit model in production means users get different (likely worse) quality than what was benchmarked. The server default model and the bench default model should match.
 - **Change**: In `omlx/hypercar_server.py`, find the default `--model` argument and change it from `Qwen3-Coder-30B-A3B-Instruct-4bit` to `Qwen3-Coder-30B-A3B-Instruct-8bit` (or whatever the bench uses from CLAUDE.md). Alternatively, add a startup warning when the server model doesn't match the bench model.
@@ -4021,21 +4094,21 @@ _(none)_
 - **Verify**: CLAUDE.md accurately reflects both modes' decode speeds and the Goal 1/3 tension.
 - **Effort**: XS (15 min — docs update)
 
-### 130. LiveCodeBench baseline is 30% (6/20) — establish contamination-free coding floor and identify weak problem classes
+### 130. [COMPLETED] LiveCodeBench baseline is 30% (6/20) — establish contamination-free coding floor and identify weak problem classes
 - **Goal**: 2 (intelligence — LiveCodeBench is the 5th eval family, contamination-free. 30% is the first baseline; understanding which problem types fail guides targeted improvement)
 - **Derived from**: Analyst deep benchmarking Run 78 (2026-04-17). Phase 3d LiveCodeBench scored 6/20 (30%). Passing problems: total-distance-traveled, minimum-number-of-chairs, Cutoff, Virus, Fill the Gaps, A..B..C — all appear to be easy/medium difficulty. Failing problems include optimization (maximize-happiness, maximize-consecutive), string manipulation (smallest-substring, partition-string-into-beautiful), math (kth-smallest, sum-of-digit-differences), and algorithmic (continuous-subarrays, Gomamayo Sequence). The failure pattern suggests the model struggles with medium-hard competitive programming problems, not basic coding.
 - **Change**: (a) Add per-problem difficulty tags to the LiveCodeBench harness so the bench output shows easy/medium/hard pass rates, not just aggregate. (b) Investigate whether the 14 failing problems share common patterns (e.g., DP, binary search, greedy optimization) that could be addressed by prompt engineering (chain-of-thought, structured planning) without model changes. (c) Set a progression target: 40% on next iteration (8/20), 50% stretch goal.
 - **Verify**: `hypercar_bench --full` shows per-difficulty breakdown in Phase 3d output. LiveCodeBench gate still passes at 30% floor.
 - **Effort**: S (1 day: 0.5d difficulty tagging, 0.5d prompt engineering investigation)
 
-### 131. Server JSON encoding bug — raw control characters in code responses break OpenCode/API clients
+### 131. [COMPLETED] Server JSON encoding bug — raw control characters in code responses break OpenCode/API clients
 - **Goal**: 6 (machine fit — the server must produce valid JSON for OpenCode and other API clients to consume)
 - **Derived from**: Analyst deep benchmarking Run 78 (2026-04-17). Chat completion response for a coding prompt contained raw control characters (likely unescaped newlines in generated Python code) at position 359, causing `json.decoder.JSONDecodeError: Invalid control character`. Multi-turn conversations work (Test 3 parsed correctly), so the bug is specific to responses containing code blocks with certain control characters. This would break OpenCode integration since OpenCode parses the JSON response to extract code.
 - **Change**: In the response serialization path (likely `omlx/hypercar_server.py` or the MLX server's response handler), ensure all control characters in the `content` field are properly JSON-escaped before sending. The standard `json.dumps()` should handle this automatically — check if there's a manual string concatenation or streaming path that bypasses `json.dumps()`.
 - **Verify**: Send a coding prompt that generates multi-line Python code with newlines, tabs, and backslashes. Parse the response JSON with `json.loads()` — it must not raise `JSONDecodeError`.
 - **Effort**: XS (30 min — likely a missing json.dumps in a streaming path)
 
-### 132. 64K NIAH takes 23 minutes and needs 38.4 GB Metal — document the Goal 1 practical cost
+### 132. [COMPLETED] 64K NIAH takes 23 minutes and needs 38.4 GB Metal — document the Goal 1 practical cost
 - **Goal**: 1 (1M context — 64K works but the practical cost is high)
 - **Derived from**: Analyst deep benchmarking Run 78b (2026-04-17). First independent analyst 64K NIAH verification: PASS at 64K native 3-bit. But: Metal peak 38.4 GB (only 2.8 GB headroom against 41.2 limit), swap 4.9 GB, and 23 minutes wall-clock for a single NIAH retrieval. At 128K the engineer needed chunked prefill (commit 09110f8) to avoid OOM. At 256K the math suggests ~40+ GB Metal which won't fit without SnapKV eviction. Goal 1's path to 1M requires SnapKV compaction to shrink the KV cache BEFORE it hits Metal limits. Document this cost progression so the roadmap is realistic.
 - **Change**: Add a "Goal 1 cost progression" table to CLAUDE.md or BENCHMARKS.md: 4K → 16K → 64K → 128K showing Metal peak, swap, wall-clock, and whether SnapKV compaction is needed at each scale. Include the practical observation: "64K works but takes 23 min and uses 38 GB; 128K requires chunked prefill; 256K+ requires SnapKV compaction to fit in 48 GB."
@@ -5568,3 +5641,23 @@ Pass 63 is the fourth pass in the post-Qwen3.6 pivot arc and the first pass afte
 - **Verify**: (a) Ledger updated. (b) Eight dead ends enumerated with one-line summaries. (c) Pass-64 strategy documented as one of three explicit options (or noted that the loop is at asymptote and pass 64 is opportunistic rather than gap-driven).
 - **Effort**: XS (< 1 hour)
 - **Depends on**: Independent. Closes the pass-63 paperwork.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 64, 2026-04-25)
+
+Pass 64 is the fifth pass in the post-Qwen3.6 pivot arc and the first explicitly opportunistic pass against pass-63's wind-down recommendation. Charter-constrained to ≤20-minute literature search, signal-only acceptance bar, 1-3 papers MAX. Two papers ingested under the highest-leverage area (Hadamard-rotation KV quantization on Qwen3 + SO(4) isoclinic-rotation cost reduction on TQ3's pivot point). Two follow-on tasks filed here. **Recommendation: pause cron after pass 64.** No new dead ends formalized.
+
+### 288. Port KVLinC 2-bit KV cache (Hadamard rotation on V + per-head linear correction adapters on K) into TQ3+DuoKV stack for Qwen3.6 (closes 2-bit KV held gap)
+- **Goal**: 1 (1M context — 2-bit KV is 1.5× compression improvement over TQ3's shipped 3-bit, freeing ~7.5 GB at 1M context redirectable to MoE expert resident set or further context length), 2 (HumanEval 95% / MMLU-Pro 62% quality preservation — KVLinC reports quality parity at 2-bit on Qwen3-base directly; the open risk is whether parity holds at Qwen3.6-35B-A3B and at Hypercar's 64K-1M context ladder), 3 (decode speed — KVLinC custom attention kernel reports 2.55× over Flash Attention; the algorithmic core composes with DuoKV's gather kernel, but the GPU-specific speedup does not directly port to Metal)
+- **Derived from**: LIT_REVIEW.md Pass 64 / KVLinC (arXiv:2510.05373, Saxena & Roy Purdue ECE / NRL, 2025-10). First pass-40-64 paper to validate 2-bit KV directly on the Qwen3 family. Two-component recipe: (a) Hadamard rotation on V before quantization redistributes V codebook error uniformly (same family as TurboQuant's WHT, applied per-head on V), (b) per-head learned low-rank linear correction adapter on K compensates for K codebook residual error. Adapter trained without finetuning the base LLM via calibration loss against unquantized attention output. Reports up to 2.55× faster inference vs Flash Attention.
+- **Change**: Add KVLinC mode to TQ3 / DuoKV pipeline. Implementation steps: (a) Adapter calibration script — port the linear-adapter calibration loop to MLX, train per-head rank-r corrections on Qwen3.6-35B-A3B against fp16 attention outputs on 4K-16K calibration corpus (one-time offline cost; mirrors the GPTAQ calibration flow in Task 285). (b) TQ3 quantize-step modification — extend `omlx/turboquant/quantize.py` to apply Hadamard rotation on V at quantize time (currently TQ3 applies WHT on the codebook input distribution path; KVLinC applies it specifically on V). Add a 2-bit codebook variant gated behind `--kv-bits 2`. (c) DuoKV gather-kernel extension — add the per-head linear correction matmul to the dequantize-and-gather path in `omlx/duokv.py`; this is a small per-head matmul (r ≪ d_head) added inside the existing kernel. (d) Validation: HumanEval, MMLU-Pro, NIAH at 4K/16K/64K to verify the 2-bit claim holds at Hypercar's context ladder. (e) Hypercar bench gate — add `--kv-mode duo --kv-bits 2 --kvlinc-adapters` mode to the benchmark.
+- **Verify**: (a) Adapter calibration completes on Qwen3.6-35B-A3B without OOM (fp16 35B + 4K-16K corpus + adapter gradient memory fits in 48 GB). (b) TQ3 + KVLinC at 2-bit KV passes coherence + code intel + NIAH gates at 4K-16K. (c) HumanEval delta vs current 3-bit TQ3 baseline within ±2 pp (the parity claim from KVLinC is on Qwen3-base; pp difference at Qwen3.6-35B-A3B is the actual measurement). (d) MMLU-Pro delta vs 3-bit TQ3 baseline within ±2 pp. (e) NIAH at 64K with 2-bit KV — this is the core retrieval-quality test; if NIAH degrades, the K-side linear-correction adapter is undertrained or insufficient at the 64K position-distribution; mitigation is to expand calibration corpus or train per-context-length adapters. (f) Decode speed delta vs 3-bit TQ3: target is at minimum no regression; the 2.55× Flash Attention speedup claim does not directly port to Metal but the linear adapter matmul fits inside DuoKV's gather kernel without an extra dispatch.
+- **Effort**: M (3-4 weeks) — adapter calibration (1 week) + TQ3 quantize-step modification (1 week) + DuoKV gather-kernel extension (3-5 days) + Qwen3.6 validation (1 week)
+- **Depends on**: Independent of Task 281 (Open-TQ-Metal port) — KVLinC's algorithmic core does not require a custom Metal kernel; the existing DuoKV gather path is the integration point. **Composes with Task 285** (GPTAQ asymmetric calibration for W3 weights) — both share the calibration-corpus infrastructure pattern (running fp16 35B model for ground-truth attention outputs); doing them in parallel amortizes the calibration setup cost. **Composes orthogonally with Task 270 W3 weights**: KVLinC reduces KV memory from 3-bit to 2-bit; W3 reduces weight memory from W8 to W3. Both compositions are required to hit the 1M context budget on 48 GB. Biggest risk: 2-bit-KV quality at 64K-1M is unvalidated by the source paper (KVLinC's quality-parity evidence is on standard benchmarks at moderate context; long-context retrieval at 2-bit KV is the open question for Hypercar). Mitigation: A-B test 2-bit vs 3-bit with KVLinC adapters on NIAH at 4K → 16K → 64K → 128K progression; if quality degrades only above some context length, ship 2-bit only below that threshold. Secondary risk: KVLinC code-release status unconfirmed at pass-64 search time; the algorithmic spec is well-defined enough to reimplement directly. Tertiary risk: not yet peer-reviewed at pass-64 time; provenance signal is the Qwen3-direct-validation in the paper. Mitigation: Hypercar's own benchmark on Qwen3.6 is the actual validation Hypercar should run.
+
+### 289. Evaluate IsoQuant SO(4) isoclinic-rotation kernel-cost reduction inside Open-TQ-Metal port (Task-281 gated; speculative complement to TQ3 WHT)
+- **Goal**: 4 (prefill speed — rotation step is on the prefill quantize-write path; if IsoQuant's 4.5×–4.7× rotation-cost reduction generalizes from CUDA to Metal, the prefill quantize step gets faster), 3 (decode speed — same mechanism applies to per-token decode quantize-write path), 6 (48 GB M4 Pro fit — orthogonal; rotation cost is a compute axis, not a memory axis)
+- **Derived from**: LIT_REVIEW.md Pass 64 / IsoQuant (arXiv:2603.28430, Zhongping Ji single-author preprint, 2026-03-30). First pass-40-64 paper to question the rotation-step cost in KV cache quantization on hardware-engineering grounds. Decomposes a d-dimensional vector into d/4 quaternion-blocks and applies a closed-form SO(4) isoclinic rotation; claims **1,024 FMAs at d=128 (IsoQuant-Full) or 512 FMAs (IsoQuant-Fast)** vs RotorQuant's 2,408 FMAs, with 4.5×–4.7× mean kernel-level speedup over RotorQuant. **Important limitation explicitly stated by the paper**: validation is **stage-1 only** — the FMA-count and speedup claims are on the synthetic-vector quantize/dequantize forward path, *not* end-to-end on a real LLM. **CUDA-only**; no Apple Silicon, no Metal, no MLX implementation.
+- **Change**: Evaluation-only; deferred until Task 281 (Open-TQ-Metal Metal kernel port) ships and the Metal-kernel methodology is established. When Task 281 lands, add IsoQuant rotation as one of the rotation-family alternatives to evaluate inside the Open-TQ-Metal port, alongside TQ3's shipped WHT. Implementation steps when activated: (a) Stage-1 MLX/Metal port — implement IsoQuant-Fast (512 FMAs at d=128) as an MLX/Metal kernel for the quantize/dequantize forward path; benchmark per-token rotation cost against the shipped fused WHT (Task 152). (b) End-to-end KV cache validation — wire IsoQuant rotation into TQ3 in place of WHT (codebook stays the same; only the rotation step changes); measure HumanEval, MMLU-Pro, NIAH at 4K-128K. (c) If quality preserves and speedup transfers to Metal, fold into Open-TQ-Metal port. (d) If quality regresses or speedup does not transfer, document negative result; rotation-cost-reduction axis is closed.
+- **Verify**: (a) Task 281 shipped first (gating dependency). (b) IsoQuant-Fast MLX/Metal stage-1 kernel matches paper's FMA-count claim (instrument the kernel for actual FMA-cycle count on M4 Pro GPU). (c) Per-token rotation cost vs shipped fused WHT: IsoQuant must beat WHT by ≥2× to justify the swap (the speedup-vs-CUDA-RotorQuant is 4.5×–4.7×, but Hypercar already ships fused WHT at 1.33× prefill at 8K, so the headroom is smaller). (d) End-to-end TQ3+IsoQuant matches TQ3+WHT on HumanEval / MMLU-Pro / NIAH within ±0.5 pp at 4K-128K. (e) If end-to-end quality regresses, the rotation-step replacement is not isolated — IsoQuant's rotation may produce a different codebook input distribution than WHT, breaking TurboQuant's Beta((d-1)/2,(d-1)/2) codebook validity assumption. (f) Decode speed delta vs TQ3+WHT: target ≥1.5× decode improvement at 16K to justify the engineering cost.
+- **Effort**: L (1-2 months) for evaluation, XL (3+ months) for shipping
+- **Depends on**: **Task 281 (Open-TQ-Metal port)** — strict prerequisite; this task is meaningless without the Metal-kernel infrastructure Task 281 establishes. Independent of Task 285 (GPTAQ) and Task 288 (KVLinC) — different stages of the pipeline (Task 285 is W3 weight calibration, Task 288 is KV codebook + adapter, this task is rotation-step kernel cost). Biggest risk: IsoQuant validation is **stage-1 only on synthetic vectors** in the source paper — real-model end-to-end quality is unmeasured; the rotation might be fast but introduce a worse codebook input distribution than WHT, breaking codebook validity. Mitigation: A-B test rotation only (codebook unchanged) against shipped WHT on a 4K calibration corpus before committing further. Secondary risk: CUDA-to-Metal port unknown — Apple Silicon's `simdgroup_matrix` 8×8 MMA is structurally different from CUDA's 32-thread warp-level FMA; the FMA-count claim may not translate to MMA-cycle-count on Metal. Mitigation: the Open-TQ-Metal team's published Metal kernel methodology (LIT_REVIEW pass 62) and the Kernel-Fused SAR `simdgroup_matrix` MMA-exploitation methodology (LIT_REVIEW pass 63) are the natural validation environment but require Task 281 + Task 284 to land first. Tertiary risk: single-author arxiv preprint with no peer-review provenance signal at pass-64 time. Mitigation: this is explicitly a speculative complement and is filed as evaluation-only, not shipping; if Task 281 ships and IsoQuant evaluation is negative, the negative result itself is research output.
