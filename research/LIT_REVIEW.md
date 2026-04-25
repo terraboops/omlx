@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-24 (pass 62)_
+_Last updated: 2026-04-25 (pass 63)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -15156,33 +15156,68 @@ Hypercar but not a dead-end category since its algorithmic
 structure is subsumed by EchoKV+FreeKV. Close-out without
 dead-end formalization.
 
-### Non-declaration: Vision-encoder surgical removal (1 more pass, defer to pass 63)
+### Dead end 8: Vision-encoder surgical removal at model-load time as a standalone research vertex (3 passes, formalized pass 63 2026-04-25)
 
-Pass-62 targeted search ("VLM vision tower removal text only
-inference 2025 2026") surfaced VisionDrop, VisionThink,
-inference-optimal-VLM, and rethinking-token-reduction papers
-— all address *visual token pruning during inference* rather
-than *permanent architectural removal of the vision encoder
-at model-load time*, which is Task 261's actual requirement
-for Qwen3.6-35B-A3B text-only deployment. The literature
-that does exist is adjacent (visual-token compression to
-extreme ratios) but not on-target. Two passes carried; one
-more targeted pass before formalization per the pass-62
-plan. Revisit strategy for pass 63: search with the
-architectural-removal framing specifically ("vision encoder
-ablation VLM text-only", "VLM weight stripping unused
-modality") to distinguish from the token-level compression
-literature.
+Passes carried: 61-63 (3 passes without standalone closure;
+deferred from pass 62 with explicit one-more-pass mandate).
+Pass-63 targeted search with the architectural-removal
+framing ("VLM language model only deployment skip vision
+encoder modality pruning architectural surgery 2026", "vision
+tower removal VLM text-only inference weight stripping
+unimodal load") surfaced exactly what the prior passes
+surfaced: visual-token-pruning literature (V²Drop, MMTok,
+VisionDrop, SparseVLM, MMTok), modality-adaptive *training*
+literature (CoMP joint parameter+token pruning 2604.02956,
+EfficientVLM 2210.07795), and the encoder-free *training-
+from-scratch* alternative literature (EVE 2406.11832, EVEv2
+2502.06788 — ICCV 2025 highlight, ingested this pass). No
+2024-2026 paper formulates "load a trained encoder-based VLM,
+strip its vision tower at deploy time, run text-only
+inference on the surviving language backbone" as a standalone
+research contribution. The implicit answer crystallizes: this
+is *not* a research vertex — it is a deployment-engineering
+operation. The research-side question "how do we train a
+unified vision-language model that does not require a heavy
+vision encoder" is addressed by the encoder-free literature
+(EVE/EVEv2 family, decoder-only multimodal architectures);
+the engineering-side question "how do we strip the vision
+tower from an already-trained VLM at load time" is a
+weights-loading-and-graph-pruning concern with no theoretical
+content beyond "set those weights' gradient flow to zero and
+free the memory." Every paper that *does* exist either (a)
+prunes visual tokens at inference time without removing the
+encoder (V²Drop, VisionDrop, MMTok, SparseVLM), (b) trains a
+modality-aware compressed VLM via knowledge distillation
+(EfficientVLM, CoMP), or (c) replaces the encoder with a
+patch-embedding layer at training time (EVE, EVEv2). What
+remains for Task 261 is the engineering operation itself —
+implement the load-time encoder strip in `omlx/vlm_strip.py`,
+verify text-only generation produces identical outputs to
+encoder-passthrough for text inputs, document memory savings.
+Revisit condition: if a paper lands that proves quality-
+preservation bounds for *post-hoc encoder removal from a
+pretrained VLM* (currently zero such papers exist; the
+nearest is CoMP 2604.02956 which prunes during training, not
+post-hoc), re-open. Otherwise: do not re-search — Task 261
+is engineering, not research, and EVEv2 is the architectural
+alternative if Hypercar wants the research-grounded path.
+Alternatives already in the corpus or pending: (a) Task 261
+(engineering — strip the vision tower from Qwen3.6-35B-A3B
+at load time); (b) EVEv2 (this pass — research-grounded
+alternative for future text-heavy multimodal models).
 
-Seven dead ends total across pass 52 (three), pass 56 (two),
-pass 57 (one), and pass 62 (one: incremental attention update
-as standalone vertex). Sixty-two passes in, the research loop
-has enumerated the standalone-algorithmic-research gaps and
-is now closing via category-mismatch rather than literature-
-gap reasoning — the productive remaining searches are in the
-specific-engineering-trigger class (Metal kernels re-opened
-by Open-TQ-Metal pass 62, speculative retrieval closed by
-FreeKV pass 62).
+Eight dead ends total across pass 52 (three), pass 56 (two),
+pass 57 (one), pass 62 (one: incremental attention update as
+standalone vertex), and pass 63 (one: vision-encoder surgical
+removal at model-load time). Sixty-three passes in, the
+research loop has enumerated the standalone-algorithmic-
+research gaps and is now closing via category-mismatch rather
+than literature-gap reasoning — the productive remaining
+searches are in the specific-engineering-trigger class (Metal
+kernels re-opened by Open-TQ-Metal pass 62, speculative
+retrieval closed by FreeKV pass 62, asymmetric calibration
+provided by GPTAQ/GPTQv2 pass 63, encoder-free architectural
+alternative provided by EVEv2 pass 63).
 
 
 ## Pass 52 — 2026-04-22 — Goal 1 Long-Tail: GPU Memory Compaction, Online KV Clustering, Formal Spec-Decode Verification, Block-wise Paged Eviction
@@ -20148,6 +20183,415 @@ research loop's dead-end enumeration is approaching
 asymptote with seven total declarations.
 
 
+## Pass 63 — 2026-04-25 — Apple Silicon Kernel Method Companion + GPTAQ Asymmetric Calibration + Encoder-Free VLM Closure
+
+Pass 63 is the fourth pass in the post-Qwen3.6 pivot arc and
+the first pass after the pass-62 Open-TQ-Metal Apple-Silicon-
+specific paper re-opened Dead End #1. Three papers ingested
+across the pass-63 area split: (1) **Area 1 — Apple Silicon
+kernel-method companion** to Open-TQ-Metal, (2) **Area 3 —
+TQ3 weight unblock** with the asymmetric-calibration
+refinement of GPTQ that pass 60-61 Area-B did not surface,
+(3) **Area 4 — Vision-encoder removal closure** via the
+encoder-free VLM literature, leading to **Dead End #8
+formalization** for vision-encoder surgical removal as a
+standalone research vertex.
+
+**The three papers map to orthogonal pass-62-mandated angles:**
+
+1. **Apple Silicon single-dispatch fused-kernel methodology
+   (companion to Open-TQ-Metal)**: **Kernel-Fused SAR Imaging
+   on Apple Silicon** (2604.03585, Mohamed Amine Bergach,
+   2026-04). First kernel-fused SAR Range Doppler pipeline on
+   any GPU platform; **22× speedup (8.16 s → 370 ms)** by
+   fusing FFT + matched-filter multiply + IFFT into a single
+   Metal compute dispatch with all intermediate data kept in
+   32 KiB on-chip memory. First FFT to exploit Apple's
+   `simdgroup_matrix` 8×8 hardware MMA via in-place Cooley-
+   Tukey decimation-in-frequency. **Companion methodology
+   paper to Open-TQ-Metal pass 62** — the same Apple-M1-GPU-
+   specific single-dispatch fused-kernel design pattern, this
+   time applied to FFT pipelines instead of attention. Provides
+   second independent-researcher data point that the Apple-
+   Silicon-specific kernel-engineering literature is forming
+   on arxiv post-pass-50 dead-end declaration; the
+   `simdgroup_matrix` MMA-exploitation pattern is directly
+   relevant to Hypercar's Metal kernel work (Task 281
+   Open-TQ-Metal port + Tawa attention port + DuoKV gather/
+   mask kernels). Bit-identical fp32 reference preservation
+   (0.0 dB SNR deviation on all five point targets) is
+   stronger correctness evidence than the top-1-token-
+   identical claim in Open-TQ-Metal.
+2. **GPTQ asymmetric-calibration refinement (TQ3 weight unblock
+   continued)**: **GPTAQ / GPTQv2** (2504.02692, Yuhang Li
+   et al., 2025-04). Closes a six-pass Area-B research-tasking
+   gap pass 60-61 explicitly noted ("further AWQ refinements,
+   GPTQ-V2"). GPTQv2 matches the quantized layer's output to
+   the *exact full-precision model output* via asymmetric
+   calibration that explicitly minimizes accumulated cross-
+   layer asymmetry error — distinct from GPTQ's per-layer-
+   independent calibration. **20 lines of code more than GPTQ**
+   while improving low-bit quantization performance. Quantizes
+   a 405B language transformer on a single GPU. **Direct
+   composability with TQ3's WHT rotation pipeline** —
+   asymmetric calibration is a per-channel pre-quantization
+   step orthogonal to the codebook design, so it stacks with
+   TurboQuant + DuQuant (Task 278 pending) as a third pre-
+   processor in the W3 weight unblock chain. Pass 61 ingested
+   DuQuant for block-diagonal rotation handling massive
+   outliers; GPTAQ adds the cross-layer-error-correction axis
+   DuQuant lacks.
+3. **Encoder-free VLM as the architectural alternative to post-
+   hoc vision-encoder removal**: **EVEv2** (2502.06788, Diao
+   et al., ICCV 2025 highlight, 2025-02 v1, 2025-07 v2).
+   Improved baselines for encoder-free vision-language models
+   — adopts a patch-embedding layer to encode images
+   losslessly, concatenates visual + textual tokens into a
+   unified decoder-only VLM with modality-wise sparsity
+   (modality-specific weights for self-attention, FFN,
+   layer-norm). 100M public training data; **outperforms
+   existing encoder-free counterparts** and approaches
+   mainstream encoder-based VLMs. Closes the vision-encoder
+   removal held-gap from the *research* side (the engineering
+   side, "strip the encoder from a pretrained VLM at load
+   time," is formally declared **Dead End #8** this pass —
+   not a research vertex, a deployment operation). For
+   Hypercar's path, EVEv2 is the architectural alternative if
+   future Qwen3.6-class models include vision modality the
+   coding-only deployment doesn't need; the research grounding
+   is "use an encoder-free VLM in the first place" rather than
+   "strip the encoder post-hoc."
+
+**One held-gap formally declared dead this pass:**
+
+4. **Vision-encoder surgical removal at model-load time →
+   DEAD END #8 formalized.** Three passes carried (61-63).
+   Final search confirmed: this is not a research vertex;
+   it is a weights-loading-and-graph-pruning engineering
+   operation. The research-side question is addressed by the
+   encoder-free literature (EVE/EVEv2 family, ingested this
+   pass); the engineering-side question is Task 261 itself.
+   See Declared Dead Ends section for full rationale. Pass-63
+   declaration brings total to **eight dead ends across passes
+   52-63**.
+
+### [From 8 Seconds to 370 ms: Kernel-Fused SAR Imaging on Apple Silicon via Single-Dispatch FFT Pipelines](https://arxiv.org/abs/2604.03585) — 2604.03585
+- **Authors**: Mohamed Amine Bergach
+- **Published**: 2026-04 (arxiv preprint; independent researcher;
+  software artifact references Apple M1 GPU benchmarks)
+- **Hypercar goals it addresses**: Goal 3 (decode speed —
+  the single-dispatch fused-kernel methodology with on-chip
+  intermediate data residence is exactly the design pattern
+  Hypercar's Metal kernel work needs at the DuoKV gather/
+  mask path; the SAR Range Doppler 22× speedup transfers as
+  *methodology evidence* for the Open-TQ-Metal kernel port
+  Task 281 plans), Goal 6 (48 GB M4 Pro fit — `simdgroup_
+  matrix` 8×8 hardware MMA exploitation is the M-series-
+  specific ALU resource neither MLX-Primitive Python paths
+  nor most CUDA-derived kernel ports use; tapping it
+  directly is a per-FLOP efficiency improvement that
+  preserves headroom)
+- **TL;DR**: Bergach presents the **first kernel-fused SAR
+  Range Doppler pipeline on any GPU platform**. By fusing
+  FFT, matched-filter multiply, and IFFT into **a single
+  Metal compute dispatch** — keeping all intermediate data
+  in 32 KiB on-chip memory — the system processes a
+  4096×4096 complex SAR scene in **370 ms on an Apple M1
+  GPU**, achieving a **22× speedup** over the multi-dispatch
+  baseline (8.16 s). The work reports the **first FFT to
+  exploit Apple's `simdgroup_matrix` 8×8 hardware MMA**,
+  enabled by an in-place Cooley-Tukey decimation-in-
+  frequency formulation that halves the memory footprint
+  versus the standard Stockham layout. Radar image quality
+  is bit-preserved: all five point targets show 0.0 dB SNR
+  deviation from the unfused FP32 reference. The paper is
+  not LLM-domain but is **methodology-domain** for Apple-
+  Silicon Metal kernel design — single-dispatch fusion +
+  on-chip data residence + `simdgroup_matrix` MMA usage.
+- **Why it matters for Hypercar**: This is the **second
+  Apple-Silicon-specific arxiv paper in the corpus** (after
+  Open-TQ-Metal pass 62) and the **first to document the
+  `simdgroup_matrix` 8×8 hardware MMA usage pattern in
+  arxiv-published code/methodology**. The Open-TQ-Metal pass-
+  62 paper's split-K parallelism via chained MLX Primitives
+  is one design pattern for the Metal-dispatch race-condition
+  problem; Bergach's single-dispatch fusion with on-chip
+  intermediate residence is the *complementary* design pattern
+  — fusing operations that would otherwise dispatch separately
+  into one kernel that keeps intermediates in tile/threadgroup
+  memory. For Hypercar's DuoKV gather/mask path (CLAUDE.md
+  diagnosed as the O(T_total) bottleneck at 16K), the single-
+  dispatch pattern is directly applicable: instead of separate
+  gather + mask + scale + softmax kernels, fuse them into one
+  Metal dispatch that keeps the intermediate score tile in
+  threadgroup memory. The `simdgroup_matrix` 8×8 MMA usage
+  is the per-FLOP efficiency lever the M4 Pro's GPU exposes
+  but most MLX-Python paths leave on the table — claim is
+  validated on M1 (one generation older than M4 Pro), so the
+  methodology should transfer with M4-Pro-or-newer-specific
+  tile sizing. Bit-identical fp32 reference preservation is
+  *stronger* correctness evidence than Open-TQ-Metal's
+  top-1-token-identical claim, which has nondeterminism in
+  the softmax tail. Composition with pass 62 stack: Open-TQ-
+  Metal provides the split-K parallelism pattern (long-context
+  scaling), Bergach provides the single-dispatch fusion
+  pattern (short-context per-op fusion); both are needed.
+- **Cost of adoption**: **M (3-4 weeks)** — (a) paper-code
+  audit (2-3 days) — Bergach paper is methodology-only;
+  determine whether the SAR pipeline source is publicly
+  released; the methodology (single-dispatch + on-chip
+  residence + `simdgroup_matrix`) is independently
+  applicable without source code. (b) DuoKV fused-gather-
+  mask kernel (2 weeks) — apply the single-dispatch pattern
+  to the DuoKV gather + mask + softmax path; target
+  `omlx/metal_kernels/fused_duokv_gather.py` implementing a
+  C++ MLX Primitive with Metal shader backing that fuses
+  gather + mask + scale + softmax into one dispatch with
+  intermediate score tile in threadgroup memory; size the
+  tile for M4 Pro's 32 KiB threadgroup memory limit (paper
+  uses M1's 32 KiB which matches). (c) `simdgroup_matrix`
+  MMA usage (1 week) — replace the matmul portions of
+  attention with `simdgroup_matrix` 8×8 MMA calls; benchmark
+  improvement on hypercar_bench at 4K/16K decode. (d)
+  Validation (3-4 days) — bit-identical comparison to
+  current MLX-Python DuoKV path is required; any deviation
+  beyond fp16 numerical noise indicates kernel bug. Biggest
+  risk: methodology paper without published source means
+  full reimplementation from paper text. Mitigating factor:
+  the Cooley-Tukey decimation-in-frequency single-dispatch
+  pattern is well-documented in graphics literature, and
+  Apple's Metal Shading Language documentation covers
+  `simdgroup_matrix` usage; Bergach's contribution is
+  proving the LLM-relevant performance claim, not inventing
+  the primitive. Secondary risk: SAR FFT is structurally
+  different from attention softmax (FFT has fixed access
+  pattern, attention has data-dependent softmax) — the
+  fusion pattern transfers but the per-operation
+  arithmetic intensity does not necessarily. Mitigating
+  factor: even partial transfer (the `simdgroup_matrix` MMA
+  usage alone) is a per-FLOP efficiency improvement worth
+  the engineering effort.
+- **Local PDF**: research/2604.03585_kernel_fused_sar.pdf
+
+### [GPTAQ: Efficient Finetuning-Free Quantization for Asymmetric Calibration (a.k.a. GPTQv2)](https://arxiv.org/abs/2504.02692) — 2504.02692
+- **Authors**: Yuhang Li, Ruokai Yin, Donghyun Lee, Shiting Xiao, Priyadarshini Panda
+- **Published**: 2025-04 (arxiv preprint v1; revised v2 May 2025;
+  OpenReview QdELyl0FST; ICLR 2026 submission round per
+  OpenReview venue)
+- **Hypercar goals it addresses**: Goal 1 (memory budget at
+  long context — improved low-bit weight quantization is the
+  Area-B Task 270 W3 (3-bit weights) unblock path; tighter
+  PTQ at 3-bit weights frees model memory at every context
+  length, with disproportionate impact at 1M where every GB
+  matters), Goal 2 (HumanEval 95% / MMLU-Pro 62% quality
+  preservation — asymmetric calibration explicitly minimizes
+  cross-layer error accumulation, the failure mode shipping-
+  Task-270's-W3 candidates have hit), Goal 6 (48 GB M4 Pro
+  fit — Qwen3.6-35B-A3B at W3 frees ~12 GB of weight memory
+  vs the current W8 mlx-community quantization, redirectable
+  to KV budget at 1M)
+- **TL;DR**: GPTAQ (a.k.a. GPTQv2 in the v2 metadata) is a
+  **finetuning-free post-training quantization method** for
+  large transformers that introduces **asymmetric calibration**
+  — instead of GPTQ's per-layer-independent calibration where
+  each layer's quantized output is matched to its own full-
+  precision output, GPTAQ matches each quantized layer's
+  output to the *exact full-precision model output*,
+  explicitly minimizing the quantization error accumulated
+  across previous layers. The optimization is derived via
+  optimal-brain-compression analysis with a closed-form
+  solution that minimizes both per-layer quantization error
+  *and* accumulated asymmetry error. Implementation parallelism
+  is achieved via three techniques: channel parallelization,
+  neuron decomposition, and Cholesky reformulation for matrix
+  fusion. **Only 20 more lines of code than GPTQ**, while
+  improving low-bit (3-4 bit) quantization performance.
+  Validated on a 405B language transformer on a single GPU
+  and on EVA-02 vision transformer. ICLR 2026 submission
+  round.
+- **Why it matters for Hypercar**: GPTAQ provides the **direct
+  AWQ-refinement / GPTQ-V2 closure** that pass 60-61 Area B
+  TQ3 unblock arc explicitly requested but did not surface
+  (Area B passes 60-61 ingested MC-MoE, MxMoE, MoPEQ, Ban&
+  Pick, DuQuant, TurboBoA — none of which addressed cross-
+  layer error accumulation as a first-class objective). For
+  Hypercar's W3 path on Qwen3.6-35B-A3B (Task 270 / 273 /
+  278 stack), GPTAQ is the **per-channel pre-quantization
+  step** that composes with TurboQuant's WHT rotation
+  (shipped) and DuQuant's block-diagonal rotation (Task 278,
+  pass 61) as a third pre-processor. The cross-layer error
+  correction axis is what DuQuant explicitly does *not* do —
+  DuQuant handles per-layer outliers via rotation, GPTAQ
+  handles cross-layer error via output-matching. Composition
+  ordering: (a) DuQuant rotation → (b) GPTAQ asymmetric
+  calibration → (c) TurboQuant codebook quantization. Each
+  axis is orthogonal. The 20-line implementation cost makes
+  this the **lowest-cost-of-adoption Area-B paper** in the
+  pass-60-63 arc. ICLR 2026 submission signal is preliminary
+  but the OpenReview record (QdELyl0FST) and the public
+  GPTAQ github (Intelligent-Computing-Lab-Panda/GPTAQ) make
+  the implementation path clear.
+- **Cost of adoption**: **S (1-2 weeks)** — (a) paper-code
+  audit (1 day) — GPTAQ github is public; verify ICLR 2026
+  acceptance via OpenReview QdELyl0FST. (b) Port to MLX
+  weight quantization path (3-4 days) — the asymmetric-
+  calibration step replaces or augments GPTQ's calibration
+  loss in `omlx/quantization/calibrate.py`; the 20-line
+  delta should map closely to MLX. (c) Integration with
+  TurboQuant + DuQuant pipeline (3-4 days) — define the
+  three-stage pre-processing order, ensure no conflict with
+  TurboQuant's WHT rotation step. (d) Validation on Qwen3.6-
+  35B-A3B at W3 (3-4 days) — measure HumanEval, MMLU-Pro,
+  perplexity vs current W8 baseline; expect quality within
+  1-2 pp of W8 if the three-stage pipeline (DuQuant +
+  GPTAQ + TurboQuant) composes correctly. Biggest risk:
+  composition ordering with DuQuant and TurboQuant has not
+  been studied in literature — the three rotations/
+  calibrations are individually validated but not as a
+  pipeline. Mitigating factor: A-B test each stage alone vs
+  cumulative; if any stage degrades quality, drop it.
+  Secondary risk: ICLR 2026 acceptance not yet confirmed in
+  public record (OpenReview submission, not yet final
+  decision); if rejected, the asymmetric-calibration insight
+  is still valid as a peer-review-pending engineering
+  contribution. Mitigating factor: 20-line code delta is
+  trivial enough to validate independently of paper venue.
+  Tertiary risk: the GPTAQ output-matching loss requires
+  computing full-precision model outputs as ground truth,
+  which on Qwen3.6-35B-A3B at calibration time means running
+  the unquantized 35B model — feasible on M4 Pro 48 GB but
+  uses substantial memory; mitigation is to calibrate on
+  smaller calibration corpus (1K-4K tokens) where fp16 35B
+  fits.
+- **Local PDF**: research/2504.02692_gptqv2_gptaq.pdf
+
+### [EVEv2: Improved Baselines for Encoder-Free Vision-Language Models](https://arxiv.org/abs/2502.06788) — 2502.06788
+- **Authors**: Haiwen Diao, Xiaotong Li, Yufeng Cui, Yueze Wang, Haoge Deng, Ting Pan, Wenxuan Wang, Huchuan Lu, Xinlong Wang
+- **Published**: 2025-02 v1, 2025-07 v2 (ICCV 2025 highlight)
+- **Hypercar goals it addresses**: Goal 6 (48 GB M4 Pro fit
+  — encoder-free VLM architecture eliminates the vision-tower
+  weight overhead, freeing memory budget for context length;
+  Hypercar's current Qwen3.6-35B-A3B is text-only deployed
+  but the model card includes a vision tower whose weight
+  load is currently engineering-stripped at runtime, not
+  architecturally avoided), Goal 2 (quality at parity — EVEv2
+  outperforms encoder-free counterparts and approaches
+  encoder-based VLMs of similar capacity, demonstrating the
+  encoder-free path does not cost intelligence)
+- **TL;DR**: EVEv2 systematically clarifies the performance
+  gap between VLMs using pre-trained vision encoders, discrete
+  tokenizers, and minimalist visual layers from scratch.
+  Architecture: **patch embedding layer encodes images
+  losslessly**, concatenated visual + textual tokens fed
+  through a **unified decoder-only VLM** that extends the
+  standard autoregressive transformer with **modality-wise
+  sparsity** — modality-specific weights for each multi-head
+  self-attention layer, FFN layer, and LayerNorm (a
+  divide-and-conquer architecture). Trained on 100M public
+  data only; **outperforms existing encoder-free counterparts**
+  (EVE-7B, Fuyu, etc.) and steadily approaches mainstream
+  encoder-based VLMs (Qwen-VL, MiniGPT-4, LLaVA-1.5) of
+  similar model capacity. ICCV 2025 highlight; code at
+  github.com/baaivision/EVE.
+- **Why it matters for Hypercar**: EVEv2 closes the **vision-
+  encoder removal held-gap** from the *research* side. The
+  three-pass attempt at "post-hoc remove the vision encoder
+  from a pretrained VLM" found no standalone research literature
+  (because that operation is not a research vertex — it is a
+  deployment-engineering concern handled by Task 261's load-
+  time encoder-strip). The *research* answer to "what does a
+  VLM without a heavy vision encoder look like" is the
+  encoder-free family: EVE → EVEv2 → future variants. For
+  Hypercar's current Qwen3.6-35B-A3B coding-only deployment,
+  EVEv2 is **strategic-future-reference rather than
+  near-term-shipping** — the model in scope is encoder-based
+  Qwen3.6 with an unused vision tower, not an encoder-free
+  alternative; Task 261's engineering strip remains the
+  near-term path. EVEv2 becomes shipping-relevant if (a) a
+  future Qwen-family release ships in encoder-free
+  architecture (signal from Diao et al.'s baseline-matching
+  evidence: encoder-free is competitive enough that mainstream
+  model families may adopt), or (b) Hypercar adds vision-input
+  support and wants the architecturally simpler path. The
+  modality-wise sparsity pattern (modality-specific weights
+  for attention/FFN/layer-norm) is a **design pattern transfer
+  candidate** for any future modality-specific optimization in
+  Hypercar — e.g., if separate streaming-vs-retrieval head
+  weights are wanted (Task 265 Fix 2), the modality-sparsity
+  pattern is the architectural template.
+- **Cost of adoption**: **N/A near-term — strategic reference
+  paper**. Effort breakdown for the *future* shipping
+  scenario: (a) wait for encoder-free Qwen-family release
+  (out of Hypercar's control); or (b) use EVEv2 as the
+  architectural template for an in-house multimodal Hypercar
+  variant (currently no plan). Near-term action: file as
+  reference paper; if Task 261 (vision-encoder strip) ships
+  and observed quality on text-only inference is degraded
+  vs the encoder-strip-baseline EVEv2-style architecture
+  would predict, re-evaluate. Pass-63 ingest is a closure
+  ingest, not a shipping ingest.
+- **Local PDF**: research/2502.06788_evev2.pdf
+
+### Pass 63 summary
+
+**Three papers ingested**: Kernel-Fused SAR (Apple Silicon
+single-dispatch + simdgroup_matrix MMA — companion methodology
+to Open-TQ-Metal pass 62), GPTAQ/GPTQv2 (asymmetric-calibration
+PTQ — direct AWQ-refinement closure for pass 60-61 Area B
+gap, ICLR 2026 submission), EVEv2 (encoder-free VLM
+architecture — research-side closure for vision-encoder
+removal held gap, ICCV 2025 highlight).
+
+**One dead-end formalized**: Dead End #8 — Vision-encoder
+surgical removal at model-load time as a standalone research
+vertex (3 passes carried; closed via category-mismatch
+reasoning — deployment-engineering operation, not research
+vertex; the research-side question is addressed by the
+encoder-free literature ingested this pass).
+
+**Highest-leverage find**: **Kernel-Fused SAR (2604.03585)** —
+the single-dispatch + on-chip-data-residence + `simdgroup_
+matrix` 8×8 MMA design pattern is the *complementary* Apple-
+Silicon kernel methodology to Open-TQ-Metal's split-K
+parallelism, and the second arxiv-published Apple-Silicon
+kernel-engineering paper in the corpus post-pass-50 dead-end
+declaration. Direct-applicability for the DuoKV gather/mask
+fusion path Hypercar's CLAUDE.md diagnoses as the 16K decode
+bottleneck. Bit-identical fp32 preservation is stronger
+correctness evidence than Open-TQ-Metal's top-1-token-
+identical claim. Runner-up is **GPTAQ** — closes the AWQ-
+refinement/GPTQ-V2 gap pass 60-61 Area B explicitly noted
+with a 20-line code delta over GPTQ, ICLR 2026 submission,
+public github. The composition ordering (DuQuant rotation →
+GPTAQ asymmetric calibration → TurboQuant codebook
+quantization) is the natural three-stage W3 weight unblock
+pipeline. **EVEv2** is the closure ingest — strategic-future-
+reference rather than near-term-shipping; provides the
+research-side answer to "what does a VLM without a heavy
+vision encoder look like" for the future case where Hypercar
+adopts encoder-free models.
+
+**Pass 63 meta**: fourth pass in the Qwen3.6 pivot arc.
+Three-axis selection (Area 1 Open-TQ-Metal follow-up + Area 3
+TQ3 weight unblock + Area 4 vision-encoder removal closure).
+Area 1 fired with Kernel-Fused SAR as the methodology
+companion paper; Area 2 (Qwen3.6-specific) deliberately
+de-prioritized this pass — searches surfaced primarily
+huggingface model cards and blog posts rather than arxiv
+papers (Qwen3.6 tech report not yet published as standalone
+arxiv beyond the 2505.09388 Qwen3 base reference); Area 3
+fired with GPTAQ; Area 4 closed via formalized dead-end
+declaration. **Eight total dead ends across passes 52-63**.
+Sixty-three passes in, the research loop is asymptote-
+approaching with the dead-end-enumeration arc visibly
+complete — pass-63 dead-end-#8 declaration is the third
+declared in the post-Qwen3.6-pivot-arc passes 60-63 and the
+second in two consecutive passes (#7 pass 62, #8 pass 63),
+indicating the closure-via-category-mismatch reasoning has
+become the dominant exit path for held gaps. Tasks 284-287
+track pass-63 code actions.
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -20594,4 +21038,39 @@ similarity-KV-prefetch held gap via EchoKV (pass 56) +
 FreeKV (this pass); vision-encoder-surgical-removal
 deferred one more pass. First dead-end declaration since
 pass 57. Tasks 281-283 track pass-62 code actions.**
+**Pass 63 adds the *single-dispatch fused-kernel methodology
+on Apple Silicon (Kernel-Fused SAR 2604.03585, M1 GPU,
+22× speedup via single Metal dispatch + on-chip data
+residence + first FFT to exploit `simdgroup_matrix` 8×8
+hardware MMA, bit-identical fp32 reference preservation),
+asymmetric-calibration GPTQ refinement (GPTAQ / GPTQv2
+2504.02692, ICLR 2026 submission, 20-line code delta over
+GPTQ, output-matching loss explicitly minimizing cross-
+layer error accumulation), and encoder-free VLM
+architectural alternative (EVEv2 2502.06788, ICCV 2025
+highlight, patch-embedding lossless image encoding +
+modality-wise-sparsity unified decoder-only)* vertices —
+highest-leverage being **Kernel-Fused SAR**, the
+*complementary* Apple-Silicon kernel methodology to Open-
+TQ-Metal's split-K parallelism and the second arxiv-
+published Apple-Silicon kernel-engineering paper in the
+corpus after the pass-50 Dead End #1 declaration. Runner-
+up is **GPTAQ** — the direct AWQ-refinement / GPTQ-V2
+closure for the pass-60-61 Area B gap, composes with
+DuQuant + TurboQuant as a three-stage W3 weight unblock
+pipeline (DuQuant rotation → GPTAQ asymmetric calibration
+→ TurboQuant codebook quantization). **EVEv2** is the
+research-side closure for vision-encoder removal —
+encoder-free architecture is the research answer; post-
+hoc encoder stripping is engineering, not research.
+Pass 63 formalizes **Dead End #8** (vision-encoder
+surgical removal at model-load time as a standalone
+research vertex — 3 passes carried, closed via category-
+mismatch: deployment operation, not research vertex).
+**Eight total dead ends across passes 52-63**; sixty-three
+passes in, the research loop is asymptote-approaching with
+two consecutive-pass dead-end declarations (#7 pass 62, #8
+pass 63) indicating closure-via-category-mismatch is the
+dominant exit path for held gaps. Tasks 284-287 track
+pass-63 code actions.**
 

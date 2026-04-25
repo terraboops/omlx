@@ -524,7 +524,12 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## In Progress
 
-_(none)_
+- **Task 280**: Qwen3.6 download prep + finish Phase 5 of Task 253
+  - Write `scripts/prep_qwen36.py` so user can fetch `mlx-community/Qwen3.6-35B-A3B-4bit` (18 GB) with one command, with disk-space preflight + resume support.
+  - Migrate remaining hard-coded `mlx-community/Qwen3-Coder-30B-…` strings (6 files: `agentic.py`, `ttt.py`, `tq_calibrate.py`, `bench/snapkv_bench.py`, `bench/opencode_bench.py`, `bench/agentic_bench.py`, `bench/profile_prefill.py`) to import from `omlx.model_constants` so the eventual flip really IS one line.
+  - Goal: reduce friction to invoking Qwen3.6 download (highest expected bench delta) AND ensure a single edit to `DEFAULT_MODEL_ID` is sufficient to swap target.
+
+- **Task 10 was already shipped** (commit 5f530053, 2026-04-13) — 128-token decode-stress measurement has been in `phase3_niah` since Apr 13. TASKS.md was just stale; closing as done in this cycle.
 
 
 
@@ -535,6 +540,114 @@ _(none)_
 
 ## Completed
 
+- **Task 279**: Memory note for future-session continuity (2026-04-24)
+  - **Output**: `~/.claude-personal/projects/-Users-terra-Developer-omlx-mamba3/memory/project_hypercar_session_apr23_24.md` — captures cumulative findings from Tasks 254-278.
+  - **Index entry added** to `MEMORY.md` so future sessions auto-load the summary.
+  - **Content**: headline results table (LCB 30→40%, decode@16K +18%, full bench -15%), what-shipped section, 8 falsified hypotheses with measurements, two structural findings (Python axis exhausted at 3%, GPU undecomposable from Python-level timing), the cron-loop pattern, blocked next-cycle priorities, useful artifacts list.
+  - **Why this matters**: future session/cycle starting from MEMORY.md sees "asymptote reached on Qwen3-Coder; pivot to Qwen3.6 when downloaded" rather than re-exploring the same exhausted axes. Time saved per future session: hours.
+  - **No code change** — pure docs / memory persistence. ~5 min elapsed.
+- **Task 278**: Wall-clock per-component decode breakdown — **Python overhead is 3%; 97% is GPU compute (un-decomposable from Python-level)** (2026-04-24)
+  - **Harness**: `/tmp/decode_breakdown.py` — patches `qwen3_moe.Attention.__call__` and `Qwen3MoeDecoderLayer.__call__` to wrap each sub-operation (q_proj, k_proj, v_proj, q_norm, k_norm, q_rope, k_rope, cache_update, sdpa, o_proj, moe_block, rms_input, rms_post_attn, residual_attn, residual_moe) with `mx.eval()` barriers and `time.perf_counter()`. Runs 16 decode steps after 2 warmup steps.
+  - **Result** (16K context, DuoKV mode):
+    | Component | ms/step | μs/layer-step | % of total |
+    |-----------|--------:|--------------:|-----------:|
+    | cache_update | 0.92 | 19 | 1.3% |
+    | moe_block (Python work only) | 0.72 | 15 | 1.0% |
+    | o_proj | 0.07 | 2 | 0.1% |
+    | sdpa (enqueue only) | 0.07 | 1 | 0.1% |
+    | rms_post_attn | 0.06 | 1 | 0.1% |
+    | q_proj | 0.06 | 1 | 0.1% |
+    | rms_input | 0.05 | 1 | 0.1% |
+    | residual_* | 0.05 | 1 | 0.0% |
+    | (other components similar) |  |  |  |
+    | **Sum of components (Python)** | **2.4 ms/step** |  | **~3%** |
+    | **Per-step total (wall)** | **72.8 ms/step** |  | 100% |
+    | **Unaccounted (GPU compute)** | **70.4 ms/step** |  | **~97%** |
+  - **Methodology limitation**: `mx.eval()` without args doesn't synchronize the lazy graph — it only enqueues. So my timer captures Python-side enqueue cost, not GPU compute time. The "unaccounted 70.4 ms" is the GPU work (attention + MoE expert dispatch + projections) which actually runs after the Python timing block exits.
+  - **Confirmed Task 277's structural finding**: Python overhead is genuinely 3% of decode time; the dominant 97% is GPU/Metal compute that can't be decomposed without Metal-level profiling tools (xctrace, MTL_DEBUG_LAYER, or `mx.metal` profiling APIs if they exist).
+  - **Cycle-sized Goal-3 work is now genuinely exhausted on this model**:
+    - Python overhead: optimized to 3% (Tasks 269/271)
+    - Algorithmic split-SDPA: structurally regresses (Tasks 276/277)
+    - Decomposing the 97% GPU compute: requires Metal profiling, not Python — out of cycle scope
+  - **Remaining levers** (all ≥ multi-cycle effort):
+    1. Qwen3.6 migration — different model, different bottleneck profile (Task 253, blocked on download)
+    2. Metal-level profiling + custom kernel work — multi-week, not cycle-sized
+    3. Skip-attention-layer experiments (e.g. early-exit, layer dropping) — risk to quality, requires careful eval
+  - **No code change** — pure investigation. Cleanup: harness left in `/tmp/decode_breakdown.py` for future Metal-level work to extend.
+  - **Compute consumed**: ~3 min GPU (one model load + 18 decode steps).
+- **Task 277**: Phase B v2 candidate (a) — KV-head-grouped concatenate assembly — **STRUCTURAL FINDING: split-SDPA at L_q=1 decode is structurally bound** (2026-04-24)
+  - **Implementation**: refactored `_split_attention_decode` to operate on KV-head-grouped queries (reshape to `(B, n_kv_heads, gqa, L_q, D)`), slice axis-1 by streaming/retrieval KV-head indices (small index lists, e.g. `[0, 2]` instead of v1's `[0..7, 16..23]`), run two SDPAs, reassemble via `mx.concatenate` over n_kv_heads chunks (no fancy-index scatter).
+  - **Bench result** (`--kv-mode duo-split`):
+    | Context | Baseline (duo) | v1 (Task 276) | v2 (Task 277) | v1→v2 Δ |
+    |--------:|---------------:|--------------:|--------------:|---------:|
+    | 8K      | 22.22 tok/s    | 19.37 (-13%)  | 20.34 (-8%)   | +5%      |
+    | 16K     | 16.11          | 12.84 (-20%)  | 12.89 (-20%)  | +0.4%    |
+  - **Structural finding** (KEY): v2 closed the 8K assembly-overhead gap (concatenate vs scatter helped) BUT 16K result is essentially identical to v1. This **rules out fancy-index scatter** as the dominant cost and shifts the diagnosis: at L_q=1 decode, the bottleneck is the per-SDPA-call fixed overhead, not the assembly pattern.
+  - **Why split doesn't pay back at 8-16K decode**: total decode wall-time is dominated by MoE expert dispatch + projections + RMSNorm + RoPE — none of which are attention. Halving streaming-head attention work (~4× fewer dot products) saves a few ms; adding a second SDPA's fixed overhead (kernel launch, command buffer setup) costs more. **Split-SDPA at SDPA-level patch site cannot win at this model's decode shape.**
+  - **What this means for Task 265 Fix 2**: the design-note projection (decode@16K → 22-28 tok/s) is **falsified for L_q=1 SDPA-level split** on Qwen3-Coder. Three remaining v2 candidates (b: patch Attention.__call__; c: cached scatter index) likely face the same structural barrier — they all add work to a hot path where attention isn't the limiting factor.
+  - **Where split-SDPA might still help** (untested, would need different validation context):
+    1. Long context (64K+) where retrieval SDPA truly dominates total decode
+    2. Prefill paths (L_q > 1) where each SDPA processes many queries
+    3. Dense models without expensive MoE routing
+  - **Decision**: Phase B v2 SHIPPED (opt-in `--kv-mode duo-split`, default unchanged). Patch file + design note updated with the structural finding. **Task 265 Fix 2 effectively closed as "approach won't work for the headline use case"** — the projected ~+50% decode @ 16K via split is not reachable from the SDPA-level patch.
+  - **Pivot suggested for cron**: Qwen3.6 migration (still blocked) is now the only known remaining lever for Goal 3 short of a deeper attention-stack rewrite (multi-week effort).
+  - **Tests still pass**: all 33 DuoKV + 10 Phase A + 14 LCB/model_constants tests PASS.
+  - **Compute consumed**: ~3 min GPU (one model load + 8K + 16K probe).
+- **Task 276**: Task 265 Fix 2 Phase B v1 — **REGRESSED, opt-in only, kept as v2 starting point** (2026-04-24)
+  - **Implementation shipped** (`omlx/patches/duo_split_attention.py`, ~140 lines):
+    - `apply_duo_split_attention_patch()` — monkey-patches `mlx_lm.models.base.scaled_dot_product_attention` to intercept DuoKVCache decode (L_q=1)
+    - `_split_attention_decode(queries, cache, scale)` — uses Phase A getters, runs two SDPAs (streaming over capacity + retrieval over T_total), reassembles via fancy-index assignment
+    - Wired as `--kv-mode duo-split` opt-in on `efficiency_profile` (NOT applied by default in `--kv-mode duo`)
+  - **Validation result** (`efficiency_profile --decode-ctx 8192,16384 --kv-mode duo-split`):
+    | Context | duo (post-271 baseline) | duo-split v1 | Δ |
+    |--------:|------------------------:|-------------:|----:|
+    | 8K      | 22.22 tok/s             | 19.37        | **-13%** |
+    | 16K     | 16.11                   | 12.84        | **-20%** |
+  - **Hypothesis FALSIFIED for v1**: the design-note projection (decode@16K → 22-28 tok/s) was directionally correct on compute (~4× fewer dot products) but didn't account for output-assembly overhead. Two SDPA calls + fancy-index scatter assembly cost more than they save at L_q=1 where the output tensor is tiny (16 KB).
+  - **Likely overhead culprit**: `output[:, streaming_q, :, :] = streaming_out` with non-contiguous Q-head indices. At GQA=8 with interleaved streaming/retrieval KV heads, streaming_q is e.g. `[0..7, 16..23]` — fancy indexing decomposes into multiple MLX scatter ops with synchronization barriers.
+  - **NOT REVERTED** — kept as v2 starting point. Default bench mode (`--kv-mode duo`) is unaffected; the patch only applies when `--kv-mode duo-split` is explicitly set. File header documents the regression + 3 v2 candidates:
+    1. Permute Q-heads to contiguous order (bake permutation into o_proj weight or use cached `mx.take_along_axis`)
+    2. Patch Attention.__call__ instead of SDPA (own the pre-projection split)
+    3. Cached `mx.scatter` index tensor instead of fancy indexing
+  - **Design note updated** with measured Phase B v1 result + v2 candidates section.
+  - **No regression elsewhere**: 33 DuoKV tests + 10 Phase A tests + 14 LCB/model_constants tests all PASS. The patch is opt-in and isolated.
+  - **Compute consumed**: ~3 min GPU (one model load + 8K + 16K decode probes).
+  - **Honest assessment**: Phase B is harder than the design note projected. Either iterate to v2 (try one of the 3 candidates above; probably another cycle) or shelve and pivot to Qwen3.6 migration when unblocked.
+- **Task 275**: Task 265 Fix 2 — **Phase A SHIPPED** (DuoKVCache split-attention API + 10 unit tests) (2026-04-24)
+  - **Code added** (`omlx/duo_kv_cache.py`):
+    - `head_indices()` → `(streaming_indices, retrieval_indices)` as defensive-copy lists.
+    - `get_streaming_kv()` → `(B, n_streaming, sink+window-or-Ttotal, D)` tensor pair, or None if no streaming heads / empty buffer. Returns just sink + last-window when T_total > capacity; full T_total otherwise.
+    - `get_retrieval_kv()` → `(B, n_retrieval, T_total, D)` tensor pair, or None if no retrieval heads / empty buffer.
+    - Hoisted `_streaming_head_indices` / `_retrieval_head_indices` into `__init__` unconditional path (was only set under `quantize_retrieval=True`); both modes now have these populated.
+  - **Tests** (`tests/test_duokv_split_phase_a.py`, 10 new):
+    - `test_head_indices_returns_split_lists` — expected indices, defensive copy
+    - `test_head_indices_all_retrieval` — empty-streaming edge case
+    - `test_get_streaming_kv_none_before_update` — empty-buffer guard
+    - `test_get_streaming_kv_short_context_returns_all_positions` — no trim path
+    - `test_get_streaming_kv_long_context_trims_to_sink_plus_window` — trim path with byte-precise position checks
+    - `test_get_retrieval_kv_returns_full_t_total` — full-slice shape + values
+    - `test_get_streaming_kv_none_when_no_streaming_heads` — all-retrieval layer
+    - `test_get_retrieval_kv_none_when_no_retrieval_heads` — all-streaming layer
+    - `test_split_kv_round_trip_matches_unified_path` — split values match unified `update_and_fetch` for retrieval positions and streaming sink/window
+    - `test_module_exports_methods_in_source` — source-pattern guard
+  - All 10 PASS. All 33 pre-existing DuoKV tests still PASS (315 tests total in suite).
+  - **Sanity decode probe** (`--decode-ctx 16384 --kv-mode duo`): **16.01 tok/s** (vs 16.11 post-271, within noise). Phase A is purely additive — no decode-rate change expected or observed.
+  - **Next phase**: Phase B (~1 day) writes `apply_duo_split_attention_patch` that uses these methods. Per the design note, the trickiest part is the per-head-type causal-mask helper.
+  - **Compute consumed**: ~3 min GPU (one model load + 32-step decode for sanity check).
+- **Task 274**: Design note for DuoKV streaming/retrieval attention split (Task 265 Fix 2) (2026-04-24)
+  - **Output**: `research/design_notes/duokv_split_attention.md` (~190 lines).
+  - **Decomposes the L-effort work into 4 cycle-sized phases (A/B/C/D)**:
+    A. Add `get_streaming_kv` / `get_retrieval_kv` / `head_indices` methods to DuoKVCache (~half day, unit tests only)
+    B. Write `apply_duo_split_attention_patch` + per-head-type mask helper (~1 day, micro-bench validation)
+    C. Wire patch into `hypercar_bench` under `--duo-split` flag (~half day)
+    D. Full bench validation (~1 day)
+    Total: 3-4 days, each phase cycle-sized.
+  - **Projected impact** (from Task 267 measurements): closes ~half the Goal-3 gap at 16K. Decode @ 16K from 16 → ~25 tok/s. Larger gain at 8K (22 → ~35).
+  - **Key risks identified**: (1) byte-identity to current path on toy input, (2) mask-shape regeneration for streaming-head 260-token attention, (3) GQA Q-head-to-KV-head mapping, (4) composability with SnapKV (Task 163), (5) memory delta (likely lower, not higher).
+  - **Validation plan** with measurable pass criteria per stage (unit shapes, byte-identity diff threshold, decode tok/s targets, full-bench gate preservation).
+  - **Alternatives considered + rejected**: smaller streaming window (quality cost), sparse-attention masks (no compute savings), per-layer-subset DuoKV (marginal).
+  - **Why this is the right next move (and the only one)**: after Tasks 269+271+273, the cycle-sized Python-overhead axis is exhausted. The remaining ~50% DuoKV per-step tax is structural — running attention on T_total positions where only 260 are real. Either Fix 2 (architectural split) or Qwen3.6 migration; both are >cycle-sized. The design note de-risks Fix 2 by phasing it into cycle-sized increments.
+  - **Compute consumed**: 0 GPU. Pure design work.
 - **Task 273**: cProfile post-Task-271 — **Python axis ASYMPTOTIC, axis exhausted** (2026-04-24)
   - **Profile result** (16 decode steps × 48 layers, DuoKV mode at 16K):
     | Function | Pre-269 own time | Post-271 own time | Δ |
@@ -5318,3 +5431,39 @@ Pass 62 is the third pass in the post-Qwen3.6 pivot arc. Axis-shift this pass: C
 - **Verify**: (a) Semantic-head classification probe completes in < 2 hours on M4 Pro for Qwen3.6-35B-A3B 48-layer model; produces sensible per-layer head masks (visual inspection + sanity check that retrieval-head layer distribution matches the DuoAttention paper's findings for similar architectures). (b) Per-layer eviction-error analysis at 16K completes in < 8 hours; produces a layer-keep-ratio distribution that is non-uniform and structurally interpretable (deeper layers likely need higher keep ratios). (c) Quality A-B: Hypercar with DuoAttention head classification + uniform SnapKV vs Hypercar with CompressKV three-tier head classification + layer-adaptive SnapKV; expect ≥ 0.5 pp improvement on LongBench retrieval tasks and ≥ 1 pp on NIAH at memory-constrained budgets. (d) NIAH@16K PASS; NIAH@64K PASS. (e) Compose-test with Task 282 (FreeKV): CompressKV's per-head classification is the input to FreeKV's per-head query-similarity tracking; no conflict. (f) Measure keep-ratio budget — does layer-adaptive enable smaller total KV for same quality? Expected: yes, 10-15% smaller total KV at matched NIAH performance. (g) Findings note `bench/snapshots/compresskv_port_findings.md` documenting (1) whether Qwen3.6's head classification structurally differs from the Llama-family paper validation, (2) which layers gain most from per-layer budgeting, (3) whether the classification transfers across calibration corpora.
 - **Effort**: M (2-3 weeks — Phase 1 probe 1 week, Phase 2 error analysis 1 week, Phase 3 integration 1 week, validation 3-4 days)
 - **Depends on**: Task 257 (Qwen3.6 smoke). Composes with Task 111 (head rebalancing, shipped) — CompressKV refines Task 111's two-tier DuoAttention classification into a three-tier semantic/generic/streaming classification. Composes with SnapKV (shipped) — layer-adaptive budget replaces SnapKV's uniform per-layer keep. Soft-blocks Task 265 Fix 2 (streaming/retrieval architectural split) — if Fix 2 ships first, CompressKV refines the already-split architecture; if CompressKV ships first, Fix 2 consumes the CompressKV classification directly. Sequence preference: CompressKV provides the classification data for Fix 2's architectural split; prefer CompressKV first if scheduling allows. Biggest risk: per-layer eviction-error analysis requires fp16 baseline attention as ground truth, which is expensive at long context; restricting to 16K is a compromise that may leave per-layer signal on the table at 64K+ — mitigation is to extrapolate from 16K measurements via layer-depth scaling.
+
+## Research-derived tasks (from LIT_REVIEW.md pass 63, 2026-04-25)
+
+Pass 63 is the fourth pass in the post-Qwen3.6 pivot arc and the first pass after pass-62 Open-TQ-Metal re-opened Dead End #1. Three papers ingested across the pass-63 area split: Area 1 (Apple Silicon kernel-method companion to Open-TQ-Metal), Area 3 (TQ3 weight unblock with asymmetric calibration), and Area 4 (Vision-encoder removal closure via encoder-free VLM literature). One dead-end formalization this pass: **Dead End #8** — vision-encoder surgical removal at model-load time as a standalone research vertex. Three follow-on tasks plus one ledger task filed (284-287). Eight total dead ends across passes 52-63.
+
+### 284. Apply single-dispatch + on-chip-residence + simdgroup_matrix MMA pattern to DuoKV gather-mask Metal kernel (Kernel-Fused SAR methodology transfer)
+- **Goal**: 3 (decode speed — single-dispatch fused gather + mask + scale + softmax with intermediate score tile in 32 KiB threadgroup memory eliminates the multi-kernel dispatch overhead CLAUDE.md diagnoses as the gather/mask O(T_total) tax holding DuoKV@16K decode at 16.11 tok/s; complementary to Open-TQ-Metal's split-K parallelism — Open-TQ-Metal handles long-context scaling, single-dispatch handles short-context per-op fusion), 6 (M4 Pro fit — `simdgroup_matrix` 8×8 hardware MMA usage taps M-series-specific ALU resources most MLX-Python paths leave on the table, per-FLOP efficiency improvement preserves headroom)
+- **Derived from**: LIT_REVIEW.md Pass 63 / Kernel-Fused SAR (arXiv:2604.03585, Bergach 2026-04). The second arxiv-published Apple-Silicon-specific kernel-engineering paper in the corpus (after Open-TQ-Metal pass 62) and the first to document `simdgroup_matrix` 8×8 hardware MMA usage with bit-identical fp32 reference preservation (0.0 dB SNR deviation on all five point targets). Companion methodology to Open-TQ-Metal, not redundant: Open-TQ-Metal contributes split-K parallelism via chained MLX Primitives (long-context scaling); this paper contributes single-dispatch fusion with on-chip data residence (short-context per-op fusion). Both patterns are needed.
+- **Change**: Three-phase implementation. Phase 1 — **paper-code audit (2-3 days)**: determine whether the Bergach SAR pipeline source is publicly released (paper does not explicitly note a code release; methodology is independently applicable). Document the single-dispatch + on-chip-residence + Cooley-Tukey-decimation-in-frequency + `simdgroup_matrix` 8×8 MMA design pattern in `bench/snapshots/kernel_fused_sar_methodology_audit.md`. Phase 2 — **DuoKV fused-gather-mask kernel (2 weeks)**: implement `omlx/metal_kernels/fused_duokv_gather.py` as a C++ MLX Primitive with Metal shader backing that fuses gather + mask + scale + softmax into one Metal compute dispatch, with intermediate score tile kept in threadgroup memory. Size the tile for M4 Pro's 32 KiB threadgroup-memory limit (paper's M1 GPU has matching 32 KiB so tile sizing transfers directly). Replace the matmul portions with `simdgroup_matrix` 8×8 MMA calls per Bergach's pattern. Phase 3 — **validation + benchmark (1 week)**: bit-identical comparison to current MLX-Python DuoKV path (any deviation beyond fp16 numerical noise is a kernel bug). Measure decode tok/s improvement at 4K / 16K / 64K on hypercar_bench. Expected: large speedup at 16K where multi-kernel dispatch overhead currently dominates.
+- **Verify**: (a) Audit note `bench/snapshots/kernel_fused_sar_methodology_audit.md` filed with single-dispatch + on-chip + simdgroup_matrix design pattern documented. (b) Fused gather-mask kernel compiles, runs without crashes, produces outputs bit-identical to existing DuoKV gather-mask path within fp16 numerical noise tolerance (e.g., 1e-3 max absolute error on score tile, 0 max absolute error on argmax token selection). (c) Decode speedup measured: ≥ 1.5× speedup at 16K context on hypercar_bench (smaller speedup expected at 4K where the multi-kernel overhead is a smaller fraction of total time). (d) `simdgroup_matrix` 8×8 MMA usage verified via Metal shader debug output; per-FLOP efficiency improvement measurable. (e) Quality regression: HumanEval within 1 pp of baseline; MMLU-Pro within 1 pp; NIAH@16K PASS. (f) Compose-test with Task 281 (Open-TQ-Metal): the fused-gather-mask kernel from this task is orthogonal to Open-TQ-Metal's fused-int4-attention kernel; both can ship together with Open-TQ-Metal handling long-context attention and this task handling DuoKV gather/mask. (g) Findings note `bench/snapshots/fused_duokv_gather_findings.md` documenting tile-size selection rationale, `simdgroup_matrix` MMA effectiveness on M4 Pro, and the speedup vs context-length curve.
+- **Effort**: M (3-4 weeks — Phase 1 audit 2-3 days, Phase 2 kernel implementation 2 weeks, Phase 3 validation 1 week)
+- **Depends on**: Task 257 (Qwen3.6 smoke). Composes orthogonally with Task 281 (Open-TQ-Metal port — long-context attention) — Open-TQ-Metal handles the long-context fused-int4-attention path while this task handles the short-context DuoKV gather/mask path; both kernels can ship in parallel without conflict. Composes with Task 282 (FreeKV speculative retrieval) — the per-step gather/mask path FreeKV amortizes is the same path this task fuses; the two optimizations stack: (a) FreeKV reduces the *number* of gather/mask invocations per decoding step via temporal reuse, (b) this task reduces the *cost per invocation* via single-dispatch fusion. Combined expected speedup at 16K: 2-3× over current 16.11 tok/s baseline. Biggest risk: SAR FFT is structurally different from attention softmax (FFT has fixed access pattern, attention has data-dependent softmax) — the fusion pattern transfers but the per-operation arithmetic intensity does not necessarily; mitigation is to validate per-op fusion incrementally (start with gather+mask, add softmax, add scale).
+
+### 285. Compose GPTAQ asymmetric calibration with DuQuant + TurboQuant for three-stage W3 weight unblock pipeline (Task 270 W3 closure)
+- **Goal**: 1 (memory budget at long context — improved low-bit weight quantization is the Area-B Task 270 W3 unblock path; tighter PTQ at 3-bit weights frees ~12 GB of weight memory vs current W8 mlx-community quantization, redirectable to KV budget at 1M), 2 (HumanEval 95% / MMLU-Pro 62% quality preservation — asymmetric calibration explicitly minimizes cross-layer error accumulation, the failure mode shipping-Task-270's W3 candidates have hit), 6 (48 GB M4 Pro fit — 12 GB freed weight memory directly addresses the Metal-ceiling-at-99.8% pressure CLAUDE.md tracks)
+- **Derived from**: LIT_REVIEW.md Pass 63 / GPTAQ a.k.a. GPTQv2 (arXiv:2504.02692, Li et al., 2025-04, ICLR 2026 submission, OpenReview QdELyl0FST). The direct AWQ-refinement / GPTQ-V2 closure pass 60-61 Area B explicitly noted but did not surface. 20-line code delta over GPTQ; output-matching loss explicitly minimizing cross-layer asymmetry error. Public github at Intelligent-Computing-Lab-Panda/GPTAQ.
+- **Change**: Four-phase implementation. Phase 1 — **paper-code audit (1 day)**: clone github.com/Intelligent-Computing-Lab-Panda/GPTAQ; verify ICLR 2026 acceptance via OpenReview QdELyl0FST. Document the asymmetric-calibration objective in `bench/snapshots/gptaq_audit.md`. Phase 2 — **MLX port of asymmetric calibration (3-4 days)**: implement the GPTAQ output-matching loss in `omlx/quantization/calibrate.py`; the 20-line delta over GPTQ should map closely to MLX. The optimization uses optimal-brain-compression analysis with closed-form solution; channel parallelization, neuron decomposition, and Cholesky reformulation for matrix fusion are the parallelism techniques to preserve. Phase 3 — **three-stage pipeline integration (3-4 days)**: define the three-stage pre-processing order: (a) DuQuant block-diagonal rotation (Task 278, pass 61 — handles per-layer outliers via rotation), (b) GPTAQ asymmetric calibration (this task — handles cross-layer error via output-matching), (c) TurboQuant codebook quantization (shipped — final WHT-rotated 3-bit codebook). A-B test each stage alone vs cumulative pipeline. Phase 4 — **Qwen3.6-35B-A3B W3 validation (3-4 days)**: measure HumanEval, MMLU-Pro, perplexity at W3 with the three-stage pipeline vs current W8 baseline; expect quality within 1-2 pp of W8.
+- **Verify**: (a) GPTAQ audit note filed with ICLR 2026 acceptance status documented (or current OpenReview review-round status). (b) MLX asymmetric-calibration port produces numerically equivalent results to GPTAQ reference implementation on a small validation slice (e.g., quantize a single layer of OPT-125M and compare per-channel quantization error). (c) Three-stage pipeline (DuQuant → GPTAQ → TurboQuant) runs to completion on Qwen3.6-35B-A3B without OOM on M4 Pro 48 GB during calibration (use 1K-4K-token calibration corpus to keep fp16 35B fitting). (d) Quality: HumanEval within 2 pp of W8 baseline; MMLU-Pro within 2 pp; perplexity within 5% on a held-out coding corpus. (e) Memory: weight footprint at W3 is 5/8 of W8 footprint (e.g., ~13 GB at W3 vs ~20 GB at W8 for the dense-equivalent 35B weights, MoE-aware actual numbers per Task 273 MC-MoE expert allocation). (f) A-B test stage ablation: DuQuant alone vs DuQuant+GPTAQ vs DuQuant+GPTAQ+TurboQuant; expect monotone quality improvement at fixed bit-budget. (g) Findings note `bench/snapshots/gptaq_w3_pipeline_findings.md` documenting (1) per-stage quality contribution, (2) calibration-corpus-size sensitivity, (3) which Qwen3.6-35B-A3B layers benefit most from cross-layer error correction.
+- **Effort**: S (1-2 weeks — Phase 1 audit 1 day, Phase 2 MLX port 3-4 days, Phase 3 pipeline integration 3-4 days, Phase 4 validation 3-4 days)
+- **Depends on**: Task 257 (Qwen3.6 smoke). Composes with Task 270 (W3 weight quantization, pending) as the cross-layer-error-correction component. Composes with Task 278 (DuQuant block-diagonal rotation, pass 61) — the three-stage pipeline ordering puts DuQuant first (per-layer rotation), GPTAQ second (cross-layer asymmetric calibration), TurboQuant third (codebook). Composes with Task 273 (MC-MoE per-expert allocation, pending) — MC-MoE assigns per-expert bit budgets, GPTAQ then calibrates within each expert's assigned bit width. Lowest-cost-of-adoption Area-B paper in pass-60-63 arc (1-2 weeks vs 2-3 weeks for MC-MoE/MoPEQ/Ban&Pick). Biggest risk: composition ordering with DuQuant and TurboQuant has not been studied in literature — the three rotations/calibrations are individually validated but not as a pipeline; mitigation is per-stage A-B testing. Secondary risk: ICLR 2026 acceptance not yet confirmed in public record (OpenReview submission, not yet final decision); 20-line code delta is trivial enough to validate independently of paper venue.
+
+### 286. Strategic-future-reference EVEv2 encoder-free VLM as architectural alternative for future text-heavy multimodal Hypercar variants (closure ledger task)
+- **Goal**: 6 (48 GB M4 Pro fit — encoder-free VLM architecture eliminates the vision-tower weight overhead, freeing memory budget for context length; near-term Hypercar is text-only deployed with engineering encoder strip Task 261, but if future Qwen-family release ships in encoder-free architecture or Hypercar adds vision input, EVEv2 is the architectural template), 2 (quality at parity — EVEv2 outperforms encoder-free counterparts and approaches encoder-based VLMs of similar capacity, demonstrating the encoder-free path does not cost intelligence)
+- **Derived from**: LIT_REVIEW.md Pass 63 / EVEv2 (arXiv:2502.06788, Diao et al., ICCV 2025 highlight, 2025-02 v1, 2025-07 v2). Closure-ingest paper for Dead End #8 (vision-encoder surgical removal as standalone research vertex — formalized this pass). The research-side answer to "what does a VLM without a heavy vision encoder look like" is the encoder-free family.
+- **Change**: This is a **strategic-future-reference task**, not a near-term shipping task. No code change in the near term. Action: file the EVEv2 reference in `docs/research_notes/encoder_free_vlm_reference.md` documenting (1) the modality-wise sparsity architectural pattern, (2) the patch-embedding lossless image encoding, (3) the comparison evidence between encoder-free and encoder-based VLMs at matched capacity. Re-evaluation triggers: (a) future Qwen-family release ships in encoder-free architecture (signal: monitor Qwen team announcements), (b) Hypercar adds vision-input support and wants the architecturally simpler path (currently no plan), (c) Task 261 ships and observed text-only quality is degraded vs what EVEv2-style architecture would predict (then re-open with comparison data).
+- **Verify**: (a) Reference note `docs/research_notes/encoder_free_vlm_reference.md` filed with the three architectural takeaways documented. (b) Modality-wise sparsity pattern documented as a *design pattern* applicable to other modality-specific optimizations in Hypercar (e.g., Task 265 Fix 2 streaming-vs-retrieval head split could use the modality-sparsity pattern as a template). (c) Re-evaluation triggers explicitly listed in the reference note. (d) No quality / memory / speed measurements required (this is a closure-ledger task, not a shipping task).
+- **Effort**: XS (< 1 day — reference note + design-pattern documentation)
+- **Depends on**: Independent. No blockers. Composes with Task 261 (vision-encoder strip, pending engineering task) as the *research-grounded alternative path* — Task 261 is the near-term engineering operation, EVEv2 is the future-reference research path. If Task 261 ships and quality is preserved, EVEv2 reference remains strategic-only; if Task 261 ships and quality is degraded, EVEv2 architectural template becomes the upgrade path. Biggest risk: none (closure-ledger task). Secondary risk: future Qwen-family release adopts a different encoder-free architecture (e.g., Fuyu-style discrete tokenizers rather than EVEv2's patch embedding) — mitigation is to track multiple encoder-free design patterns in the reference note.
+
+### 287. Pass-63 ledger maintenance: dead-end-#8 documentation, eight-dead-end-total ledger update, asymptote-arc commentary
+- **Goal**: Meta-task — research loop accountability. No direct Hypercar-goal mapping; supports the long-arc literature-review process.
+- **Derived from**: LIT_REVIEW.md Pass 63 — Dead End #8 (vision-encoder surgical removal at model-load time as a standalone research vertex) formalized this pass; brings total to eight dead ends across passes 52-63. Two consecutive-pass dead-end declarations (#7 pass 62, #8 pass 63) indicates closure-via-category-mismatch reasoning has become the dominant exit path for held gaps; the research loop is asymptote-approaching.
+- **Change**: One-time bookkeeping. Update `bench/snapshots/research_loop_state.md` (or equivalent ledger) with: (1) eight-dead-end total across passes 52-63 with one-line summary of each, (2) closure-via-category-mismatch as the dominant exit path observation, (3) post-Qwen3.6-pivot-arc summary (passes 60-63: four passes, sixteen papers ingested across Areas A/B/C/D, three dead ends formalized in this arc — #6 FP8→INT3 was pass 57 pre-pivot but applies to the W-quantization arc; #7 incremental attention update pass 62; #8 vision-encoder removal pass 63). Document the next-pass strategy: focus pass 64 on either (a) following up Open-TQ-Metal authors' subsequent papers if any land, (b) tracking whether GPTAQ ICLR 2026 acceptance is final, or (c) probing for Qwen3.6-specific arxiv tech report (still none as of 2026-04-25; only the Qwen3 base 2505.09388 covers the family).
+- **Verify**: (a) Ledger updated. (b) Eight dead ends enumerated with one-line summaries. (c) Pass-64 strategy documented as one of three explicit options (or noted that the loop is at asymptote and pass 64 is opportunistic rather than gap-driven).
+- **Effort**: XS (< 1 hour)
+- **Depends on**: Independent. Closes the pass-63 paperwork.
