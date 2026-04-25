@@ -6,11 +6,17 @@ generates coherent text, and reports memory + speed baselines. Until this passes
 Tasks 258-263 (bit-width tradeoff, quality re-run, native-1M audit, vision
 ablation, MoE re-validation, default migration) cannot start.
 
+Default model is Unsloth's Dynamic 2.0 4-bit MLX variant — important layers
+are upcasted to higher precision per Unsloth's per-layer sensitivity analysis,
+which structurally matches the Lyapunov + KVTuner approach our Tasks 207/270
+were designed to build manually. UD-MLX-4bit ranks 1st in 21 of 22 sizes on
+mean KL divergence per Unsloth's published GGUF benchmarks.
+
 Usage:
     .venv/bin/python -m omlx.bench.qwen36_smoke
-    .venv/bin/python -m omlx.bench.qwen36_smoke --model mlx-community/Qwen3.6-35B-A3B-4bit
-    .venv/bin/python -m omlx.bench.qwen36_smoke --model unsloth/Qwen3.6-35B-A3B-MLX-8bit
     .venv/bin/python -m omlx.bench.qwen36_smoke --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit
+    .venv/bin/python -m omlx.bench.qwen36_smoke --model unsloth/Qwen3.6-35B-A3B-MLX-8bit
+    .venv/bin/python -m omlx.bench.qwen36_smoke --model mlx-community/Qwen3.6-35B-A3B-4bit
     .venv/bin/python -m omlx.bench.qwen36_smoke --json    # machine-readable
 
 Gates (must all pass for Task 257 closure):
@@ -21,9 +27,11 @@ Gates (must all pass for Task 257 closure):
     5. Single-token decode ≥ 20 tok/s at empty cache (loose floor; tight is Goal 3 ≥50)
 
 Branch decisions from this run:
-    - 4-bit fits with K headroom → Task 258 picks 4-bit, proceeds to 259
-    - 4-bit fails coherence → 8-bit smoke test required, then Task 258 decides
-    - Both fail or OOM → halt migration, file blocker task
+    - UD-MLX-4bit passes all gates → Task 258 adopts UD as default, proceeds to 259
+    - UD-MLX-4bit fails coherence → fall back to mlx-community/Qwen3.6-35B-A3B-4bit
+      (plain 4-bit, more conservative quantization)
+    - Plain 4-bit also fails → 8-bit smoke test required (won't fit alongside KV at 1M)
+    - All fail or OOM → halt migration, file blocker task
 """
 
 from __future__ import annotations
@@ -189,8 +197,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "--model",
-        default="mlx-community/Qwen3.6-35B-A3B-4bit",
-        help="HF model ID (default: mlx-community/Qwen3.6-35B-A3B-4bit)",
+        default="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
+        help=(
+            "HF model ID (default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit — "
+            "Unsloth Dynamic 2.0 with important layers upcasted; "
+            "alternatives: unsloth/Qwen3.6-35B-A3B-MLX-8bit, "
+            "mlx-community/Qwen3.6-35B-A3B-4bit)"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument("-v", "--verbose", action="store_true")

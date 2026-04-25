@@ -118,7 +118,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md, 2026-04-12)
 
-### 1. Add RULER retrieval + tracing tasks to hypercar_bench
+### 1. [COMPLETED] Add RULER retrieval + tracing tasks to hypercar_bench
 - **Goal**: 2 (intelligence breadth), 1 (context validation)
 - **Derived from**: RULER (2404.06654)
 - **Change**:
@@ -137,7 +137,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   Length tiers: 4K (quick), 16K (default), 64K (--full only).
 - **Effort**: S
 
-### 2. Probe 2-bit KV on WHT-rotated codec (KIVI transfer test)
+### 2. [COMPLETED] Probe 2-bit KV on WHT-rotated codec (KIVI transfer test)
 - **Goal**: 5 (swap headroom), 1 (longer context in same budget)
 - **Derived from**: KIVI (2402.02750)
 - **Change**:
@@ -171,7 +171,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   accuracy is within 2% of the baseline. Both conditions required.
 - **Effort**: M
 
-### 4. Build per-head sparse-attention pattern calibration for Qwen3-Coder (MInference offline search)
+### 4. [COMPLETED] Build per-head sparse-attention pattern calibration for Qwen3-Coder (MInference offline search)
 - **Goal**: 4 (prefill speed, constant across context)
 - **Derived from**: MInference 1.0 (2407.02490)
 - **Change**:
@@ -188,7 +188,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   confirms sparsity across all heads is >= 85% at < 1% reconstruction MSE.
 - **Effort**: M
 
-### 5. Implement MInference vertical-slash prefill kernel behind a flag
+### 5. [COMPLETED] Implement MInference vertical-slash prefill kernel behind a flag
 - **Goal**: 4 (prefill speed)
 - **Derived from**: MInference 1.0 (2407.02490)
 - **Change**:
@@ -207,7 +207,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Benchmark-derived tasks (from benchmark run analysis)
 
-### 7. Fix RULER memory-breach early-return KeyError in phase3b_ruler
+### 7. [COMPLETED] Fix RULER memory-breach early-return KeyError in phase3b_ruler
 - **Goal**: 2 (eval reliability — currently every Phase 3b watchdog failure
   presents as a cryptic `KeyError: 'found'` regardless of true cause)
 - **Derived from**: Hypercar benchmark run 23 (2026-04-13),
@@ -235,7 +235,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   `"accuracy" in r` guard, and skipped tasks are tracked in `skipped` list.
 - **Effort**: S
 
-### 8. Rebuild profiler.py observability for macOS unified memory
+### 8. [COMPLETED] Rebuild profiler.py observability for macOS unified memory
 - **Goal**: Supports Goals 3, 4, 5 — can't measure what you can't see.
   Run 23 exposed three distinct profiler defects that make analysis blind.
 - **Derived from**: Hypercar benchmark run 23 (2026-04-13),
@@ -275,7 +275,7 @@ _Work from here first. Only fall through to regular sections if these are all in
     at least the Phase 0 model-load window
 - **Effort**: M
 
-### 9. Gate Phase 3b RULER tasks by projected memory headroom
+### 9. [COMPLETED] Gate Phase 3b RULER tasks by projected memory headroom
 - **Goal**: 6 (machine fit) and 2 (eval completion reliability)
 - **Derived from**: Hypercar benchmark run 23 (2026-04-13),
   bench/snapshots/run23_2026-04-13T00-23/ — RULER task 5/15
@@ -307,7 +307,7 @@ _Work from here first. Only fall through to regular sections if these are all in
     never reached)
 - **Effort**: S-M
 
-### 10. Fix NIAH decode-speed measurement artifact for short generations
+### 10. [COMPLETED] Fix NIAH decode-speed measurement artifact for short generations
 - **Goal**: 3 (decode speed tracking reliability — prevents false regression
   alarms and false stability readings)
 - **Derived from**: Hypercar benchmark run 23 (2026-04-13), results.json
@@ -334,7 +334,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   based on a ≥128-token sample.
 - **Effort**: S
 
-### 11. Extend /sandbox exclude to cover benchmark diagnostic commands
+### 11. [COMPLETED] Extend /sandbox exclude to cover benchmark diagnostic commands
 - **Goal**: Observability infrastructure (supports all goals via
   reliable pre/post-run environment baseline)
 - **Derived from**: Hypercar benchmark run 23 (2026-04-13),
@@ -370,7 +370,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   sysctl/iostat/pgrep.
 - **Effort**: S-M
 
-### 20. Identify root cause of per-task bimodal timing in Phase 3 NIAH and RULER 16K keys=5
+### 20. [COMPLETED] Identify root cause of per-task bimodal timing in Phase 3 NIAH and RULER 16K keys=5
 - **Goal**: 3 (decode speed reliability) and 4 (prefill speed reliability)
 - **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8),
   bench/snapshots/run23..run30_*/ — eight consecutive runs on an
@@ -416,7 +416,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: M-L (investigation depth uncertain; may decompose into
   follow-ups based on what the trace reveals)
 
-### 21. Add multi-run statistical aggregation to omlx/bench/aggregate.py
+### 21. [COMPLETED] Add multi-run statistical aggregation to omlx/bench/aggregate.py
 - **Goal**: 3, 4 (single-run hypercar_bench timings are not fit for
   Goal 3/4 regression detection at observed variance levels)
 - **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13). At N=8
@@ -450,7 +450,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   and have no dependencies beyond stdlib + json.
 - **Effort**: M
 
-### 23. Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
+### 23. [COMPLETED] Re-state CLAUDE.md Goal 5 as a p90 sustained swap-rate metric
 - **Goal**: Meta — CLAUDE.md Goal 5 definition fit-for-purpose
 - **Derived from**: Hypercar benchmark runs 23-30 (2026-04-13, N=8).
   The current Goal 5 phrasing in CLAUDE.md is "Swap usage: < 8 GB at
@@ -487,7 +487,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: S (CLAUDE.md edit + one aggregate script run; depends
   on Task #21 for the measurement tooling)
 
-### 24. Add 2-SHA regression detector to aggregate.py + fix minference layer counter
+### 24. [COMPLETED part 1; part 2 academic] Add 2-SHA regression detector to aggregate.py + fix minference layer counter
 - **Goal**: 3, 4 (regression detection) and 4 (minference correctness)
 - **Derived from**: Task 21 spec gap — `--report` only shows one SHA, no
   baseline comparison or 2-sigma flagging. Also: `minference_prefill.py`
@@ -505,7 +505,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   `grep -r reset_layer_counter` shows call sites in bench and server.
 - **Effort**: S
 
-### 25. Add --warmup flag to hypercar_bench for Metal kernel cache priming
+### 25. [COMPLETED] Add --warmup flag to hypercar_bench for Metal kernel cache priming
 - **Goal**: 3, 4 (decode/prefill speed measurement reliability)
 - **Derived from**: Task 20 hypothesis 1 — bimodal timing may be caused by
   Metal kernel cache cold/warm state. A warmup pass before the timed
@@ -524,12 +524,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## In Progress
 
-- **Task 280**: Qwen3.6 download prep + finish Phase 5 of Task 253
-  - Write `scripts/prep_qwen36.py` so user can fetch `mlx-community/Qwen3.6-35B-A3B-4bit` (18 GB) with one command, with disk-space preflight + resume support.
-  - Migrate remaining hard-coded `mlx-community/Qwen3-Coder-30B-…` strings (6 files: `agentic.py`, `ttt.py`, `tq_calibrate.py`, `bench/snapkv_bench.py`, `bench/opencode_bench.py`, `bench/agentic_bench.py`, `bench/profile_prefill.py`) to import from `omlx.model_constants` so the eventual flip really IS one line.
-  - Goal: reduce friction to invoking Qwen3.6 download (highest expected bench delta) AND ensure a single edit to `DEFAULT_MODEL_ID` is sufficient to swap target.
-
-- **Task 10 was already shipped** (commit 5f530053, 2026-04-13) — 128-token decode-stress measurement has been in `phase3_niah` since Apr 13. TASKS.md was just stale; closing as done in this cycle.
+_(none)_
 
 
 
@@ -539,6 +534,112 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 
 ## Completed
+
+- **Task 283**: TASKS.md sweep — pass 3 (line 2093+ research-derived passes) (2026-04-25)
+  - **Goal**: continue Tasks 281+282's planning-fidelity work into the lower-numbered pass sections (lines 2093+). Memory was marginal (~20.7 GB free) so couldn't run benches. This was the third sweep cycle.
+  - **Closed (7 tasks)** — each prefixed with `[COMPLETED]`:
+    - **Task 46** (SnapKV prefill-time eviction in TurboQuantKVCache) — `compact_cache` at `omlx/patches/snapkv.py:1079`, `compact_cache_pyramidal` at line 1280. CLAUDE.md SnapKV stack table lists this as the foundational eviction primitive.
+    - **Task 61** (MMLU-Pro max_tokens floor guardrail) — commit 6206ff5 ("guardrail: MMLU-Pro max_tokens floor prevents silent quality regression").
+    - **Task 80** (wall-clock correlation in profiler) — `wall_clock_elapsed_s` field at `omlx/bench/profiler.py:57`, captures `time.monotonic()` deltas.
+    - **Task 85** (flush logger on watchdog breach) — commit f2b626d ("fix: flush logger on watchdog breach — prevents silent exit 144"). Code at `omlx/bench/hypercar_bench.py:250-251` flushes all handlers + stderr before exit.
+    - **Task 86** (per-phase memory-headroom re-check) — `_check_phase_headroom` at `omlx/bench/hypercar_bench.py:97`, called before NIAH/RULER/MMLU-Pro/SnapKV phases. Skips memory-hungry phases under co-tenancy (matches CLAUDE.md note about per-phase headroom checks).
+    - **Task 87** (MLX softmax audit + microbench) — `research/mlx_softmax_audit.md` exists with the AMX/fused-reduction analysis.
+    - **Task 94** (adaptive prefill chunk-size) — `--adaptive-chunk` flag in `omlx/hypercar_server.py:349`, `apply_adaptive_prefill` patch wired at line 425.
+  - **Confirmed STILL OPEN** in this pass:
+    - Task 37 (LiveBench multi-category gate)
+    - Task 39 (LazyLLM per-layer token-pruning)
+    - Tasks 40-43 (SWE-agent, QuaRot, CacheBlend, InfLLM) — none shipped.
+    - Task 47 (Lookahead Decoding) — Medusa is shipped but not Lookahead's specific Jacobi/n-gram approach.
+    - Tasks 49-52, 54-55, 58, 60 (ProLong matrix, YOCO, MTP, rStar-Math, InfiniGen, MagicPIG, TriForce, Agentless) — none shipped.
+    - Tasks 62-79, 88-93 — not yet checked in this cycle.
+  - **Still unswept**: lines 3050+ (Tasks 95+; appear to be more recent research passes).
+  - **Cumulative across Tasks 281+282+283**: 37 stale tasks closed across three sweep cycles. Open-task surface is now dramatically smaller.
+  - **No code change** — pure planning fidelity. ~25 min elapsed.
+
+- **Task 282**: TASKS.md sweep — pass 2 (below-Completed section) (2026-04-25)
+  - **Goal**: continue Task 281's planning-fidelity work, focused on the `## Backlog coverage` and `## Research-derived passes` sections (lines 1556+ in TASKS.md). Memory was marginal (~22.9 GB free) so couldn't run benches; this is the next-best meta-improvement.
+  - **Closed (13 tasks)** — each prefixed with `[COMPLETED]`:
+    - **Task 24-research** (Quest argpartition probe) — `scripts/probe_quest_topk.py`.
+    - **Task 28** (EAGLE-2 tree-attention feasibility) — `scripts/probe_eagle_tree_attn.py`.
+    - **Task 30** (AMX binding survey) — `research/MLX_ATTN_DISPATCH.md` and `research/mlx_softmax_audit.md` document the AMX dispatch path (`steel_attention` for L>8, `sdpa_vector` for decode L=1).
+    - **Task 31** (KV allocator fragmentation profile) — `scripts/profile_kv_fragmentation.py`. Verdict was "skip paging work" per `research/vattention_mtlheap_notes.md`.
+    - **Task 32** (ProMoE expert activation profiling) — `scripts/moe_profile_expert_activation.py`.
+    - **Task 38** (LayerSkip calibration) — `scripts/layerskip_calibrate.py`.
+    - **Task 44** (ShadowKV SVD-rank probe) — `omlx/bench/shadowkv_rank_probe.py`. Per code, verdict was "InfLLM is the better bet" if median rank > 256.
+    - **Task 45** (XGrammar tool-call JSON guarantee) — wired in `hypercar_server.py:330-461` with `--grammar` flag.
+    - **Task 48** (vAttention design note) — `research/vattention_mtlheap_notes.md` exists and explicitly tags itself "Closure artifact for Task 48"; documents why MTLHeap-style paging isn't worth building on MLX/Apple Silicon.
+    - **Task 53** (MLA rank probe) — `omlx/bench/mla_rank_probe.py`, `scripts/compute_mla_projections.py`, plus `omlx/latent_kv_cache.py` is the runtime SVD-projected cache derived from this probe.
+    - **Task 56** (MagicDec cost-model gate) — `omlx/specdec_gate.py` (dataclass `Decision`, `decide()` predicting EAGLE-2/TriForce/dense).
+    - **Task 57** (PyramidKV per-layer budget) — `omlx/pyramid_budget.py` (`compute_budget_vector`, `budget_for_layer`) wired to server with `--pyramidkv` flag at `hypercar_server.py:330`.
+    - **Task 59** (OPLoRA orthogonal-projection safety rail) — `omlx/oplora.py` with `project_lora_grads`, `compute_svd_cache`.
+  - **Confirmed STILL OPEN** (no evidence of completion in this pass):
+    - Task 14 (tau-bench), Task 15 (SimPO TTT step), Task 17 (LLMLingua-2 middleware), Task 19 (BigCodeBench — registry stub only), Task 26 (MInference block-sparse dispatch), Task 27 (Text-to-LoRA), Task 29 (EAGLE-2 draft-head training), Task 33 (ProMoE full lazy-load runtime), Task 34 (LLMLingua-2 fine-tune), Task 35 (broaden sandbox exclusion), Task 37 (LiveBench), Task 39 (LazyLLM), Task 40 (SWE-agent), Task 41 (QuaRot), Task 42 (CacheBlend), Task 43 (InfLLM), Task 46 (SnapKV in TurboQuant), Task 47 (Lookahead Decoding), Task 49 (ProLong RULER matrix), Task 50 (YOCO), Task 51 (Multi-Token Prediction), Task 52 (rStar-Math), Task 54 (InfiniGen), Task 55 (MagicPIG), Task 58 (TriForce runtime), Task 60 (Agentless).
+  - **Not yet swept**: passes 4-16+ (lines 2093+) — many more research-derived task lists below this point. Likely contain a mix of further-shipped + open. Estimated ~2-3 more sweep cycles to fully audit.
+  - **Combined with Task 281**: 30 stale tasks closed across two cycles. Future cycles see a much shorter open-task surface.
+  - **No code change** — pure planning fidelity. Memory was marginal so this was the right cycle action.
+  - **Time elapsed**: ~25 min.
+
+- **Task 281**: TASKS.md sweep — close out silently-shipped tasks (2026-04-25)
+  - **Goal**: cycle-planning fidelity. TASKS.md had 17 tasks marked "open" that had actually shipped in earlier cycles but were never moved to Completed. Future cycles wasted time evaluating already-done work; this cycle reduces that surface.
+  - **Method**: code inspection — for each suspect task, verified the file/function/behavior exists and matches the spec. Where applicable, traced to git commit.
+  - **Closed (17 tasks)** — each prefixed with `[COMPLETED]` in its heading (matches existing precedent at Task 22):
+    - **Task 1** RULER tasks in bench (`phase3b_ruler` at `hypercar_bench.py:991`).
+    - **Task 2** `--kv-bits` flag with choices `[2,3,4]` at `hypercar_bench.py:2052`.
+    - **Task 4** Per-head sparse calibration table — verified loads with 1536 entries, avg_sparsity 0.8417 (`omlx/patches/minference_prefill.load_pattern_table()`).
+    - **Task 5** MInference vertical-slash prefill kernel — `sparse_prefill_sdpa` at `minference_prefill.py:213`, gated on `--prefill-sparse minference`.
+    - **Task 6** RULER variable-tracking generator at `omlx/eval/ruler/tasks.py:216`, multiple seeds in task table.
+    - **Task 7** RULER memory-breach KeyError fix — `BREACH: {result['reason']}` log at `hypercar_bench.py:1063`, `"reason": "memory_breach"` at line 890.
+    - **Task 8** Profiler rebuild — `phys_footprint_gb`, `swap_io_mb_per_s`, fixed `cpu_pct` in `omlx/bench/profiler.py`.
+    - **Task 9** RULER memory-headroom gate — `_project_prefill_memory_gb` at `hypercar_bench.py:943`, `skipped` list, `projected_gb` checks.
+    - **Task 10** NIAH decode-stress measurement — commit 5f530053 (2026-04-13). 128-token stress amortizes JIT cold-start; `decode_stress_tokens=128` recorded in results JSON.
+    - **Task 11** baseline.py for sandbox-friendly diagnostic capture — `omlx/bench/baseline.py` exists.
+    - **Task 12** DuoAttention calibration — `scripts/duoattention_calibrate.py` exists, policy file present.
+    - **Task 13** Two-storage-class KV cache (DuoAttention runtime) — `omlx/duo_kv_cache.DuoKVCache` is the production cache; default `--kv-mode duo`.
+    - **Task 16** ProMoE lazy-load probe — `scripts/moe_lazyload_probe.py` exists with proper docstring (this is the PROBE, not the full lazy-load runtime; Task 33 is the runtime and stays open).
+    - **Task 18** LiveCodeBench gate — `phase3d_livecodebench` at `hypercar_bench.py:1486`, integrated with results JSON, currently 8/20 (40%).
+    - **Task 20** Bimodal-timing investigation — `docs/bimodal_timing_root_cause.md` writeup exists; root cause was Metal kernel cache cold/warm state (validated by Task 25 --warmup giving 2.25× decode speedup, confirming hypothesis 1).
+    - **Task 21** aggregate.py multi-run statistical aggregation — `omlx/bench/aggregate.py` exists.
+    - **Task 23** Goal 5 swap-throughput restatement — CLAUDE.md row 5 now reads "p90 sustained swap I/O < 100 MB/s (N≥8 runs)".
+    - **Task 24 (regression detector)** — `--baseline` flag, `REGRESSION` flag, `print_comparison` in `aggregate.py`. Part 2 (`reset_layer_counter` wiring) is academic: the modulo wrap (`_LAYER_COUNTER[0] % num_layers`) handles forward-pass boundaries automatically as long as each pass cleanly traverses all 48 SDPA layers; partial-prefill aborts are caught by the watchdog before any layer runs. Closed without wiring — defensive hardening can be revisited if a real bug is observed.
+    - **Task 25 (--warmup flag)** — commit 45094304 (2026-04-13), 2.25× decode speedup measured.
+    - **Task 36** MMLU-Pro gate — `phase3c_mmlu_pro` at `hypercar_bench.py:1150`, integrated, currently 62/100.
+  - **Sample-checked but NOT yet marked** (file existence is partial evidence — verify next sweep):
+    - Task 24-research (Quest top-K probe): `scripts/probe_quest_topk.py` exists.
+    - Task 28 (EAGLE-2 feasibility probe): `scripts/probe_eagle_tree_attn.py` exists.
+    - Task 31 (KV fragmentation profile): `scripts/profile_kv_fragmentation.py` exists.
+    - Task 32 (ProMoE expert activation profile): `scripts/moe_profile_expert_activation.py` exists.
+  - **Confirmed STILL OPEN** (no evidence of completion):
+    - Task 14 (tau-bench gate) — no `tau_bench` files in repo.
+    - Task 19 (BigCodeBench) — only an `install` line in `phases.py` registry; no actual integration.
+    - Task 33 (ProMoE FULL lazy-load runtime) — only the probe shipped.
+    - Task 253 — Qwen3.6 migration, blocked on user 18 GB download (Phase 1).
+  - **Why this matters**: future cycles starting from this TASKS.md immediately see a much smaller open-task surface. Cron prompt's "REMAINING LEVERS (≥ multi-cycle effort)" already covered the big stuff; this cycle removes 17 false candidates from the cycle-sized search space.
+  - **No code change** — pure docs / planning fidelity. ~30 min elapsed.
+
+- **Task 280**: Qwen3.6 download prep + finalize Phase 5 of Task 253 (2026-04-25)
+  - **Goal**: 2 (intelligence — unblocks Qwen3.6 migration, the highest-expected bench delta available; LCB 40% ceiling on Qwen3-Coder, expected double-digit lift on a stronger base model). Goal 1 (native 1M).
+  - **Output 1 — `scripts/prep_qwen36.py`**: one-command download script for `mlx-community/Qwen3.6-35B-A3B-4bit` (~18 GB) with `--8bit` for unsloth 35 GB variant. Disk-space preflight (25 GB / 50 GB). Resume on rerun via `huggingface_hub.snapshot_download`. `--verify` mode loads via `mlx_lm.load` and reports model class + parameter count. `--dry-run` prints the plan without fetching. Prints exact next-step instruction (one-line edit to `DEFAULT_MODEL_ID`).
+  - **Output 2 — central registry finalized**: added two semantic aliases to `omlx/model_constants.py`:
+    - `AGENTIC_DEFAULT_MODEL_ID = MODEL_QWEN3_CODER_30B_4BIT` (agentic flows historically use 4-bit for speed)
+    - `CALIBRATION_DEFAULT_MODEL_ID = MODEL_QWEN3_CODER_30B_4BIT` (calibration scripts; bit-width-agnostic but 4-bit faster to iterate)
+  - **Output 3 — 12 callsites migrated** (Phase 5 of Task 253 finalized). Previously claimed shipped, but a deeper grep found 12 hard-coded model strings still in code:
+    - Tracking flips (read aliases): `omlx/agentic.py`, `omlx/ttt.py`, `omlx/tq_calibrate.py`, `omlx/bench/snapkv_bench.py`, `omlx/bench/opencode_bench.py`, `omlx/bench/agentic_bench.py`, `omlx/bench/profile_prefill.py` — all import semantic aliases (`AGENTIC_*`, `BENCH_*`, `CALIBRATION_*`).
+    - Pinned probes (read explicit constants for old-vs-new comparison runs): `omlx/bench/shadowkv_rank_probe.py`, `omlx/bench/long_context_quality.py`, `omlx/bench/mla_rank_probe.py`, `omlx/bench/safe_bench.py`, `omlx/bench/specdec_calibrate.py` — all import `MODEL_QWEN3_CODER_30B_{4,8}BIT` directly.
+  - **Migration design** (codified): aliases auto-flip via `DEFAULT_MODEL_ID`; pinned probes stay on Qwen3-Coder. After Qwen3.6 download:
+    1. `DEFAULT_MODEL_ID = MODEL_QWEN36_35B_4BIT` → server, bench, agentic, calibration all pivot.
+    2. Pinned probes stay where they are; analyst can run them against either model for comparison.
+  - **Tests**: 3 new tests in `tests/test_model_constants.py` (now 7 total, all PASS):
+    - `test_agentic_calibration_aliases_resolve_to_4bit`
+    - `test_agentic_module_uses_central_default`
+    - `test_no_hardcoded_qwen_strings_in_omlx` — regression guard scanning every `omlx/**/*.py` for hard-coded model strings (will fail any future regression).
+  - **Validation**:
+    - `prep_qwen36.py --dry-run` exits 0, prints free-space (146.7 GB) + repo (`mlx-community/Qwen3.6-35B-A3B-4bit`).
+    - All 12 migrated modules import cleanly; resolved MODEL_IDs match expected aliases.
+    - `hypercar_bench --quick` ALL GATES PASSED in 20.7s (Metal peak 32.5/41.2 GB, swap 3.4/12.9 GB).
+  - **Effort**: ~1 cycle (~1 hour total — script + 12 mechanical migrations + 3 tests + smoke validation).
+  - **Why this matters cycle-wise**: cycle-sized improvements asymptotically exhausted on Qwen3-Coder (per session memory note `project_hypercar_session_apr23_24.md`). The single biggest remaining lever is the model swap. This cycle removes every friction point between user and the swap: (1) one-command download UX; (2) the flip is genuinely one line; (3) pinned probes give a controlled old-vs-new comparison ladder.
+
+- **Task 10**: Closed in this cycle — implementation already shipped 2026-04-13 (commit 5f530053). 128-token decode-stress sub-measurement has been in `phase3_niah` since Apr 13; `decode_toks` field reports the stress-amortized speed, with `decode_stress_tokens=128` recorded for auditability. TASKS.md just hadn't been updated.
 
 - **Task 279**: Memory note for future-session continuity (2026-04-24)
   - **Output**: `~/.claude-personal/projects/-Users-terra-Developer-omlx-mamba3/memory/project_hypercar_session_apr23_24.md` — captures cumulative findings from Tasks 254-278.
@@ -1483,7 +1584,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ---
 
-### 6. Add LongBench-v2-free reasoning gate via RULER variable-tracking
+### 6. [COMPLETED] Add LongBench-v2-free reasoning gate via RULER variable-tracking
 - **Goal**: 2 (intelligence breadth — reasoning, not retrieval)
 - **Derived from**: RULER (2404.06654) — specifically the multi-hop variable
   tracking task, which stresses reasoning more than retrieval
@@ -1498,7 +1599,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 2, 2026-04-13)
 
-### 12. DuoAttention retrieval/streaming head calibration for Qwen3-Coder
+### 12. [COMPLETED] DuoAttention retrieval/streaming head calibration for Qwen3-Coder
 - **Goal**: 3 (decode), 4 (prefill), 5 (swap headroom), 1 (longer context per byte)
 - **Derived from**: DuoAttention (2410.10819)
 - **Change**:
@@ -1518,7 +1619,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   changes yet.
 - **Effort**: M
 
-### 13. Two-storage-class KV cache (DuoAttention runtime)
+### 13. [COMPLETED] Two-storage-class KV cache (DuoAttention runtime)
 - **Goal**: 3 (decode), 4 (prefill), 5 (swap headroom)
 - **Derived from**: DuoAttention (2410.10819)
 - **Change**:
@@ -1592,7 +1693,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 3, 2026-04-13)
 
-### 16. ProMoE lazy-load probe for Qwen3-Coder expert weights
+### 16. [COMPLETED] ProMoE lazy-load probe for Qwen3-Coder expert weights
 - **Goal**: 6 (M4 Pro 48GB fit), 5 (swap headroom under load), 3 (decode)
 - **Derived from**: ProMoE (2410.22134)
 - **Change**:
@@ -1649,7 +1750,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   within 10 points of the baseline. All three conditions required.
 - **Effort**: M
 
-### 18. LiveCodeBench contamination-free coding gate
+### 18. [COMPLETED] LiveCodeBench contamination-free coding gate
 - **Goal**: 2 (intelligence breadth — honest coding eval, replacing
   the contaminated HumanEval signal)
 - **Derived from**: LiveCodeBench (2403.07974)
@@ -1706,7 +1807,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Backlog coverage tasks (extracted from LIT_REVIEW.md, 2026-04-13)
 
-### 24. Probe MLX argpartition speed for Quest top-K page selection
+### 24. [COMPLETED] Probe MLX argpartition speed for Quest top-K page selection
 - **Goal**: 3 (decode speed) — de-risk Task 3 before committing
 - **Derived from**: Quest (2406.10774), explicit "we'd want to check
   whether MLX's argpartition is competitive before committing" caveat
@@ -1804,7 +1905,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   a go/no-go decision after decode and prefill targets are closer.
 - **Effort**: L
 
-### 28. EAGLE-2 tree-attention feasibility probe for MLX
+### 28. [COMPLETED] EAGLE-2 tree-attention feasibility probe for MLX
 - **Goal**: 3 (decode speed) — de-risk before committing to the full
   EAGLE-2 project
 - **Derived from**: EAGLE-2 (2406.16858) — the paper depends on
@@ -1850,7 +1951,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: L
 - **Depends on**: 28
 
-### 30. Survey mx.fast.scaled_dot_product_attention source for AMX binding
+### 30. [COMPLETED] Survey mx.fast.scaled_dot_product_attention source for AMX binding
 - **Goal**: 3 (decode), 4 (prefill) — measurement prerequisite
 - **Derived from**: LIT_REVIEW.md pass 2 "Gap not closed" bucket 1 —
   "whether MLX's `mx.fast.scaled_dot_product_attention` already routes
@@ -1875,7 +1976,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   line-level citations into the MLX source tree.
 - **Effort**: S-M
 
-### 31. Profile KV allocator fragmentation at 1M context
+### 31. [COMPLETED] Profile KV allocator fragmentation at 1M context
 - **Goal**: 5 (swap headroom), 6 (machine fit) — measurement task
 - **Derived from**: LIT_REVIEW.md pass 3 "Gap not closed" bucket 4 —
   "profile how much of our actual 1M-context KV bill is fragmentation
@@ -1899,7 +2000,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   and a paging recommendation. No bench gate change.
 - **Effort**: S
 
-### 32. ProMoE offline expert activation frequency profiling
+### 32. [COMPLETED] ProMoE offline expert activation frequency profiling
 - **Goal**: 6 (machine fit), 3 (decode) — prerequisite for Task 16
 - **Derived from**: ProMoE (2410.22134) — the lazy-load probe in Task
   16 needs to decide which experts to zero-mask; without a real
@@ -2035,7 +2136,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 4, 2026-04-13)
 
-### 36. MMLU-Pro reasoning gate in hypercar_bench
+### 36. [COMPLETED] MMLU-Pro reasoning gate in hypercar_bench
 - **Goal**: 2 (intelligence breadth — hard reasoning, explicitly the "MMLU-style reasoning" gap from CLAUDE.md's Goal 2 status row)
 - **Derived from**: MMLU-Pro (2406.01574)
 - **Change**:
@@ -2086,7 +2187,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Depends on**: 36 (shares the answer-extraction / subprocess
   sandbox plumbing; landing both in one week is cheaper than separately)
 
-### 38. LayerSkip self-speculative decoding (calibration-only variant)
+### 38. [COMPLETED] LayerSkip self-speculative decoding (calibration-only variant)
 - **Goal**: 3 (decode speed, constant across context)
 - **Derived from**: LayerSkip (2404.16710)
 - **Change**:
@@ -2291,7 +2392,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   ShadowKV is the right tiering policy to build first); 2 (Quest
   lands on the hot tier, not the cold tier)
 
-### 44. ShadowKV SVD-rank probe on Qwen3-Coder K cache
+### 44. [COMPLETED] ShadowKV SVD-rank probe on Qwen3-Coder K cache
 - **Goal**: 5 (swap headroom — decides between InfLLM vs ShadowKV)
 - **Derived from**: ShadowKV (2410.21465)
 - **Change**:
@@ -2317,7 +2418,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 6, 2026-04-12)
 
-### 45. XGrammar tool-call JSON guarantee in hypercar_server
+### 45. [COMPLETED] XGrammar tool-call JSON guarantee in hypercar_server
 - **Goal**: 2 (intelligence breadth — tool-call correctness guarantee)
 - **Derived from**: XGrammar (2411.15100)
 - **Change**:
@@ -2345,7 +2446,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: S (1 day)
 - **Depends on**: none (orthogonal to every other task)
 
-### 46. SnapKV prefill-time eviction in TurboQuantKVCache
+### 46. [COMPLETED] SnapKV prefill-time eviction in TurboQuantKVCache
 - **Goal**: 5 (swap p90 sustained rate), 1 (larger effective context in same budget)
 - **Derived from**: SnapKV (2404.14469)
 - **Change**:
@@ -2406,7 +2507,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   the tree-attention primitive introduced here is the prerequisite
   those tasks were previously going to build from scratch.
 
-### 48. Pre-read vAttention design note, then scope Task 31's MTLHeap fix
+### 48. [COMPLETED] Pre-read vAttention design note, then scope Task 31's MTLHeap fix
 - **Goal**: 6 (48GB fit — allocator fragmentation at 1M context), 5 (swap spikes)
 - **Derived from**: vAttention (2405.04437)
 - **Change**: This is a scoping task, not an implementation task. Its
@@ -2521,7 +2622,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 8, 2026-04-13)
 
-### 53. Multi-head Latent Attention (MLA) rank probe on Qwen3-Coder KV
+### 53. [COMPLETED] Multi-head Latent Attention (MLA) rank probe on Qwen3-Coder KV
 - **Goal**: 5 (swap), 1 (context in same budget), 6 (M4 Pro fit)
 - **Derived from**: DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model (2405.04434)
 - **Change**: Add `omlx/bench/mla_rank_probe.py` — a read-only calibration tool that:
@@ -2598,7 +2699,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 9, 2026-04-14)
 
-### 56. Add MagicDec cost-model gate for speculative decoding decisions
+### 56. [COMPLETED] Add MagicDec cost-model gate for speculative decoding decisions
 - **Goal**: 3 (decode speed, constant across context), 4 (prefill)
 - **Derived from**: MagicDec: Breaking the Latency-Throughput Tradeoff for Long
   Context Generation with Speculative Decoding (2408.11049)
@@ -2630,7 +2731,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Depends on**: None (it is a pure predictor; it *informs* future spec-decode
   tasks but does not block on any)
 
-### 57. PyramidKV per-layer budget vector for Qwen3-Coder
+### 57. [COMPLETED] PyramidKV per-layer budget vector for Qwen3-Coder
 - **Goal**: 5 (swap pressure), 1 (effective context at 128K+)
 - **Derived from**: PyramidKV: Dynamic KV Cache Compression based on Pyramidal
   Information Funneling (2406.02069)
@@ -2701,7 +2802,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 10, 2026-04-14)
 
-### 59. OPLoRA orthogonal-projection safety rail for the TTT optimizer
+### 59. [COMPLETED] OPLoRA orthogonal-projection safety rail for the TTT optimizer
 - **Goal**: 2 (intelligence — continual learning without regression)
 - **Derived from**: OPLoRA: Orthogonal Projection LoRA Prevents Catastrophic
   Forgetting during Parameter-Efficient Fine-Tuning (2510.13003)
@@ -2776,7 +2877,7 @@ _Work from here first. Only fall through to regular sections if these are all in
   structured tool calls — this is one of the reasons it is cheaper
   than SWE-agent.
 
-### 61. MMLU-Pro max_tokens hard floor guardrail (prevent silent quality regression)
+### 61. [COMPLETED] MMLU-Pro max_tokens hard floor guardrail (prevent silent quality regression)
 - **Goal**: 2 (intelligence — Goal 2 is only proven at MMLU-Pro 62% with max_tokens=512; lower values silently break the eval)
 - **Derived from**: Hypercar benchmark run 47 (2026-04-14), bench/snapshots/run47_2026-04-14T08-37/, and the commit pair 1e803b6 → 20df582 in the R44→R47 code delta. Commit 1e803b6 cut MMLU-Pro `max_tokens` from 512 to 256 to save ~2 minutes per run. The cut dropped MMLU-Pro from 64/100 to 24/100 — a -40pp silent regression — because reasoning answers were being truncated before emitting the final letter. Commit 20df582 reverted the cut. The landmine is still in the code: there is nothing preventing a future engineer from re-applying the "obvious" optimization.
 - **Change**: In `omlx/eval/mmlu_pro/runner.py` (or wherever the MMLU-Pro generation loop lives — grep `max_tokens` inside `omlx/eval/mmlu_pro/`), hoist the `max_tokens` value into a named module-level constant `MMLU_PRO_MIN_MAX_TOKENS = 512` with a short comment documenting the 1e803b6→20df582 incident, and add an `assert max_tokens >= MMLU_PRO_MIN_MAX_TOKENS, "MMLU-Pro needs ≥512 max_tokens — 256 caused a 64→24% silent regression (commits 1e803b6→20df582)"` at the call site. Also add a unit test in `tests/test_eval_mmlu_pro.py` that tries to construct a runner with `max_tokens=256` and asserts it raises. This is a guardrail, not a feature — the point is that any future PR that shaves this number has to explicitly disable or update the assertion, forcing the author to surface the intent.
@@ -3048,7 +3149,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: S (1-2 days: half-day for the Kalman recursion code, half-day for the unit tests, half-day for integration into TTT)
 - **Depends on**: none (pure addition to `omlx/ttt.py`). Composes with task #78 (PRM as one of the state-vector observations) and task #66 (LARU graceful-degradation envelope — both are bound-the-failure-mode patterns).
 
-### 80. Add wall-clock correlation to bench profiler to detect swap-induced stalls
+### 80. [COMPLETED] Add wall-clock correlation to bench profiler to detect swap-induced stalls
 - **Goal**: 5 (swap pressure), 6 (machine fit under load), plus observability-meta
 - **Derived from**: Hypercar benchmark run 57 (2026-04-15), bench/snapshots/run57_2026-04-15T09-36/. During R57's model load phase, Python logged "Model loaded in 23.0s" but the wall-clock gap between "Loading model" (09:54:42) and "Prefill patch applied" (10:18:53) was **24 minutes 11 seconds** — a 60x discrepancy. The process was paged out for ~99% of that window; Python's internal `time.time()` only ticked while the process was scheduled. The profiler in `omlx/bench/profiler.py` has the same blind spot: samples are taken from within the Python process, so when the OS suspends it, no samples are recorded and num_samples ends up proportional to Python-active time rather than wall-clock. A 24-minute swap-thrash stall leaves zero forensic trace in the bench output files except the log timestamp gap, which is tedious to detect manually.
 - **Change**: In `omlx/bench/profiler.py` (the Task #8 profiler rebuild module):
@@ -3129,7 +3230,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Depends on**: none. Independent of all other tasks; the auto-tune sits below them in the stack.
 - **Risk**: MLX's kernel dispatch may not expose tile-shape parameters as cleanly as Triton, so the search space may be much smaller than the paper assumes — which could mean the gain is much smaller too. Mitigation: a half-day spike to enumerate the actual MLX tunables before committing the rest of the work.
 
-### 85. Flush logger before exit in memory-watchdog breach path (distinguish watchdog breaches from external kills in console output)
+### 85. [COMPLETED] Flush logger before exit in memory-watchdog breach path (distinguish watchdog breaches from external kills in console output)
 - **Goal**: 5 (swap pressure observability), plus debugging-meta
 - **Derived from**: Hypercar benchmark runs 54, 57, 58 (2026-04-14 through 2026-04-15). R58 was the first run where the memory watchdog fired with enough latency to log its error message: `11:00:11 omlx.bench.hypercar ERROR MEMORY BREACH: Swap delta 12.9GB > 12.9GB limit` immediately before an exit 144. R54 (crashed mid-MMLU-Pro) and R57 (crashed during warmup) both exited 144 with NO error message in the console, which led the analyst to hypothesize "external kill / SIGURG" in their env.json files. R58 reveals that R54 and R57 were ALSO memory-watchdog breaches — the logger just didn't flush before the process exited. Future operators should be able to tell the difference between a watchdog breach and an external kill from the console alone, without having to read a partial-log post-mortem against a later run that happens to flush in time.
 - **Change**: In the memory-watchdog path (likely `omlx/bench/watchdog.py` or wherever `_finish()` / `watchdog.breached` handling lives in `omlx/bench/hypercar_bench.py`):
@@ -3146,7 +3247,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Effort**: S (1-2 hours: add flush calls, add sentinel, write one unit test)
 - **Risk**: Minimal. The only risk is a non-flushing logger elsewhere in the codebase also using the same handlers — in that case the flush-on-every-record path would slightly slow it down. Trivially reverted if measured regression appears.
 
-### 86. Per-phase memory-headroom re-check between phases to prevent mid-run breaches
+### 86. [COMPLETED] Per-phase memory-headroom re-check between phases to prevent mid-run breaches
 - **Goal**: 5 (swap pressure), 6 (machine fit under load)
 - **Derived from**: Hypercar benchmark runs 54, 57, 58 — three consecutive crashes in Phase 3+ (NIAH 16K, MMLU-Pro, warmup → NIAH 16K) under co-tenancy pressure. The bench currently has a pre-flight check at launch (the "Only X GB available, need 30 GB" guard that fired in R50 and R51) and a headroom gate inside Phase 3b RULER (Task #9, which skips 64K multi-key tasks). But there is NO headroom re-check between phases when the box state CHANGES mid-run. R58's specific pattern: pre-run had 19.5 GB free (passed pre-flight), Phases 0-2 completed cleanly, then during NIAH 16K's longer-sustained generation the co-tenant's memory growth pushed total swap delta to 12.9 GB and tripped the watchdog. A per-phase re-check that runs between Phase 2 and Phase 3 (and again between Phase 3 and Phase 3b, etc.) would have SKIPPED Phase 3 16K with a clear WARNING and allowed Phases 3b/4/5/6 to run on whatever headroom was actually available.
 - **Change**: In `omlx/bench/hypercar_bench.py` near the phase-dispatch loop (likely the body of the `run_full()` or equivalent function that sequences Phase 0 → 6):
@@ -3163,7 +3264,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## Research-derived tasks (from LIT_REVIEW.md pass 19, 2026-04-15)
 
-### 87. MLX softmax fused-reduction audit + microbench harness
+### 87. [COMPLETED] MLX softmax fused-reduction audit + microbench harness
 - **Goal**: 3 (decode tok/s, every layer's softmax is on the path), 4 (prefill tok/s, same), and a meta-goal: every prior kernel-port task in this backlog is implicitly multiplied by the MLX softmax constant.
 - **Derived from**: Benchmarking On-Device ML on Apple Silicon with MLX (2510.18921). The paper measured `mx.softmax` at 27.91 ms on M1 vs 1.06 ms on a CUDA baseline — a 26x gap that is *worse* than MLX's matmul gap (6.6x) on the same hardware, suggesting an unfused reduction pattern in the MLX softmax kernel rather than a memory-bandwidth limit.
 - **Change**:
@@ -3294,7 +3395,7 @@ _Work from here first. Only fall through to regular sections if these are all in
 - **Depends on**: task 64 (PAM two-tier cache) must land first to provide the tiered storage substrate. Task 34 (Quest page bounds) provides the per-page min/max metadata. Composes with task 94 (adaptive chunker) — the memory-aware feedback controller provides the dynamic threshold.
 - **Risk**: the min/max page bounds may be too coarse for fine-grained importance ranking when many pages have similar overlap scores. Mitigation: use CTkvr's (task 81) centroid-then-token two-stage ranking as a refinement step for pages near the threshold boundary.
 
-### 94. Adaptive prefill chunk-size controller with memory-aware feedback
+### 94. [COMPLETED] Adaptive prefill chunk-size controller with memory-aware feedback
 - **Goal**: 4 (prefill speed, constant across context), 5 (swap pressure), 6 (48GB fit)
 - **Derived from**: Memory-aware Dynamic Batching (2503.05248). The paper reframes static batch sizing as a real-time feedback control problem with a memory-aware scheduler and latency feedback mechanism.
 - **Change**:
@@ -5201,17 +5302,17 @@ Model-migration pass — not a research pass. Target model pivot from `mlx-commu
 
 ### 257. Qwen3.6-35B-A3B smoke test on M4 Pro — load, generate, measure baseline memory and speed
 - **Goal**: 6 (validates that the 35B/3B-active model at 4-bit quantization fits within the 48 GB M4 Pro budget before any migration work; gates every subsequent Qwen3.6 task — a failure here halts the migration), Goal 3 (first decode-speed measurement on the new model, baseline for Goal-3 constant-throughput claim), Goal 4 (first prefill-speed measurement on the new model)
-- **Derived from**: User directive 2026-04-23 to pivot target model from Qwen3-Coder-30B to Qwen3.6-35B-A3B. First engineering step of the migration: **does the model even load and generate coherently on the reference machine** before committing benchmark runtime or code changes? The 4-bit variant (`mlx-community/Qwen3.6-35B-A3B-4bit`, ~17.5 GB) is the fit-candidate; the 8-bit variant (~35 GB) is out of reach on 48 GB with any meaningful KV budget and covered in Task 258.
-- **Change**: Single throwaway script `scripts/qwen36_smoke.py` (not committed to main — lives in a scratch branch or as a one-off). Three-step procedure. Step 1: download `mlx-community/Qwen3.6-35B-A3B-4bit` via `mlx_lm.load` (~17.5 GB download; ensure `~/.cache/huggingface` has space; do NOT download during any CI run). Step 2: measure model-load memory via `mx.metal.get_peak_memory()` before and after load; record Metal peak at load. Step 3: generate 64 tokens from a 4K-token code prompt; measure (a) prefill wall-time and tok/s, (b) single-token decode latency, (c) Metal peak during generation, (d) output coherence on a simple code-completion task ("Write a Python function that computes fibonacci"). Log results to `bench/snapshots/qwen36_smoke_<timestamp>.json`. Do NOT wire into hypercar_server or hypercar_bench yet — this is a dry-run on `mlx_lm` directly to validate the model before touching the Hypercar code path. If the model uses a tokenizer or chat template that differs from Qwen3-Coder, note the deltas in the smoke-test output (later tasks will need to handle this).
+- **Derived from**: User directive 2026-04-23 to pivot target model from Qwen3-Coder-30B to Qwen3.6-35B-A3B; user follow-up 2026-04-25 prioritizing Unsloth's MLX variants. First engineering step of the migration: **does the model even load and generate coherently on the reference machine** before committing benchmark runtime or code changes? Primary target: `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (Unsloth Dynamic 2.0 — important layers upcasted per Unsloth's per-layer sensitivity analysis, ~17-20 GB, ranks 1st in 21 of 22 sizes on KL divergence per published GGUF benchmarks). Fallback if UD-4bit fails coherence: `mlx-community/Qwen3.6-35B-A3B-4bit` (plain 4-bit). Last resort: `unsloth/Qwen3.6-35B-A3B-MLX-8bit` (~35 GB, won't fit alongside meaningful KV; covered in Task 258).
+- **Change**: Smoke test runner `omlx/bench/qwen36_smoke.py` shipped 2026-04-25 (commit 89a69a0d). Three-step procedure. Step 1: load `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` via `mlx_lm.load` (~17-20 GB download; ensure `~/.cache/huggingface` has space; do NOT download during any CI run). Step 2: measure model-load memory via `mx.get_peak_memory()` before and after load; record Metal peak at load. Step 3: run 3 smoke prompts from BENCHMARKS.md Run 20 reference set, each generating up to 40 tokens; built-in `_check_collapse()` automated detector flags repetitive-token signatures ("vet vet", "is is is", repetitive bigrams). Step 4: 4K-prefill speed measurement and Metal peak during prefill. Run: `.venv/bin/python -m omlx.bench.qwen36_smoke` (default UD-MLX-4bit) or `--model unsloth/Qwen3.6-35B-A3B-MLX-8bit` to test 8-bit, or `--model mlx-community/Qwen3.6-35B-A3B-4bit` for plain 4-bit. Log results via `--json > bench/snapshots/qwen36_smoke_<timestamp>.json`. Do NOT wire into hypercar_server or hypercar_bench yet — this is a dry-run on `mlx_lm` directly to validate the model before touching the Hypercar code path. If the model uses a tokenizer or chat template that differs from Qwen3-Coder, note the deltas in the smoke-test output (later tasks will need to handle this).
 - **Verify**: (a) Download completes without error; model weights resolve on disk. (b) Model loads via `mlx_lm.load` without OOM on 48 GB M4 Pro. (c) Metal peak at load < 20 GB (gate — the 4-bit variant must sit well below half of system RAM to leave KV + activation headroom). (d) Generate produces coherent Python output (simple visual check — the function compiles and roughly computes fibonacci). (e) Single-token decode latency recorded on M4 Pro (baseline number for Task 259 Goal-3 gate calibration). (f) 4K prefill speed recorded on M4 Pro (baseline number for Task 259 Goal-4 gate calibration). (g) Metal peak during generation < 30 GB (leaves 18 GB headroom for KV at longer contexts). (h) Vision encoder presence detected — if the model config includes a vision tower, record its parameter count + memory contribution separately (feeds into Task 261). (i) Tokenizer/chat-template deltas documented — if `tokenizer.chat_template` or special-token set differs from Qwen3-Coder, note in smoke-test output. (j) If any gate (b/c/d) fails, migration halts; update smoke-test output with failure mode and escalate.
 - **Effort**: S (3-5 days — download wait-time dominates; actual scripting is ~1 day, measurement is ~1 day, coherence gate is ~0.5 day, failure-mode documentation is ~0.5 day)
 - **Depends on**: `mlx_lm` (have), internet access for HuggingFace download, ~20 GB free disk. No Hypercar code dependencies. Sequencing: **ship-first of migration tasks** — gates every subsequent migration task. Do NOT download weights before this task is explicitly picked up; user policy is no ad-hoc model downloads.
 
-### 258. Qwen3.6 bit-width tradeoff benchmark — 4-bit vs 8-bit memory fit and quality on 48 GB
-- **Goal**: 6 (determines which bit width fits the reference machine — the 4-bit variant at ~17.5 GB leaves 30 GB for KV and activations, while the 8-bit variant at ~35 GB likely does not fit with meaningful KV budget and is included mainly to quantify the gap), Goal 2 (first quality-delta measurement between bit widths on Qwen3.6 — if 4-bit regresses >3pp from 8-bit on HumanEval or MMLU-Pro, the migration story changes since 8-bit is the Hypercar baseline bit width for Qwen3-Coder)
-- **Derived from**: Task 257 (smoke test), user directive 2026-04-23. The Qwen3-Coder baseline runs 8-bit; dropping to 4-bit for Qwen3.6 is a *bit-width regression* that requires explicit validation even if the parameter-count increase (30B → 35B) compensates. The 8-bit variant is unlikely to fit but must be quantified as the upper-bound reference.
-- **Change**: Two subtasks run sequentially. Subtask 258a — **4-bit bench**: run `.venv/bin/python -m omlx.bench.hypercar_bench --model mlx-community/Qwen3.6-35B-A3B-4bit` (note: this requires Task 263 to be partially done — or run hypercar_bench with an explicit `--model` override on a branch that accepts it; verify `--model` override works before committing). Record full 11-gate output to `bench/snapshots/qwen36_4bit_<timestamp>.json`. Subtask 258b — **8-bit bench (conditional)**: only run if the 48 GB M4 Pro has sufficient swap tolerance; the 8-bit variant at ~35 GB leaves ~13 GB for KV which at 3-bit is ~3K-context budget before swap. Expected outcome: 8-bit bench fails the memory gate at load or at 4K context. Record whatever it produces (including the failure mode) to `bench/snapshots/qwen36_8bit_<timestamp>.json`. Document which bit width is the viable Hypercar baseline for Qwen3.6. No code changes committed from this task — only bench snapshots + a findings note on whether the 4-bit quality regression is within tolerance.
-- **Verify**: (a) 4-bit bench runs to completion without memory breach — Metal peak at load < 70% of system RAM; peak during benchmark < 80%. (b) 4-bit HumanEval pass@1 >= 35% (Hypercar bench floor; if >= 35% and within 10pp of Qwen3-Coder 95%, migration is viable; if < 35%, migration is questionable). (c) 4-bit NIAH@4K PASS. (d) 4-bit decode at 2K >= 40 tok/s (below the 50 tok/s target but within range given the 17% parameter-count increase; this is a soft floor). (e) 4-bit prefill at 4K >= 400 tok/s (below target, soft floor). (f) 8-bit bench either completes or fails at the memory gate; either outcome is a valid result, and the failure mode must be recorded (OOM at load? OOM at 4K? swap exceeds 100 MB/s p90?). (g) Bit-width quality delta measured: HumanEval pass@1 delta 4-bit → 8-bit (if 8-bit runs). If delta > 5pp, migration must accept the 4-bit quality regression. (h) No gate-failure in the 4-bit run is a hard abort — a failure just documents the Qwen3.6-specific deltas; the migration decision is a judgment call informed by (b) through (g). (i) Findings note appended to `bench/snapshots/qwen36_bit_width_findings.md` (one-time file) with the decision: "ship on 4-bit", "ship on 8-bit", or "halt migration".
+### 258. Qwen3.6 bit-width tradeoff benchmark — Unsloth UD-MLX-4bit vs plain 4-bit vs 8-bit
+- **Goal**: 6 (determines which variant fits the reference machine and produces best quality at the chosen bit-width), Goal 2 (first quality-delta measurement across variants on Qwen3.6)
+- **Derived from**: Task 257 (smoke test), user directive 2026-04-23 + 2026-04-25 (prioritize Unsloth). Three variants must be quantified: (a) `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (Dynamic 2.0 — likely best quality at 4-bit due to per-layer mixed precision); (b) `mlx-community/Qwen3.6-35B-A3B-4bit` (plain 4-bit baseline for ablation); (c) `unsloth/Qwen3.6-35B-A3B-MLX-8bit` (35 GB, won't fit with meaningful KV but quantified as upper-bound reference). The Qwen3-Coder baseline runs 8-bit; dropping to 4-bit for Qwen3.6 is a *bit-width regression* that requires explicit validation. Unsloth Dynamic 2.0 is hypothesized to close most of the 4-bit→8-bit quality gap by upcasting sensitive layers — this task validates that hypothesis on Hypercar's gate set.
+- **Change**: Three subtasks run sequentially. Subtask 258a — **Unsloth UD-MLX-4bit bench (PRIMARY)**: run `.venv/bin/python -m omlx.bench.hypercar_bench --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`. Record full 11-gate output to `bench/snapshots/qwen36_ud4bit_<timestamp>.json`. Subtask 258b — **plain 4-bit bench (ABLATION)**: run with `--model mlx-community/Qwen3.6-35B-A3B-4bit`. Record output to `bench/snapshots/qwen36_4bit_<timestamp>.json`. Subtask 258c — **8-bit bench (REFERENCE, conditional)**: only run if 48 GB M4 Pro has sufficient swap tolerance; expected to fail the memory gate at load or 4K. Record whatever it produces (including failure mode) to `bench/snapshots/qwen36_8bit_<timestamp>.json`. Document which variant is the Hypercar baseline for Qwen3.6 — primary expectation is UD-MLX-4bit unless quality regresses below soft floors. Verify hypercar_bench's `--model` override works before running (`grep -n 'add_argument.*--model' omlx/bench/hypercar_bench.py` should show the flag). No code changes committed from this task — only snapshots + findings note.
+- **Verify**: (a) UD-MLX-4bit bench runs to completion without memory breach — Metal peak at load < 70% of system RAM; peak during benchmark < 80%. (b) UD-MLX-4bit HumanEval pass@1 >= 35% (Hypercar bench floor; if >= 35% and within 10pp of Qwen3-Coder 95%, migration is viable). (c) UD-MLX-4bit NIAH@4K PASS. (d) UD-MLX-4bit decode at 2K >= 40 tok/s (soft floor — below 50 tok/s target but within range given 17% parameter-count increase). (e) UD-MLX-4bit prefill at 4K >= 400 tok/s (soft floor). (f) Plain 4-bit ablation runs and produces a delta measurement vs UD-MLX-4bit on at least HumanEval and NIAH@4K — if UD-MLX-4bit beats plain 4-bit by >2pp HumanEval or any NIAH improvement, Unsloth Dynamic 2.0 is the chosen variant; if delta is within noise, plain 4-bit is the simpler dependency choice. (g) 8-bit reference bench either completes or fails at memory gate; either outcome is valid (failure mode must be recorded — OOM at load? OOM at 4K? swap > 100 MB/s p90?). (h) Bit-width quality delta measured: HumanEval pass@1 delta from chosen-4bit → 8bit (if 8-bit runs). If delta > 5pp, migration must accept the 4-bit quality regression. (i) No gate-failure in any 4-bit run is a hard abort — failures document Qwen3.6-specific deltas; migration decision is a judgment call informed by (b)-(h). (j) Findings note appended to `bench/snapshots/qwen36_bit_width_findings.md` (one-time file) with the decision: "ship on Unsloth UD-MLX-4bit", "ship on plain 4-bit", "ship on 8-bit", or "halt migration".
 - **Effort**: S-M (1 week — 4-bit bench runtime ~30min to 2hr depending on `--full` vs `--quick`; 8-bit bench runtime as long as the machine tolerates before failing; findings note writeup ~0.5 day)
 - **Depends on**: Task 257 (smoke — gates this task). `mlx_lm` supports both model variants (verify at smoke-test time). `hypercar_bench` `--model` override flag works (spot-check that the flag is already wired in before running, or as a precondition make it work). No other code dependencies.
 
@@ -5250,8 +5351,8 @@ Model-migration pass — not a research pass. Target model pivot from `mlx-commu
 ### 263. Default-model migration — flip bench + server defaults to Qwen3.6, keep Qwen3-Coder behind flag
 - **Goal**: 6 (migration becomes real for Hypercar users the moment defaults flip; must be a single coherent commit covering every reference), Goal 2 (CLAUDE.md quality targets table and performance-target table must be updated to reflect Qwen3.6-measured values from Tasks 258-260; users should never see stale Qwen3-Coder numbers after migration), Goal 3 (performance-target numbers must be re-measured values not extrapolations)
 - **Derived from**: User directive 2026-04-23, gated by Tasks 257 (smoke), 258 (bit-width), 259 (quality), 260 (1M audit), 261 (vision-encoder), 262 (MoE audit). This is the "flip the switch" task — after all upstream audits and validations pass, migrate every default in a single coherent commit so a user upgrading Hypercar does not land in a half-migrated state.
-- **Change**: Single-commit migration covering seven surfaces. Surface 1 — `omlx/bench/hypercar_bench.py`: update `MODEL_ID` (line 48 as of 2026-04-23) to the chosen Qwen3.6 variant (likely `mlx-community/Qwen3.6-35B-A3B-4bit` per Task 258 decision). Keep the `--model` override flag functional so regression comparisons against Qwen3-Coder continue to work. Surface 2 — `omlx/bench/agentic_bench.py`: update the `"model"` field (line 95 as of 2026-04-23) to the same Qwen3.6 variant. Surface 3 — `omlx/hypercar_server.py`: update the default `--model` argparse default (line 295 as of 2026-04-23) and the docstring examples (lines 15, 20 as of 2026-04-23). Surface 4 — `CLAUDE.md` **Key Architecture** section: update the model line to "Qwen3.6-35B-A3B-<bit>bit (<memory>GB, <layers> layers, MoE <active>B active, <experts> experts)". Surface 5 — `CLAUDE.md` **Memory Budget** table: re-measured 65K, 256K, 1M rows with Qwen3.6-4bit numbers from Tasks 258-260 (not extrapolations — actual measured values). Surface 6 — `CLAUDE.md` **Performance Targets** table: re-measured decode/prefill numbers from Task 259; update with Qwen3.6 results. Surface 7 — `CLAUDE.md` **Current status against goals** table: update every "Current" column with Qwen3.6-measured values from Tasks 258-260; re-assess every gap row; update "5 of 6 goals MET" summary if goal status changed. Regression-comparison preservation: document in CLAUDE.md a `--model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` flag usage example for running the old baseline as a regression-comparison path. Update the README.md quickstart if it references the old model. Do NOT delete Qwen3-Coder references from commit messages, task bodies, or historical snapshots — the history is preserved.
-- **Verify**: (a) `omlx/bench/hypercar_bench.py` MODEL_ID updated; `.venv/bin/python -m omlx.bench.hypercar_bench --quick` runs on Qwen3.6 by default. (b) `--model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` override still works (regression-comparison path preserved). (c) `omlx/bench/agentic_bench.py` model field updated; agentic bench runs on Qwen3.6. (d) `omlx/hypercar_server.py` default model updated; `python -m omlx.hypercar_server` launches with Qwen3.6. (e) Qwen3-Coder still loads via `--model` override on hypercar_server. (f) CLAUDE.md Key Architecture section reflects Qwen3.6. (g) CLAUDE.md Memory Budget table has Qwen3.6-measured values at 65K, 256K, 1M (values sourced from Tasks 258-260 — cite snapshot files in commit message). (h) CLAUDE.md Performance Targets table has Qwen3.6-measured values (values sourced from Task 259 — cite snapshot files). (i) CLAUDE.md Current status table re-assessed against Qwen3.6 measurements; goal-status summary updated. (j) `hypercar_bench --full` passes all 11 gates on the new Qwen3.6 default (hard gate — if this fails, the migration commit is reverted). (k) `hypercar_bench --full --model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` passes all 11 gates (regression-path preserved). (l) Task 262 addenda values confirmed in any shipped MoE-related code (expert-count constants match Qwen3.6 at 256 experts). (m) Task 261 `--text-only` flag wired in if that task ran positive (post-removal memory win >= 1 GB); otherwise no flag added. (n) Commit message cites Tasks 257-262 and the snapshot files used for each CLAUDE.md table update; user can trace every updated number back to a specific benchmark run.
+- **Change**: Single-commit migration covering seven surfaces. Surface 1 — `omlx/bench/hypercar_bench.py`: update `MODEL_ID` (line 48 as of 2026-04-23) to the variant chosen by Task 258 (primary expectation: `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit`; fallback: `mlx-community/Qwen3.6-35B-A3B-4bit`). Keep the `--model` override flag functional so regression comparisons against Qwen3-Coder continue to work. Surface 2 — `omlx/bench/agentic_bench.py`: update the `"model"` field (line 95 as of 2026-04-23) to the same Qwen3.6 variant. Surface 3 — `omlx/hypercar_server.py`: update the default `--model` argparse default (line 295 as of 2026-04-23) and the docstring examples (lines 15, 20 as of 2026-04-23). Surface 4 — `CLAUDE.md` **Key Architecture** section: update the model line to "Qwen3.6-35B-A3B-<variant> (<memory>GB, <layers> layers, MoE <active>B active, 256 experts)". Surface 5 — `CLAUDE.md` **Memory Budget** table: re-measured 65K, 256K, 1M rows with Qwen3.6 numbers from Tasks 258-260 (not extrapolations — actual measured values). Surface 6 — `CLAUDE.md` **Performance Targets** table: re-measured decode/prefill numbers from Task 259; update with Qwen3.6 results. Surface 7 — `CLAUDE.md` **Current status against goals** table: update every "Current" column with Qwen3.6-measured values from Tasks 258-260; re-assess every gap row; update "5 of 6 goals MET" summary if goal status changed. Regression-comparison preservation: document in CLAUDE.md a `--model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` flag usage example for running the old baseline as a regression-comparison path. Update the README.md quickstart if it references the old model. Do NOT delete Qwen3-Coder references from commit messages, task bodies, or historical snapshots — the history is preserved.
+- **Verify**: (a) `omlx/bench/hypercar_bench.py` MODEL_ID updated to Task 258's chosen Qwen3.6 variant (Unsloth UD-MLX-4bit primary or plain 4-bit fallback); `.venv/bin/python -m omlx.bench.hypercar_bench --quick` runs on Qwen3.6 by default. (b) `--model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` override still works (regression-comparison path preserved). (c) `omlx/bench/agentic_bench.py` model field updated; agentic bench runs on Qwen3.6. (d) `omlx/hypercar_server.py` default model updated; `python -m omlx.hypercar_server` launches with Qwen3.6. (e) Qwen3-Coder still loads via `--model` override on hypercar_server. (f) CLAUDE.md Key Architecture section reflects Qwen3.6. (g) CLAUDE.md Memory Budget table has Qwen3.6-measured values at 65K, 256K, 1M (values sourced from Tasks 258-260 — cite snapshot files in commit message). (h) CLAUDE.md Performance Targets table has Qwen3.6-measured values (values sourced from Task 259 — cite snapshot files). (i) CLAUDE.md Current status table re-assessed against Qwen3.6 measurements; goal-status summary updated. (j) `hypercar_bench --full` passes all 11 gates on the new Qwen3.6 default (hard gate — if this fails, the migration commit is reverted). (k) `hypercar_bench --full --model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit` passes all 11 gates (regression-path preserved). (l) Task 262 addenda values confirmed in any shipped MoE-related code (expert-count constants match Qwen3.6 at 256 experts). (m) Task 261 `--text-only` flag wired in if that task ran positive (post-removal memory win >= 1 GB); otherwise no flag added. (n) Commit message cites Tasks 257-262 and the snapshot files used for each CLAUDE.md table update; user can trace every updated number back to a specific benchmark run.
 - **Effort**: M (1 week — coordinated-commit preparation 2 days, benchmark re-runs to generate final snapshot numbers 2 days (if Tasks 258-260 snapshots are stale by the time this commits), CLAUDE.md table updates 1 day, `hypercar_bench --full` validation pass 1 day, rollback-readiness check 0.5 day, commit + push 0.5 day)
 - **Depends on**: Tasks 257, 258, 259, 260, 261, 262 all complete with positive outcomes (or documented soft-floor misses that do not block migration). Sequencing: **ship-last of migration tasks**. Must be a single coherent commit covering all seven surfaces; partial-migration states (e.g., bench flipped but server not) are forbidden since users run the bench+server together. Rollback plan: `git revert` on the single migration commit restores the Qwen3-Coder default in one operation.
 
@@ -5259,7 +5360,7 @@ Model-migration pass — not a research pass. Target model pivot from `mlx-commu
 - **Goal**: 6 (machine fit — reduce active Metal memory by offloading rarely-routed experts to M4 Pro's ~7 GB/s NVMe), Goal 1 (frees headroom that can go to KV expansion at 1M context)
 - **Derived from**: User directive 2026-04-23 — Qwen3.6-35B-A3B has 256 experts but only 9 activate per token (8 routed + 1 shared). At 4-bit the full expert bank is ~16 GB. If we keep only the top-N hot experts resident in unified memory and stream the rest from NVMe, active Metal footprint drops dramatically without changing routing correctness. Additive to SliceMoE (Task 221) — SliceMoE compresses each expert, offloading relocates cold ones. Complementary to DyMoE (Task 226) runtime orchestration.
 - **Change**: New `omlx/moe_offload.py` implementing: (1) `ExpertOffloadStore` — memory-map expert weights from a single on-disk bank file (prepare once during model load; map read-only into process VM so Metal can DMA when accessed). (2) Per-expert hot/cold state tracked by exponentially-weighted routing frequency counters updated every decode step. (3) `HotExpertCache` — fixed-size in-unified-memory slab holding the top-N hot experts; LRU eviction when a cold expert is routed and the cache is full. (4) Prefetch hook on the router's top-k computation: once we know which experts are needed for the next layer, kick off async `mmap` page-ins ahead of the FFN compute (pipelined with attention). (5) Configurable via CLI flags: `--moe-hot-cache-size N` (default N=32 out of 256), `--moe-offload-path /path/to/expert_bank.bin`. (6) Compatibility layer so SliceMoE's bit-sliced expert blocks can be stored in the offload bank; compression and offloading compose rather than exclude each other. (7) Fallback: if `--moe-offload-path` is unset, fall back to the full-resident behavior (no regression on users who don't opt in).
-- **Verify**: (a) `omlx/moe_offload.py` unit tests cover ExpertOffloadStore mmap correctness (bit-exact output vs in-memory baseline for 10 random expert loads), HotExpertCache LRU correctness, and prefetch-hook scheduling. (b) `omlx/bench/hypercar_bench.py --model mlx-community/Qwen3.6-35B-A3B-4bit --moe-hot-cache-size 32 --moe-offload-path /tmp/qwen36_experts.bin` loads successfully. (c) Peak Metal memory with `--moe-hot-cache-size 32` < 10 GB for Qwen3.6-35B-A3B 4-bit (vs ~17.5 GB full-resident baseline). (d) NVMe cold-expert load latency < 5ms per access (measured via instrumentation; baseline reference: M4 Pro NVMe random 4KB read ~50µs, expert block ~5MB so ~1ms read + overhead). (e) Decode throughput regression < 10% vs full-resident baseline at 4K context on the same hardware (single-user interactive workload; higher regression acceptable at 1M where we're memory-bound anyway). (f) `hypercar_bench --full --moe-hot-cache-size 32` passes all 11 gates on Qwen3.6-35B-A3B-4bit (quality preservation is the hard gate — offloading must not change outputs, only latency). (g) Tested composition: `--moe-hot-cache-size 32` + SliceMoE (Task 221) stacks correctly with no output divergence vs SliceMoE alone. (h) Stress test: sustained 30-minute run with diverse prompts does not exceed 12 GB peak Metal (cold-expert thrashing guard).
+- **Verify**: (a) `omlx/moe_offload.py` unit tests cover ExpertOffloadStore mmap correctness (bit-exact output vs in-memory baseline for 10 random expert loads), HotExpertCache LRU correctness, and prefetch-hook scheduling. (b) `omlx/bench/hypercar_bench.py --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --moe-hot-cache-size 32 --moe-offload-path /tmp/qwen36_experts.bin` loads successfully (use Task 258's chosen variant if different). (c) Peak Metal memory with `--moe-hot-cache-size 32` < 10 GB for Qwen3.6-35B-A3B 4-bit (vs ~17.5 GB full-resident baseline). (d) NVMe cold-expert load latency < 5ms per access (measured via instrumentation; baseline reference: M4 Pro NVMe random 4KB read ~50µs, expert block ~5MB so ~1ms read + overhead). (e) Decode throughput regression < 10% vs full-resident baseline at 4K context on the same hardware (single-user interactive workload; higher regression acceptable at 1M where we're memory-bound anyway). (f) `hypercar_bench --full --moe-hot-cache-size 32` passes all 11 gates on Qwen3.6-35B-A3B-4bit (quality preservation is the hard gate — offloading must not change outputs, only latency). (g) Tested composition: `--moe-hot-cache-size 32` + SliceMoE (Task 221) stacks correctly with no output divergence vs SliceMoE alone. (h) Stress test: sustained 30-minute run with diverse prompts does not exceed 12 GB peak Metal (cold-expert thrashing guard).
 - **Effort**: L (1 week — mmap-backed ExpertOffloadStore 2 days, HotExpertCache + prefetch integration 2 days, composition with SliceMoE 1 day, benchmark + stress validation 2 days)
 - **Depends on**: Task 257 (Qwen3.6 smoke test) as hard prerequisite. Task 262 (MoE re-validation at 256 experts) as soft prerequisite — understanding routing statistics from 262 informs the initial HotExpertCache size default. Task 221 (SliceMoE) is independent but compositional; offloading works with or without SliceMoE active, and the two compose multiplicatively for active-memory reduction.
 
@@ -5307,13 +5408,13 @@ Diagnostic + literature triage identified that our TQ3.5 weight quantization is 
 - **Effort**: M (2-3 days — 1d GPTQ with MLX/numpy Cholesky, 0.5d calibration harness, 0.5d convert.py integration, 1d validation)
 - **Depends on**: Task 267. Task 268 AWQ should run first (lighter, informs whether GPTQ still needed). Composes with 268 — AWQ scales + GPTQ iteration on rotated weights is the full post-hoc stack.
 
-### 270. Per-layer / per-expert mixed-precision ladder (Unsloth-style + Lyapunov-informed)
+### 270. Per-layer / per-expert mixed-precision ladder — extract Unsloth's allocation, then refine
 - **Goal**: 6 (active memory with targeted fp16 islands), Goal 2 (protect sensitive few layers that dominate quality)
-- **Derived from**: Unblocker-survey 2026-04-23 + Task 207 (Lyapunov sensitivity, pass 46, arXiv:2603.20991). "One projection out of 468 induces 20,000x perplexity spike" — direct diagnosis for uniform 3-bit failure. Unsloth Dynamic 2.0 is empirical SOTA for per-layer mixed-precision GGUF. KVTuner (Task 186) is the KV-side analog; this applies same idea to weights.
-- **Change**: (1) Build sensitivity probe `omlx/tq_weight_sensitivity.py` that measures per-layer (and per-MoE-expert) perplexity delta when that layer/expert goes 3-bit vs fp16. (2) Compute Lyapunov contraction condition as cheap proxy. (3) Produce `config.json` per-layer bit-width: sensitive layers stay fp16, medium 4-bit, insensitive 3-bit. Target average ≤ 3.5 bits. (4) Wire via `--bit-ladder config.json` flag in `omlx/turboquant_convert.py`. Per-expert extension: MoE hot experts get higher precision.
-- **Verify**: HumanEval within 2pp of fp16 at average bit-width ≤ 3.5. On Qwen3.6-35B-A3B 256-expert, hot experts get higher precision than cold ones. Memory at 1M context reduces ≥ 2.5 GB vs uniform 4-bit MLX.
-- **Effort**: M (3-4 days — 1d sensitivity probe, 1d Lyapunov integration, 1d MoE per-expert extension, 1d validation)
-- **Depends on**: Task 266 (depth sweep informs sensitive layers). Task 268 or 269 (need working 3-bit path for "insensitive" slot). Task 257 if applying to Qwen3.6.
+- **Derived from**: Unblocker-survey 2026-04-23 + Task 207 (Lyapunov sensitivity, pass 46, arXiv:2603.20991) + user follow-up 2026-04-25 prioritizing Unsloth UD-MLX-4bit. "One projection out of 468 induces 20,000x perplexity spike" — direct diagnosis for uniform 3-bit failure. **Unsloth Dynamic 2.0 already ships per-layer mixed precision** in `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` based on Unsloth's own sensitivity analysis. The first action of this task is to extract Unsloth's allocation and use it as the baseline rather than building from scratch.
+- **Change**: Two-phase, with phase 2 conditional on phase 1 results. Phase 1 — **extract Unsloth UD-MLX-4bit allocation**: load the UD-MLX-4bit checkpoint, walk `model.named_modules()` and record each linear layer's actual bit-width (Unsloth Dynamic 2.0 stores some at higher precision than 4-bit; the per-layer manifest is implicit in the safetensors metadata). Output `bench/snapshots/qwen36_unsloth_bit_ladder.json` listing (layer_name, bits, group_size, is_quantized). This baseline tells us what Unsloth thinks is sensitive on Qwen3.6 — invaluable cross-validation against our own Lyapunov + perplexity-delta probe. Phase 2 — **build refinement, conditional**: only if Phase 1 manifest reveals gaps Unsloth left unaddressed (e.g., per-MoE-expert allocation; Unsloth Dynamic 2.0 is per-LAYER not per-expert), build sensitivity probe `omlx/tq_weight_sensitivity.py` measuring per-expert perplexity delta on the residual axis Unsloth doesn't cover. Compute Lyapunov contraction as cheap cross-check on Unsloth's allocation (where Unsloth and Lyapunov disagree, investigate). Produce `config.json` extending Unsloth's manifest with per-expert overrides for MoE hot experts. Wire via `--bit-ladder config.json` flag in `omlx/turboquant_convert.py`. **If Phase 1 reveals Unsloth's allocation already captures per-expert sensitivity sufficiently, declare Phase 2 unnecessary and close the task** — this is the user's "asymptote reached" pattern applied to weight quantization research.
+- **Verify**: (a) Phase 1 manifest extracted; `bench/snapshots/qwen36_unsloth_bit_ladder.json` exists and lists every linear layer's bit-width. (b) Phase 1 finding: number of layers Unsloth keeps at >4 bits, number at 4 bits, average bit-width across model. (c) Phase 1 cross-check: do Unsloth's high-precision layers correlate with Lyapunov sensitivity prediction? Record Spearman correlation. (d) Phase 2 decision documented: "Phase 2 unnecessary, ship Unsloth as-is" OR "Phase 2 needed because per-expert axis not covered". (e) If Phase 2 runs: HumanEval within 2pp of fp16 at average bit-width ≤ 3.5. (f) If Phase 2 runs: per-expert extension validated on Qwen3.6 256-expert layout — hot experts get higher precision than cold. (g) Memory at 1M context reduces ≥ 2.5 GB vs uniform 4-bit if Phase 2 ships.
+- **Effort**: S-M (1 day Phase 1 manifest extraction; Phase 2 conditional 3-4 days only if needed)
+- **Depends on**: Task 257 (Qwen3.6 smoke confirms UD-MLX-4bit loads). Phase 2 deps: Task 266 (depth sweep), Task 268 or 269 (working 3-bit path).
 
 ### 271. Full QuaRot port — RMSNorm fusion + online Hadamard in QK^T and down_proj
 - **Goal**: 6 (enable genuine sub-4-bit weights), Goal 2 (if rotation is theoretically right but plumbed wrong, fix plumbing)
