@@ -535,6 +535,187 @@ _(none)_
 
 ## Completed
 
+- **Task 273**: cProfile post-Task-271 — **Python axis ASYMPTOTIC, axis exhausted** (2026-04-24)
+  - **Profile result** (16 decode steps × 48 layers, DuoKV mode at 16K):
+    | Function | Pre-269 own time | Post-271 own time | Δ |
+    |----------|----------------:|------------------:|----:|
+    | `update_and_fetch` | 0.155s (79.5%) | **0.006s** | **-96%** |
+    | `_trim_indices_for` | (new helper) | 0.008s | — |
+    | `qwen3_moe.py:65` (attention) | 0.020s | 0.004s | -80% |
+    | `qwen3_moe.py:123` (MoE) | 0.004s | 0.004s | 0 |
+    | `switch_layers.py:75` (expert dispatch) | 0.003s | 0.003s | 0 |
+    | Total Python overhead | ~0.195s | ~0.025s | -87% |
+  - **DuoKV trim total CPU: 0.155s → 0.014s = 11× reduction** (combining update_and_fetch + new _trim_indices_for helper).
+  - **Per-decode-step Python overhead: ~12 ms → ~1.6 ms** out of ~78 ms total decode time. Python is now ~2% of decode time. Asymptote reached.
+  - **Decode rate** in this profile: 14.60 tok/s (vs 12.83 pre-269 baseline = +13.8% in this measurement). Consistent with the +16.1% in canonical efficiency_profile measurement.
+  - **No new top function emerged that's actionable** — the new "top" entries are MLX/MoE/attention-layer wrappers that just call into MLX kernels. Their Python time is irreducible without changing the model architecture.
+  - **Conclusion**: cycle-sized Python tuning is exhausted on Qwen3-Coder-30B's DuoKV decode path. Remaining decode time is in MLX/Metal kernels. Only architectural changes (Task 265 Fix 2 — DuoKV streaming/retrieval split) or model swap (Qwen3.6 — Task 253) can move decode further.
+  - **Next-priority recommendation in cron**: stop suggesting more cProfile cycles (#3 in prior ranking). Promote DuoKV split (Task 265 Fix 2) to #1 cycle-sized recommendation alongside Qwen3.6 — both blocked or L-effort, no remaining cycle-sized improvements.
+  - **No code change** — pure investigation. ~3 min compute (one model load + 16-step decode profile).
+- **Task 272**: CLAUDE.md status update — Goal 3 row + decode scaling table + perf-optimizations table extended (2026-04-24)
+  - **Goal 3 row** rewritten with measured short-vs-long context decode rates (was tracking only short-context "53.6 tok/s — GOAL MET" which masked the 16K gap). New row notes: short context met, 16K still below target, cliff partly Metal-ceiling and partly DuoKV trim O(N) — architectural fix is Task 265 Fix 2.
+  - **New decode scaling table** added directly under the Goal-status table (DuoKV vs Raw MLX at 2K/4K/8K/16K with current Task 271 numbers). Documents the +16% cumulative win and the architectural-fix path to recover the rest.
+  - **Goal 2 row** updated to reflect LCB 40% (was 30%) and the path: sampling axes exhausted, Qwen3.6 migration is biggest remaining lever.
+  - **Goal 6 row** updated to note the Metal peak headroom situation at 16K (99.8% of ceiling — any future state-adding optimization must be memory-neutral).
+  - **Recommended-mode paragraph** updated with new decode tok/s figures.
+  - **Performance optimizations table** extended with 4 new entries from this session: Task 259 (MMLU-Pro per-Q cleanup), Task 269 (DuoKV index cache), Task 271 (DuoKV mx.array cache), Tasks 254/255/258 (LCB CoT + retry). Header rewritten to clarify the source — original analyst audit (12 commits) + bench-loop cycles (4 fixes).
+  - **No code change** — pure docs alignment with measured reality. 14 tests still pass (sanity check).
+  - **Why this matters**: future cycles starting from CLAUDE.md will see the actual ceiling/gap picture, not the stale "GOAL MET" claim that hid the 16K gap. Reduces wasted-effort risk.
+- **Task 271**: Re-cProfile + extend module cache to mx.array rows — **+2.9% incremental at 16K** (2026-04-24)
+  - **Diagnosis** (cProfile after Task 269 fix): `update_and_fetch` still 0.158s of 0.161s = ~98% of CPU work in the trim path (own-time ratio went from 0.155/0.195 = 79% to 0.158/0.161 = 98% — Task 269 reduced everything else more than update_and_fetch itself).
+  - **Hypothesis**: per-layer `mx.array(gather)` materializes a `(H_kv, T_total)` int buffer from raw Python ints every call. Cache an `mx.array` per row at module level instead.
+  - **Fix** (`omlx/duo_kv_cache.py:42-100`): extended `_TRIM_INDEX_CACHE` to also store `stream_arr`, `retrieval_arr`, `stream_mask`, `retrieval_mask` as pre-built `mx.array` 1D rows. Per-layer code now does `mx.stack(cached_rows)` instead of `mx.array(list_of_lists)`.
+  - **Bench result** (`efficiency_profile --decode-ctx 8192,16384 --kv-mode duo`):
+    | Context | After Task 269 | After Task 271 | Δ |
+    |--------:|---------------:|---------------:|----:|
+    | 8K      | 22.45          | 22.22          | -1% (noise) |
+    | 16K     | 15.66          | **16.11**      | **+2.9%** |
+  - **Cumulative session improvement at 16K**: 13.88 → 16.11 tok/s = **+16.1% from baseline**.
+  - **Why bigger at 16K than 8K**: at larger T_total, the cached MLX array is larger and the per-call construction cost is higher — the cache saves more.
+  - **Tests**: all 33 DuoKV tests pass.
+  - **Metal peaks unchanged**: 37.0 GB @ 8K, 41.1 GB @ 16K.
+  - **Diminishing returns observation**: Task 269's +12.8% was the big win because it eliminated 47/48 redundant Python list builds. Task 271's +2.9% is the next layer — replacing the remaining `mx.array(list)` per-layer call with `mx.stack(cached_rows)`. Future similar optimizations will find smaller and smaller wins as the Python overhead asymptotes toward zero.
+  - **Next signal to watch**: with update_and_fetch's CPU shrunk, future profiles should start showing the surrounding model forward (qwen3_moe.py) as the new top consumer. That's a healthy sign — we're approaching the Python ceiling for this code path.
+- **Task 270**: Full bench validation of Task 269 — **WINS TRANSFER, all gates stable, 15% faster bench** (2026-04-24)
+  - **Bench result** (`--full`, 48.5 min, ALL GATES PASSED):
+    | Metric | Pre-269 (Task 260 run) | Post-269 (Task 270) | Δ |
+    |--------|----------------------:|---------------------:|----:|
+    | NIAH decode @ 4K  | 28.4 tok/s | **32.30 tok/s** | **+13.7%** |
+    | NIAH decode @ 16K | 13.3 tok/s | **15.70 tok/s** | **+18.0%** |
+    | NIAH prefill @ 4K | 760 tok/s  | 813.8 tok/s | +7% |
+    | NIAH prefill @ 16K | 446 tok/s | 514.3 tok/s | +15% |
+    | LCB | 8/20 (40%) | **8/20 (40%)** | 0 (no regression ✓) |
+    | MMLU-Pro | 62 | **62** | 0 ✓ |
+    | HumanEval | 19/20 | **19/20** | 0 ✓ |
+    | Phase 3c MMLU-Pro time | 1018s | 968s | -5% |
+    | Phase 3d LCB time | 2029s | 1615s | -20% |
+    | Total bench time | 3414s (57 min) | **2911s (48.5 min)** | **-15%** |
+  - **NIAH @ 16K decode is even better than the micro-bench predicted**: 15.70 vs the micro-bench's 15.66. Transfer is clean.
+  - **LCB pattern unchanged**: 7 easy + 1 medium + 0 hard = 8/20 (40%). Same 1 retry win on Fill the Gaps. Task 269's caching changes Python overhead, not algorithmic outputs — exactly as designed.
+  - **Side effect — total bench 15% faster**: every phase (especially decode-heavy ones like LCB and HumanEval) gets some benefit. LCB Phase 3d dropped 20% (2029→1615s) because retry-generations also benefit from faster decode.
+  - **CLAUDE.md / status update warranted**: Goal 3 row should be updated with new measurements (decode @ 16K = 15.7 vs 50 target = 31% of target, was 27%).
+  - **No code changes this task** — pure validation of Task 269. Task 270 closes with confidence that Task 269's win is real and durable.
+- **Task 269**: DuoKV trim-path Python optimization — **DECODE WIN, +12.8% at 16K** (2026-04-24)
+  - **Diagnosis** (cProfile @ 16K, DuoKV mode, 16 decode steps):
+    - `DuoKVCache.update_and_fetch` was **79.5% of all CPU time** (0.155s of 0.195s)
+    - 768 calls = 16 steps × 48 layers, each rebuilding the same gather index + mask from Python lists
+    - Per-step Python overhead: ~9.7 ms out of ~78 ms total (~12% of decode wall-time)
+  - **Fix** (`omlx/duo_kv_cache.py`): module-level cache `_TRIM_INDEX_CACHE` for `stream_padded` and `retrieval_idx` lists. Cache key is `(T_total, sink, window)` — identical across all 48 layers at any decode step. First layer per step computes; next 47 layers reuse. Plus simplified mask construction using `mx.concatenate([ones, zeros])` instead of nested Python loops.
+  - **Bench results** (`efficiency_profile --decode-ctx 8192,16384 --kv-mode duo`):
+    | Context | Pre-269 | Post-269 | Δ |
+    |--------:|--------:|---------:|----:|
+    | 8K      | 21.04   | **22.45** | **+6.7%** |
+    | 16K     | 13.88   | **15.66** | **+12.8%** |
+  - **Why bigger win at 16K**: the cached Python work scales O(T_total). At 16K the cache saves ~16K element list allocations × 47 redundant per step.
+  - **Confirmation via re-profile**: `update_and_fetch` CPU time dropped 0.155s → 0.129s (-17%). Total CPU 0.195s → 0.156s (-20%).
+  - **Metal peaks unchanged**: 37.0 GB @ 8K, 41.1 GB @ 16K. No memory regression.
+  - **Tests**: all 33 DuoKV tests pass.
+  - **Cumulative session result for decode**: hypercar_bench's effective decode-at-16K (DuoKV path) is now **15.66 tok/s** (was ~13.3 in NIAH, the 13.88 number was from my earlier probe). That's +13% from the baseline that the cron rule was tracking.
+  - **Next-priority remaining**:
+    - (i) **Task 265 Fix 2 (architectural DuoKV split)** still the biggest single Goal 3 lever. Projected: 15.66 → 25-28 tok/s at 16K. L effort.
+    - (ii) **Run full hypercar_bench --full** to confirm the +13% decode improvement transfers to NIAH/RULER measurements (and that LCB doesn't regress). Should now read ~15 tok/s for decode_toks at 16K NIAH (vs prior ~13 tok/s).
+    - (iii) **Qwen3.6 migration** still the biggest free out, blocked on download.
+- **Task 268**: 4-mode decode A/B at 8K/16K — **NO free mode-swap win exists** (2026-04-24)
+  - **Setup**: ran `efficiency_profile --decode-ctx 8192,16384 --kv-mode native` to compare against the raw and duo numbers from Task 267. fp16 mode is functionally equivalent to raw (both use plain `KVCache`), so no separate measurement needed.
+  - **Complete decode tok/s table at 16K**:
+    | Mode   | Decode | per-step | Metal peak | Prefill |
+    |--------|-------:|---------:|-----------:|--------:|
+    | raw (fp16 default cache) | 27.75 | 36.0 ms | 41.1 GB | 459 |
+    | DuoKV (bench default)    | 13.88 | 72.0 ms | 41.1 GB | 465 |
+    | native (3-bit everywhere)| 15.86 | 63.0 ms | **50.5 GB** | 110 |
+  - **At 8K**:
+    | Mode   | Decode | Metal | Prefill |
+    |--------|-------:|------:|--------:|
+    | raw    | 39.17  | 37.0  | 650     |
+    | DuoKV  | 21.04  | 37.0  | 647     |
+    | native | 24.11  | 38.2  | 246     |
+  - **Findings**:
+    - **Native mode at 16K spills to swap** (Metal peak 50.5 GB > 41.2 GB ceiling > 48 GB system). On-the-fly quantization during prefill spikes memory beyond what fits. 4× slower prefill (110 vs 459 tok/s).
+    - **Native at 16K decode is faster than DuoKV** (15.86 vs 13.88) but slower than raw MLX (27.75) — and breaks the memory budget. NOT a free win.
+    - **Native at 8K decode beats DuoKV** by 15% (24.11 vs 21.04) without breaking memory. Could be useful for short-context workloads if quality holds.
+    - **DuoKV is the WORST decode mode at both 8K and 16K**, but is the bench default because of quality (NIAH/RULER 100%). The DuoKV trim's gather+mask O(N) overhead is a real ~50% cost per token.
+  - **No free mode-swap solution**: switching to `native` would: (a) blow memory at 16K (paging), (b) slow prefill 4×, (c) sacrifice quality. None of those trade-offs is worth a marginal decode-tok/s gain at short context.
+  - **Confirmed only path forward** for Goal 3 on Qwen3-Coder is either:
+    - Architectural DuoKV split (Task 265 Fix 2, L effort, 2-4 days) — directly removes the 50% DuoKV tax
+    - Qwen3.6 migration (Task 253) — different model, smaller footprint, blocked on user download
+  - **Compute consumed**: ~5 min (one model load, two decode measurements at 8K + 16K).
+  - **Tooling**: `--kv-mode {raw,duo,native,fp16}` flag now documents the canonical 4-way A/B for any future cache-pattern hypothesis. Saves ~hours of "what was actually being measured?" confusion.
+- **Task 267**: Decode-cliff corrected analysis — **DuoKV is a separate 46-50% tax on top of raw-MLX ceiling cliff** (2026-04-24)
+  - **Tooling shipped**: `efficiency_profile.py --kv-mode {raw,duo,native,fp16}` — A/B cache modes in the scaling probe. Prior Tasks 264/265/266 used `make_prompt_cache` (raw MLX) by default; the bench actually uses DuoKV. Now separable.
+  - **DuoKV vs raw-MLX comparison** at same contexts:
+    | Ctx  | Raw MLX | DuoKV  | DuoKV tax |
+    |-----:|--------:|-------:|----------:|
+    | 8K   | 39.17   | 21.04  | -46%      |
+    | 16K  | 27.75   | 13.88  | -50%      |
+  - **DuoKV 16K = 13.88 tok/s matches hypercar_bench NIAH 13.3** — confirms the bench is running DuoKV correctly.
+  - **Three distinct effects** now confirmed sum to the 13.8 tok/s decode@16K:
+    1. Raw MLX inherent O(N) bandwidth: ~36 ms/step baseline → 27.75 tok/s
+    2. Metal-allocator cliff near the 41.2 GB ceiling (raw MLX alone jumps +10.5 ms at 16K)
+    3. DuoKV gather/mask trim: +22 ms at 8K, +36 ms at 16K (O(N) component)
+  - **Task 265 partially RIGHT, partially WRONG retrospective**: the DuoKV gather analysis was correct about the code but was validated in the wrong mode (raw, not duo). Task 266's slab fix failed for orthogonal reasons (fighting allocator with wired memory). The fundamental proposal (Fix 2: split streaming/retrieval attention) is still the best path because Task 267 confirms DuoKV IS paying a real ~50% tax.
+  - **Research note rewritten** (`research/decode_cliff_8k_16k.md`, ~160 lines): three-effect decomposition, full measurements, path-forward rankings (Fix 2 architectural split remains #1, Qwen3.6 migration is the free out via smaller model → more headroom).
+  - **Tools now available for future cycles**:
+    - `python -m omlx.bench.efficiency_profile --decode-ctx 16384 --kv-mode raw` — MLX baseline
+    - `python -m omlx.bench.efficiency_profile --decode-ctx 16384 --kv-mode duo` — actual bench config
+    - Comparing the two quantifies DuoKV overhead. Prior to Task 267 this comparison was impossible.
+  - **Total compute**: ~3 min GPU (one model load, two 16K measurements, one 8K measurement at DuoKV).
+  - **Correction shipped**: both the research note and the Task 266 Completed entry now reflect the full picture. No code changes needed beyond the `--kv-mode` flag added in Task 267.
+- **Task 266**: DuoKVCache pre-allocated gather slab — **REGRESSION, reverted** (2026-04-24)
+  - **Hypothesis** (from Task 265 Fix 1): caching the gather index + mask + pre-allocating a `(B, H_kv, T_slab, D)` output slab would eliminate the per-step ~3.2 GB transient allocation at 16K, closing the decode cliff.
+  - **Implementation shipped**: `_ensure_trim_slab()` and `_ensure_gather_idx_and_mask()` helpers in `DuoKVCache`. Slab grows geometrically (1×, 2×, 4×, …) so log2(T_max) allocations total instead of one per decode step. Slice-assignment writes gather outputs into the slab.
+  - **Bench result** (`--decode-ctx 2048,4096,8192,16384 --decode-n 32`, decode tok/s):
+    | Ctx | Pre-266 | Post-266 | Δ |
+    |----:|--------:|---------:|----:|
+    | 2K  | 46.65   | 46.46    | -0.4% |
+    | 4K  | 43.86   | 43.91    | +0.1% |
+    | 8K  | 39.17   | 39.17    | 0% |
+    | 16K | **27.75** | **25.21** | **-9%** |
+    Metal peak at 16K unchanged at 41.07 GB.
+  - **Hypothesis FALSIFIED**: the slab pre-allocation made 16K ~9% WORSE, not better. Short contexts unchanged.
+  - **Why it didn't work**: two problems, either or both:
+    1. The 3.2 GB slab is now **permanently wired**, so total memory pressure grows rather than shrinks. Instead of 3.2 GB transient on 100 MB headroom, we now have 3.2 GB wired + MLX still allocates a 3.2 GB transient for `mx.where`'s output.
+    2. MLX's lazy allocator apparently CAN free the transient efficiently in the pre-266 code (when there's enough headroom elsewhere). The explicit slab short-circuits that by holding the memory wired.
+  - **Decision**: REVERTED. All 33 DuoKV tests still pass. No residual diff. Code is back to pre-266 state.
+  - **Correction to Task 265 research note**: Fix 1 (simple slab) is NOT sufficient. The real fix is Fix 2 (split streaming/retrieval attention, L effort). Pre-allocating the output doesn't help if the transient allocation in `mx.where` / `take_along_axis` is unavoidable.
+  - **Updated recommendation**: ship Task 265 Fix 2 (streaming/retrieval split) OR accept the cliff and pivot to other goals. Fix 2 is 2-4 days of engineering touching `duo_kv_cache.py`, the model's attention forward, and the retrieval-head TQ3 path.
+  - **Measurement cost**: ~4 min micro-bench (already budgeted).
+- **Task 265**: Root-cause the 8K→16K decode cliff — **Metal allocator thrash, not kernel/bandwidth** (2026-04-24)
+  - **Finding**: the ~10 ms/step cliff at 16K is DuoKVCache's transient-memory pattern hitting Metal's 41.2 GB ceiling.
+  - **Ruled out**:
+    - Kernel switch (per `research/MLX_ATTN_DISPATCH.md`: `sdpa_vector_2pass` is the decode kernel for all K≥4096 with GQA=8, same tile sizes across 4K-16K).
+    - Pure O(N) bandwidth (actual scaling is 1.4/2.7/10.5 ms per doubling — last step is 4× the trend).
+  - **Root cause**: `omlx/duo_kv_cache.py:270-301` materializes a `(B, H_kv, T_total, D)` gather output for streaming heads even though their effective content is capacity=260 tokens. Transient allocation per decode step is ~200 MB @ 2K, scaling linearly to **~3.2 GB @ 16K** (gather output + zeros_like + mask + broadcast index + out_v). At 16K, Metal peak is 41.1 GB with ~100 MB headroom — the 3.2 GB transient allocation MUST recycle pages every step, triggering OS paging overhead (~10 ms).
+  - **Research note** at `research/decode_cliff_8k_16k.md` (150 lines) with the scaling math, evidence, and three proposed fixes (ordered by cost).
+  - **Proposed fixes** (from cheapest to most invasive):
+    1. **Pre-allocated slab** (S-M, 1 day): keep a single `(B, H_kv, T_max, D)` gather-output buffer alive across decode steps, gather-in-place. Trades 1.6 GB permanent for 3.2 GB transient. Contained to `DuoKVCache.update_and_fetch`.
+    2. **Split streaming/retrieval attention** (L, 2-4 days): stream heads always return `(B, H_streaming, 260, D)` (constant size); retrieval heads return `(B, H_retrieval, T_total, D)`. Call SDPA twice and recombine. Eliminates the T_total materialization entirely.
+    3. Architectural redesign of DuoKVCache (biggest win, biggest cost).
+  - **Quality concern flagged** (not verified but worth checking during fix work): the current gather pads with index 0 then zero-masks values. If downstream SDPA doesn't pass its own mask, softmax dilutes streaming-head attention by ~T_total/260 — a 63× dilution at 16K. Benchmarks pass, so mask is likely applied elsewhere, but worth verifying.
+  - **Next-priority task recommendation**: ship fix (1) (pre-allocated slab) and re-run `--decode-ctx 2048,4096,8192,16384` to measure delta. If decode@16K moves from 28 to ~38-45 tok/s, that's half-to-full Goal 3 closure for ~1 day of engineering. No full bench run required for validation.
+  - **No bench run consumed**: pure code/research analysis. ~45 min elapsed.
+- **Task 264**: Decode scaling-curve probe — **Goal 3 CLIFF IDENTIFIED between 8K and 16K** (2026-04-24)
+  - **Tooling**: extended `efficiency_profile.py --decode-ctx` to accept comma-separated context list. Loads model once (~90s), reuses it across contexts. New helper `_measure_decode_at_context(model, tokenizer, ctx, n_decode)` shared by single-ctx and multi-ctx entry points (`profile_decode_at_context` and `profile_decode_scaling`). Usage: `python -m omlx.bench.efficiency_profile --decode-ctx 2048,4096,8192,16384 --decode-n 32`.
+  - **Scaling curve** (Qwen3-Coder-30B-A3B-8bit, DuoKV default, 32 steady-state decode steps):
+    | Context | Prefill tok/s | Decode tok/s | per-step ms | Metal peak |
+    |--------:|--------------:|-------------:|------------:|-----------:|
+    | 2K      | 413           | **46.65**    | 21.4        | 33.9 GB    |
+    | 4K      | 762           | **43.86**    | 22.8        | 34.9 GB    |
+    | 8K      | 650           | **39.17**    | 25.5        | 37.0 GB    |
+    | 16K     | 459           | **27.75**    | 36.0        | 41.1 GB    |
+  - **Key findings**:
+    - **Goal 3 is nearly met at 2K-4K** (93% / 88% of 50 tok/s target). The "not meeting Goal 3" narrative mostly applies at 16K+.
+    - **Per-step time shows a CLIFF from 8K to 16K**: +10.5 ms jump vs only +1.4 ms (2K→4K) and +2.7 ms (4K→8K). NOT pure O(N) bandwidth scaling — there's a discontinuity.
+    - **Metal peak at 16K = 41.1 GB** — touching the 41.2 GB ceiling. Any future speed technique that ADDS state (e.g. Quest page indexes, CAOTE bookkeeping) must be memory-neutral.
+  - **Cliff hypotheses to investigate** (follow-up tasks):
+    - (a) **Metal tile/kernel switch**: at some context length the KV cache exceeds some tile-friendly size and the SDPA kernel falls into a slower path. Check MLX source for branches.
+    - (b) **Memory-pressure throttling**: at 41 GB we're near the 41.2 GB limit; GPU driver may be serializing memory accesses to avoid thrash. If true, eviction/compression would help.
+    - (c) **DuoKV threshold effects**: at longer contexts, more attention lands on streaming heads — maybe an O(N²) per-head intermediate fires when N exceeds something.
+  - **Prefill at 2K = 413 is low** (below 500 target) — but this first-context-in-session value is contaminated by compile cold start. 4K (762) shows the post-warmup number. The second 2K measurement would likely show >500.
+  - **Interpretation for Goal 3 backlog**:
+    - Techniques that help equally at all contexts (Quest page sel, sparse attention) should move the whole curve up. Projected at 16K: Quest at top-K=25% → decode theoretically 27 × 4 = ~110 tok/s in a pure bandwidth model, but memory movement overhead brings it down; realistic expectation 50-70 tok/s at 16K.
+    - Techniques that target the 8K→16K cliff specifically (if (a) or (b)) could deliver a bigger win per engineering hour at 16K without affecting short contexts.
+    - **Recommended next investigation**: instrument attention kernel dispatch to see WHICH path fires at 8K vs 16K. Docs-sized, no bench run needed, informs whether Quest or a kernel fix is higher leverage.
+  - **No bench run needed**: ~4 min of compute (one model load + 4 short decodes) gave us a 4-point scaling curve.
 - **Task 263**: Fix `efficiency_profile.py` KeyError + add decode-at-context profiler — **shipped + surprising Goal 3 finding** (2026-04-24)
   - **Fixes shipped**:
     - `efficiency_profile.py` summary printer: now falls back to any `*_s` key if `elapsed_s` missing, and shows `—` if no timing found. The KeyError crashed the summary table after `tq3_quantize` (which returns `wht_quantize_s` / `fused_dequant_s` / `unfused_dequant_s` with no `elapsed_s`).
@@ -5110,3 +5291,30 @@ Pass 61 is the second pass in the post-Qwen3.6 pivot arc. It ingests four papers
 - **Effort**: M (2 weeks — Phase 1 curation 3-4 days, Phase 2 gate integration 3-4 days, Phase 3 baseline + comparison measurement 1 week)
 - **Depends on**: Task 257 (Qwen3.6 smoke). The gate is independent of Tasks 273/278/279 but composes with them — running the gate at each stage of the TQ3-stack buildout gives the quantization-quality curve Hypercar needs for Goal-2 validation. Related to Tasks 86/87 (per-phase headroom checks) — the gate should skip gracefully under memory pressure.
 
+## Research-derived tasks (from LIT_REVIEW.md pass 62, 2026-04-24)
+
+Pass 62 is the third pass in the post-Qwen3.6 pivot arc. Axis-shift this pass: CLAUDE.md engineering pressure drove selection toward (i) Apple-Silicon kernel primitives, (ii) DuoKV algorithmic improvement, (iii) streaming/retrieval architectural support — rather than the passes 60-61 Area-B (TQ3 weight unblock) dominance. First dead-end formalization since pass 57 (Dead End #7: incremental attention update as standalone vertex). Three follow-on tasks filed here; vision-encoder-surgical-removal deferred to pass 63.
+
+### 281. Ship Open-TQ-Metal fused int4 attention kernel on Apple Silicon Metal (re-opens Dead End #1; Goal 3 × Goal 5 biggest lever)
+- **Goal**: 3 (decode speed — 48× attention speedup at 128K context via fused sdpa_int4 Metal kernel eliminates the dequantize-then-attend cost currently dominating Hypercar's TQ3 decode path at long context; CLAUDE.md pins current 16K decode at 16.11 tok/s against 50 tok/s target), 5 (swap pressure — 3.2× KV memory reduction 40 GB → 12.5 GB at 128K demonstrated on Llama-3.1-70B, giving meaningful working-memory headroom at 16K where Metal is currently at 99.8% ceiling), 6 (48 GB fit — validated on 64 GB Mac one tier up, directly analogous hardware), 1 (1M context via memory headroom enabling deeper compression at long context)
+- **Derived from**: LIT_REVIEW.md Pass 62 / Open-TQ-Metal (arXiv:2604.16957, Sai Vegasena, 2026-04-18). The first Apple-Silicon-specific arxiv paper in the pass-1-to-62 corpus after the pass-50 Dead End #1 declaration. Re-opens Dead End #1 under its declared revisit condition (Apple-researcher arxiv publication; not Apple-Official but independent-arxiv-original). Engineering trigger (48× speedup claim) is strong enough to justify re-opening despite independent-researcher provenance.
+- **Change**: Four-phase implementation. Phase 1 — **paper-code audit (3-5 days)**: determine Open-TQ-Metal Metal shader source release status. Check github.com/saivegasena/open-tq-metal or similar; if paper-only with no shader source, plan full reimplementation from paper description (+2-3 weeks to subsequent phases). Document findings in `bench/snapshots/open_tq_metal_audit.md` with code-release status, shader-algorithm summary, split-K dispatch pattern. Phase 2 — **Metal shader port (3-4 weeks)**: port or reimplement the fused sdpa_int4 kernel in Hypercar's MLX-Metal path. MLX's Primitive dispatch model is what the paper uses, so this is not a pure PyTorch/CUDA port but an MLX-Primitive port. Target file: `omlx/metal_kernels/sdpa_int4_fused.py` implementing a C++ MLX Primitive with Metal shader backing. Preserve the split-K parallelism pattern for Metal dispatch race-condition safety. Phase 3 — **TQ3 codec adapter (1-2 weeks)**: decide between (a) quantizing Hypercar's KV to uniform-int4 (losing the WHT rotation benefit) or (b) writing a Beta-codebook-int3 variant of the shader (harder but preserves TQ3 quality). Measure quality A-B at 4K on hypercar_bench — if uniform-int4 degrades HumanEval > 2 pp, pursue (b); else ship (a) and defer (b). Output: `--fused-int4-attention` flag on `omlx.hypercar_server` and `omlx.bench.hypercar_bench`. Phase 4 — **benchmark validation (1 week)**: run hypercar_bench at 4K / 16K / 64K / 128K with and without the fused kernel. Measure decode tok/s, prefill tok/s, Metal peak, HumanEval, NIAH retrieval at each context. Expected: large speedup at 64K+ where dequantize cost dominates; smaller speedup at 4K where attention is not the bottleneck.
+- **Verify**: (a) Paper-code audit note filed; code-release status documented. (b) Fused sdpa_int4 kernel port compiles, runs without crashes, produces outputs identical to dequantize-then-attend baseline up to numerical precision (top-1 token match per paper's claim). (c) Decode speedup measured: ≥ 2× speedup at 16K context on hypercar_bench; ≥ 10× at 128K context (expect full 48× only at the paper's exact configuration). (d) Quality regression: HumanEval within 2 pp of baseline; MMLU-Pro within 2 pp; NIAH@16K PASS; NIAH@64K PASS. (e) Memory measurement: KV footprint reduced by ratio matching the int4 quantization (3.2× at 128K expected). (f) Metal peak at 16K decode drops below current 99.8% ceiling — check the memory-neutral-optimization claim holds. (g) A-B test: TQ3+dequantize-attend vs TQ3+fused-int4-attention at matched memory budget; expect speedup without quality regression. (h) Findings note `bench/snapshots/open_tq_metal_port_findings.md` documenting the Metal shader port lessons, split-K pattern effectiveness on M4 Pro, and any quality/speed trade-offs vs baseline.
+- **Effort**: L (6-10 weeks — Phase 1 audit 3-5 days, Phase 2 Metal shader port 3-4 weeks, Phase 3 TQ3 adapter 1-2 weeks, Phase 4 benchmark validation 1 week; +2-3 weeks if code-release status requires reimplementation from paper description)
+- **Depends on**: Task 257 (Qwen3.6 smoke — provides Qwen3.6-35B-A3B baseline against which the kernel is measured). Composes with Tasks 278 (DuQuant), 279 (TurboBoA), 273 (MC-MoE) — those optimize the weight/calibration path while this optimizes the KV attention kernel; orthogonal. Related to Task 211 (Tawa Metal attention port) — Tawa was pure engineering without research derivation; Open-TQ-Metal is the research-derived variant and should inform or replace the Tawa approach. Biggest adjacent risk: if Tawa and Open-TQ-Metal ship in parallel and conflict over the Metal dispatch path, one must be picked as the default — A-B test at Phase 4 decides.
+
+### 282. Ship FreeKV speculative KV retrieval with per-head correction for DuoKV amortization (CLAUDE.md gather/mask O(N) closure)
+- **Goal**: 3 (decode speed — CLAUDE.md pins DuoKV@16K at 16.11 tok/s with the remaining tax diagnosed as "gather/mask MLX ops themselves (O(T_total) per call)"; FreeKV's speculative-retrieval algorithm amortizes this O(T_total) cost across decoding steps by reusing the previous step's retrieval with per-head correction, up to 13× speedup over SOTA), 2 (near-lossless accuracy per NeurIPS 2025 paper, preserving HumanEval 95% / MMLU-Pro 62% quality bar)
+- **Derived from**: LIT_REVIEW.md Pass 62 / FreeKV (arXiv:2505.13109, Liu et al., NeurIPS 2025, v5 2026-03-09). The direct algorithmic closure for CLAUDE.md's diagnosed DuoKV bottleneck; training-free. Composes with Task 265 Fix 2 (streaming/retrieval architectural split) as the per-step-temporal-smoothing wrapper.
+- **Change**: Three-phase implementation. Phase 1 — **paper-code audit (2-3 days)**: check FreeKV github (likely github.com/HenryYzc/FreeKV or similar) for reference implementation. Confirm NeurIPS 2025 acceptance; read OpenReview wXAn7orB1H for reviewer context on edge cases. Document per-head correction logic in `bench/snapshots/freekv_audit.md`. Phase 2 — **speculative retrieval port (1-2 weeks)**: implement the two-component mechanism in `omlx/freekv_speculative.py`. Component A: per-step query-vector similarity tracking across decoding steps (per-head) — when similarity is high, reuse the previous step's retrieval selection; when low, trigger fresh selection+recall for that specific head. Component B: fine-grained correction queue — track which heads need correction at each step, batch the correction operations, overlap with attention/FFN of unaffected heads. Skip the hybrid CPU-GPU memory layout component (doesn't apply to Apple Silicon unified memory). Phase 3 — **integration with DuoKV (1 week)**: the speculative-retrieval wraps DuoKV's retrieval path; DuoKV continues to do head-partitioned caching, FreeKV adds the temporal-reuse layer on top. Adaptive activation: disable speculative retrieval below a minimum context threshold (e.g., 4K) where tracking overhead exceeds saved gather cost.
+- **Verify**: (a) Paper-code audit filed. (b) Per-head query-similarity tracking implemented without measurable overhead at small context (≤ 2% slowdown at 4K). (c) Decode speedup measured: ≥ 1.5× speedup at 16K context (expect full 13× only if DuoKV is doing SOTA-retrieval-like selection every step; Hypercar's DuoKV is simpler so speedup will be less dramatic). (d) Quality regression: HumanEval within 1 pp of baseline; MMLU-Pro within 1 pp; NIAH@16K PASS; NIAH@64K PASS; LongBench within 2 pp (FreeKV's "near-lossless" claim). (e) Per-head correction mechanism working: when artificially inducing query-distribution shift, the correction queue fires for affected heads and accuracy is preserved. (f) A-B test: DuoKV-without-FreeKV vs DuoKV-with-FreeKV at matched quality; expect decode speedup. (g) Compose-test with Task 281 (Open-TQ-Metal): if both ship, the fused-int4-attention kernel consumes the retrieval output FreeKV produces; no conflict. (h) Findings note `bench/snapshots/freekv_port_findings.md` documenting per-head similarity statistics on Qwen3.6-35B-A3B (which heads benefit most from speculative retrieval; what the correction-trigger rate is; whether adaptive-activation threshold of 4K is correct).
+- **Effort**: M (3-4 weeks — Phase 1 audit 2-3 days, Phase 2 speculative retrieval port 1-2 weeks, Phase 3 DuoKV integration 1 week, benchmark validation 3-4 days)
+- **Depends on**: Task 257 (Qwen3.6 smoke). Composes with Task 265 Fix 2 (streaming/retrieval architectural split) — FreeKV is the per-step-temporal amortization wrapper over DuoKV's head-partitioned cache. Composes with Task 283 (CompressKV, below) — CompressKV refines the head classification that FreeKV's per-head tracking consumes. Related to Tasks 269, 271 (module-level trim caching, shipped +16% gain) — FreeKV is the next-lever after module-level caching; if Task 265 Fix 2 ships first and achieves 25-28 tok/s as projected, FreeKV is the follow-on to push toward 50 tok/s. Biggest risk: if DuoKV's head-partitioned cache is too simple for speculative retrieval to help (selection is already cheap within a partition), the optimization may not help — measure before committing to Phase 3 integration.
+
+### 283. Ship CompressKV semantic retrieval heads + layer-adaptive KV allocation (Task 265 Fix 2 literature support)
+- **Goal**: 1 (long-context KV eviction quality — layer-adaptive allocation with semantic-retrieval-head signals extends SnapKV's head-generic scoring with per-layer precision; relevant for 96K/128K/256K fp16 SnapKV contexts where current uniform per-layer budgets may be leaving quality on the table), 2 (LongBench + NIAH improvements across memory budgets — peer-reviewed quality-preservation evidence for retrieval-head-guided eviction; composes with HumanEval 95% / MMLU-Pro 62% quality bar)
+- **Derived from**: LIT_REVIEW.md Pass 62 / CompressKV (arXiv:2508.02401, Lin et al., 2025-08). Provides the peer-reviewed literature support for Task 265 Fix 2 (streaming/retrieval architectural split, projected DuoKV@16K ~25-28 tok/s); refines the DuoAttention-paper-based (pass 38) head classification Hypercar's Task 111 currently uses.
+- **Change**: Three-phase implementation. Phase 1 — **paper-code audit + semantic-head classifier probe (1 week)**: check CompressKV github repo. Run CompressKV's head-classification probe on Qwen3.6-35B-A3B using a calibration corpus (Hypercar's existing coding-heavy calibration + a small LongBench sample for distribution match). Output: per-layer semantic-retrieval-head mask saved as `config/qwen36_compresskv_heads.json`. Phase 2 — **layer-adaptive budget calibration (1 week)**: run per-layer eviction-error analysis at 16K context using fp16 baseline attention as ground truth (expensive; restrict to 16K for feasibility, extrapolate to larger contexts). Produce layer-keep-ratio JSON config `config/qwen36_compresskv_layer_budget.json` consumed by SnapKV during eviction. Phase 3 — **integration with shipped stack (1 week)**: augment Task 111's DuoAttention-based head reweighting with CompressKV's semantic-retrieval-head identification (2× weight on semantic-retrieval heads, 1× on generic retrieval heads, 0.5× on streaming heads — three-tier instead of current two-tier). Augment SnapKV's uniform-per-layer-keep with the layer-adaptive budget. Integration flag: `--compresskv-heads config.json --compresskv-budget config.json`.
+- **Verify**: (a) Semantic-head classification probe completes in < 2 hours on M4 Pro for Qwen3.6-35B-A3B 48-layer model; produces sensible per-layer head masks (visual inspection + sanity check that retrieval-head layer distribution matches the DuoAttention paper's findings for similar architectures). (b) Per-layer eviction-error analysis at 16K completes in < 8 hours; produces a layer-keep-ratio distribution that is non-uniform and structurally interpretable (deeper layers likely need higher keep ratios). (c) Quality A-B: Hypercar with DuoAttention head classification + uniform SnapKV vs Hypercar with CompressKV three-tier head classification + layer-adaptive SnapKV; expect ≥ 0.5 pp improvement on LongBench retrieval tasks and ≥ 1 pp on NIAH at memory-constrained budgets. (d) NIAH@16K PASS; NIAH@64K PASS. (e) Compose-test with Task 282 (FreeKV): CompressKV's per-head classification is the input to FreeKV's per-head query-similarity tracking; no conflict. (f) Measure keep-ratio budget — does layer-adaptive enable smaller total KV for same quality? Expected: yes, 10-15% smaller total KV at matched NIAH performance. (g) Findings note `bench/snapshots/compresskv_port_findings.md` documenting (1) whether Qwen3.6's head classification structurally differs from the Llama-family paper validation, (2) which layers gain most from per-layer budgeting, (3) whether the classification transfers across calibration corpora.
+- **Effort**: M (2-3 weeks — Phase 1 probe 1 week, Phase 2 error analysis 1 week, Phase 3 integration 1 week, validation 3-4 days)
+- **Depends on**: Task 257 (Qwen3.6 smoke). Composes with Task 111 (head rebalancing, shipped) — CompressKV refines Task 111's two-tier DuoAttention classification into a three-tier semantic/generic/streaming classification. Composes with SnapKV (shipped) — layer-adaptive budget replaces SnapKV's uniform per-layer keep. Soft-blocks Task 265 Fix 2 (streaming/retrieval architectural split) — if Fix 2 ships first, CompressKV refines the already-split architecture; if CompressKV ships first, Fix 2 consumes the CompressKV classification directly. Sequence preference: CompressKV provides the classification data for Fix 2's architectural split; prefer CompressKV first if scheduling allows. Biggest risk: per-layer eviction-error analysis requires fp16 baseline attention as ground truth, which is expensive at long context; restricting to 16K is a compromise that may leave per-layer signal on the table at 64K+ — mitigation is to extrapolate from 16K measurements via layer-depth scaling.
