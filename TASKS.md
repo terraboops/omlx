@@ -524,10 +524,10 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 ## In Progress
 
-- **Task 287**: Variance series run #2 — another `--full` bench
-  - First run was Task 286 (46.1 min, all gates pass, baselines matched). This is run #2.
-  - Goal: begin noise-floor characterization. Variance estimates from ≥2 samples are coarse; ≥8 samples meet Task 21's aggregate.py target. Each cron fire that's bench-safe contributes one sample.
-  - Compare to run #1: same code, same model, same flags — any meaningful drift is variance, not regression.
+- **Task 293**: Resume Qwen3.6-35B-A3B-4bit download (Task 253 Phase 1 unblocking)
+  - User kicked off `prep_qwen36.py` at ~17:19; it stopped after ~120 MB. 4 safetensors shards totaling 20.4 GB still need to finish.
+  - Resume via `snapshot_download` — it skips completed files and continues partial ones automatically.
+  - Background, will take ~30-70 min. Future cycles see the completion + can run Phase 2 (load test) and Phase 3 (full bench).
 
 
 
@@ -537,6 +537,188 @@ _Work from here first. Only fall through to regular sections if these are all in
 
 
 ## Completed
+
+- **Task 297**: Property-test `StreamingKVCache.update_and_fetch` boundary cases (2026-04-25, /loop cycle)
+  - **Goal**: 2, 1 — uncover any latent off-by-one in the ring-buffer position math before it manifests as silent multi-turn quality regression.
+  - **Deliverable**: `tests/test_streaming_kv_boundary.py` — 14 tests covering all four sequence patterns the spec called for plus a deterministic minimal reproducer for the bug it surfaced. Compares cache state against a brute-force ring-buffer reference where each token at stream position `s` carries the deterministic value `float(s)` so position-vs-stream-index mismatches are readable on failure.
+  - **Result**: **8 passed, 6 xfailed**. The xfailed tests caught a real correctness bug in `update_and_fetch` when `T_new > window`: MLX scatter with duplicate destination indices silently retains stale tokens instead of latest-write semantics. Filed as **Task 300 (P0)**. The xfail markers use `strict=True` so when Task 300 ships, the tests will start passing and trigger XPASS-as-failure as the signal to remove the markers.
+  - **Why this matters per spec**: spec said "If divergence is found, escalate to P0 with reproducer" — test file IS the reproducer; Task 300 is the escalation. Spec also said "the test passes and we learn nothing new — that's still a positive outcome (the suspicion is closed)" — better-than-best-case outcome here, the suspicion was justified.
+  - **Effort**: ~30 min (test design + run + xfail markers + Task 300 writeup).
+
+- **Task 292**: CLAUDE.md updates for session 2026-04-25 findings (2026-04-25, 17:08 PDT)
+  - **Goal**: capture this session's durable findings in CLAUDE.md (the project's contract). Without these edits, the doc was stale on multiple fronts and a fresh contributor would have outdated baselines.
+  - **Edits**:
+    1. **Decode scaling table extended to 32K**: 10.21 tok/s, Metal peak 40.7 GB (Task 290 data point — first time ever measured). Footnote explains efficiency_profile is now bench-consistent post-Task-289 (was reading 30% lower before the patch fix).
+    2. **Goals 1-6 status table refreshed**:
+       - Goal 1: noted decode now measured cleanly to 32K.
+       - Goal 2: noted N=3 quality replication (exact match across runs); pointer to `research/qwen3_coder_cycle_exhaustion.md`.
+       - Goal 3: full decode scaling 40/34/26/18/10 tok/s at 2K-32K; CV 0.5% intra-run; clarified that decode itself is NOT bimodal, only prefill-heavy phases are.
+       - Goal 4: updated to current measured 816/522/339 tok/s at 4K/16K/32K.
+       - Goal 5: added bimodal-mode note (3-4 GB fast vs 10 GB slow, both under limit).
+       - Goal 6: added 32K decode peak (40.7 GB, 99% of ceiling).
+    3. **New section**: "Bench reproducibility (variance series, N=3)". Documents the bimodal-timing finding from Tasks 286/287/291. Empirical mode-discriminator: swap peak < 5 GB → fast, > 8 GB → slow. Slow mode is +44% wall-time. Decode is not bimodal; prefill-heavy phases (RULER +124%, NIAH +83%) absorb the variance.
+  - **Why this matters**: a contributor who reads CLAUDE.md tomorrow now sees: (a) honest decode-scaling data through 32K, (b) the variance modes and discriminator, (c) the cycle-exhaustion research note as a starting reference. Without these edits, Goal 3 would have been described with stale numbers and no context for the variance.
+  - **No code change** — pure docs. ~10 min elapsed.
+
+- **Task 291**: Variance series run #3 — fast-mode replicates, bimodal pattern HOLDS at N=3 (2026-04-25, 16:08-16:56 PDT)
+  - **Goal**: third sample for noise-floor characterization. Tasks 286+287 were runs #1 (fast: 46.1 min) + #2 (slow: 66.6 min); this is run #3.
+  - **Result**: ALL 11 GATES PASS in 2840s (**47.3 min — clusters with run #1, not #2**).
+  - **Quality replication (N=3, perfect)**: Code intel 5/5, MMLU-Pro 62/100, LCB 8/20, HumanEval 19/20, Metal peak 35.1 GB — every measurement EXACT MATCH across all three runs.
+  - **Wall-time bimodality at N=3**:
+
+    | Phase | Run 1 (fast) | Run 2 (slow) | Run 3 (fast) | Δ run3-run1 |
+    |---|---:|---:|---:|---:|
+    | Phase 0 Smoke | 0.3s | 0.3s | 0.3s | 0% |
+    | Phase 1 Coherence | 1.4s | 2.0s | 1.5s | +7% |
+    | Phase 2 Code Intel | 4.2s | 6.2s | 4.2s | 0% |
+    | Phase 3 NIAH | 50.5s | 92.5s | 57.8s | +14% |
+    | Phase 3b RULER | 231.8s | 520.0s | 236.3s | +2% |
+    | Phase 3c MMLU-Pro | 879.3s | 1350.7s | 905.0s | +3% |
+    | Phase 3d LCB | 1561.1s | 1973.3s | 1595.8s | +2% |
+    | Phase 4 HumanEval | 20.1s | 29.7s | 19.9s | -1% |
+    | **Total** | **2766s** | **3998s** | **2840s** | **+3%** |
+    | Swap peak | 3.6 GB | 10.4 GB | 3.1 GB | tighter |
+
+  - **Fast-mode variance (N=2): ~3% between runs #1 and #3**. Phase-by-phase, deltas range -1% to +14%. NIAH at 50→58s shows the largest fast-mode variance; everything else within ~3%. Most phases are near-identical between fast-mode runs.
+  - **Mode classification rule (empirical at N=3)**: total wall-time < 50 min → fast mode; > 60 min → slow mode. Swap peak < 5 GB → fast; > 8 GB → slow. Both metrics agree on classification across all 3 runs.
+  - **Implication for variance characterization**: N=3 is enough to confirm the modes are real and identify the discriminator (swap peak). Future cycles can pre-classify a run by checking memory/swap state at start. For honest decode/wall-time gates, samples must be stratified (fast vs slow) before aggregation.
+  - **Snapshot**: `bench/snapshots/devloop-291_2026-04-25T16-08/`.
+  - **Followups**:
+    - Need ≥2 more slow-mode runs to characterize slow-mode variance.
+    - The 1/3 slow-mode rate is too small a sample to trust; could be 1/3 or 1/10 in steady state.
+    - The mode discriminator (swap peak ≷ 5 GB) suggests the bench could log "system loaded yes/no" at start as a covariate. That would auto-stratify the snapshots.
+  - **Effort**: ~48 min (1 cycle slot exceeded, allowed per user).
+  - **No code change** — pure validation/data.
+
+- **Task 290**: Decode-scaling probe + filler-tiling bug fix in `efficiency_profile` (2026-04-25, 15:08-15:18 PDT)
+  - **Goal**: validate CLAUDE.md's decode scaling curve with the now-trustworthy efficiency_profile (post-Task-289 fix). Extend curve beyond 16K.
+  - **Bug found**: `_measure_decode_at_context` filler text was `"...lazy dog. " * 400 ≈ 3600 tokens`. With `* 3` extension, max ~10.8K tokens. Any request > ~16K silently capped at the filler ceiling. Both `--decode-ctx 16384` and `--decode-ctx 32768` produced ctx=16002 in the same run.
+  - **Fix shipped**: replaced with `tokenize once → tile to context_tokens` pattern. Verified: `--decode-ctx 32768` now produces ctx=32768 cleanly.
+  - **Decode scaling curve (DuoKV, post-fix, 64 decode steps, single load)**:
+
+    | Context | decode tok/s | Metal peak | per-step ms |
+    |---:|---:|---:|---:|
+    | 2048 | 39.99 | 33.4 GB | 25.0 |
+    | 4096 | 33.99 | 33.95 GB | 29.4 |
+    | 8192 | 25.79 | 34.65 GB | 38.8 |
+    | 16384 | 17.96 | 36.65 GB | 55.7 |
+    | **32768** | **10.21** | **40.7 GB** | **97.9** |
+
+  - **Compared to CLAUDE.md "decode scaling curve" table**:
+
+    | Context | CLAUDE.md (DuoKV bench) | This probe | Δ |
+    |---:|---:|---:|---:|
+    | 2K | 46.65 | 39.99 | -14% |
+    | 4K | 43.86 | 33.99 | -23% |
+    | 8K | 22.22 | 25.79 | +16% |
+    | 16K | 16.11 | 17.96 | +11% |
+    | 32K | (not in CLAUDE.md) | **10.21** | new |
+
+    The 8K/16K agreement is within run-to-run variance (Task 287 showed +12% at 16K between runs from system co-tenancy). The 2K/4K divergence is larger — possible causes:
+    - Bench's NIAH starts decode AFTER the 32-token answer-gen, so cache state differs.
+    - JIT/kernel cold-start may be more impactful at 2K/4K (less to amortize over).
+    - CLAUDE.md numbers may be from an older bench commit before some patches landed.
+    Reconciliation needs running the bench's NIAH at 2K explicitly — out of cycle scope.
+  - **New 32K datapoint**: decode 10.21 tok/s, Metal peak 40.7 GB (within 0.5 GB of the 41.2 GB ceiling). The 16K→32K decline is -43%; the 32K Metal peak puts us at 99% of ceiling. This is consistent with CLAUDE.md's note that 16K decode peaks at 41.1 GB (here 16K is 36.65; difference may be patch stack — needs clean `--full` bench at 32K to confirm).
+  - **What's now banked**:
+    - efficiency_profile reliable at any context up to ~32K (above that, Metal ceiling risk).
+    - 5-point scaling curve extends 1 octave beyond CLAUDE.md.
+    - Both bugs (Task 289 patch-stack inconsistency, Task 290 filler-tiling) found and fixed.
+  - **Effort**: ~10 min. Cheap-to-validate.
+
+- **Task 289**: Fix `efficiency_profile` decode-tok/s underreporting — apply `prefill_last_logit_patch` (2026-04-25, 14:33-15:04 PDT)
+  - **Goal**: pin down Task 288's open mystery — `efficiency_profile` read 11.13 tok/s while `hypercar_bench` read 18.1 tok/s for the nominally-identical decode @ 16K (DuoKV) measurement. Same model, same context, ~37% gap.
+  - **Hypothesis**: `efficiency_profile` doesn't apply `prefill_last_logit_patch`. Without it, prefill projects ALL 16384 hidden states through `lm_head` → ~5 GB logits tensor allocated then freed, but Metal peak stays at the high-water mark (41.09 GB) and decode runs at the ceiling, hitting paged-memory cost.
+  - **Verification harness**: `/tmp/decode_with_patch.py` — load model, apply patch, prefill 16K, time 64 decode steps × 4 samples.
+  - **Result — hypothesis CONFIRMED**:
+
+    | Run | Patch? | decode tok/s | Metal peak |
+    |---|:---:|---:|---:|
+    | Task 288 (efficiency_profile) | ✗ | 11.13 ± 0.21 | 41.09 GB (ceiling) |
+    | Task 289 (harness with patch) | ✓ | **17.85 ± 0.09** | **36.65 GB** |
+    | Task 286 bench (run #1) | ✓ | 18.1 | 35.1 GB |
+    | Task 287 bench (run #2) | ✓ | 16.11 | 35.1 GB |
+
+    +60% decode tok/s, -4.4 GB Metal peak, CV tightens from 1.84% → 0.52%. With the patch applied, efficiency_profile matches bench within variance.
+  - **Fix shipped** in `omlx/bench/efficiency_profile.py`:
+    - Added `_load_with_bench_patches()` helper that loads + applies `prefill_last_logit_patch`.
+    - `profile_decode_at_context` and `profile_decode_scaling` now call it.
+    - Documented WHY in the helper docstring (the 37% gap, the 5 GB logits tensor, the ceiling pressure).
+  - **Post-fix verification**: re-ran `efficiency_profile --decode-ctx 16384,16384 --kv-mode duo --decode-n 64` — got 17.98 + 18.00 tok/s, 36.65 GB Metal peak. **Matches bench reading. Tools are now consistent.**
+  - **Followups**:
+    - Apply the same fix to other tools that load the model directly (e.g. `efficiency_profile`'s other micro-benchmarks could also benefit).
+    - Could add a unit-style test to verify `_load_with_bench_patches` returns a patched model — `_patch_applied` flag exists for this.
+    - A `bench/snapshots/` entry for the variance-probe run series would be ideal once we have ≥4 cycles of data.
+  - **Why this matters**: the cron prompt's #1 useful-tool listing is `efficiency_profile --decode-ctx N[,N,...]`. If that tool reads systematically lower than the canonical bench, every cycle that uses it for cheap-to-validate measurements gets misled. Future cycles can now trust efficiency_profile readings.
+  - **Effort**: ~30 min (investigation + harness + fix + verification). Cheap-to-validate as the cron prompt prefers.
+
+- **Task 288**: Decode-variance probe — decode tok/s @ 16K (DuoKV) is TIGHT (CV 1.84% over N=4) (2026-04-25, 13:39-13:44 PDT)
+  - **Goal**: narrow Tasks 286+287's 44% wall-time variance finding by isolating the decode component. Run multiple decode-only samples with single model load and check if decode itself is bimodal.
+  - **Result**: 4 samples at 16K with DuoKV, ~6 min total elapsed:
+
+    | Sample | decode tok/s | per-step ms | Metal peak |
+    |---:|---:|---:|---:|
+    | 1 | 11.42 | 87.6 | 41.09 GB |
+    | 2 | 11.22 | 89.2 | 41.09 GB |
+    | 3 | 10.94 | 91.4 | 41.09 GB |
+    | 4 | 10.93 | 91.5 | 41.09 GB |
+    | **mean** | **11.13** | **89.9** | **41.09** |
+    | std | 0.205 | 1.6 | 0 |
+    | **CV** | **1.84%** | 1.8% | 0% |
+
+  - **Decode is NOT bimodal**. Despite Tasks 286+287's 44% wall-time spread between fast/slow modes, the focused decode steady-state stays within 2% across same-system samples. The bimodality lives in OTHER phases (prefill in RULER/MMLU/LCB), where co-tenancy + swap pressure dominate.
+  - **Implication for Goal 3**: the metric "decode tok/s constant across context window" is RELIABLE within system co-tenancy. Co-tenancy bumps wall-time but doesn't flip decode tok/s into a different mode. CLAUDE.md's stated decode numbers are honest; only the wall-time totals need uncertainty bounds.
+  - **Open mystery — efficiency_profile vs bench discrepancy**: this probe measured 11.13 tok/s but Tasks 286/287 bench measured 18.1/16.11 tok/s for the same metric. ~30% gap. Possible causes:
+    - Bench applies `prefill_last_logit_patch` + `vertical_eval_patch` (line 305, 309 of `hypercar_bench.py`); `efficiency_profile` does NOT.
+    - efficiency_profile peaked at 41.09 GB Metal (right at ceiling) vs bench's 35.1 GB. The 6 GB delta suggests `efficiency_profile` retains allocations across iterations differently.
+    - Bench's NIAH does CHUNKED prefill (4096-token chunks); efficiency_profile prefills the full 16384 in one model() call. Different attention compute paths possibly.
+  - **Followups** (not cycle-sized):
+    - Apply `prefill_last_logit_patch` + measure efficiency_profile decode again — if it jumps to ~18 tok/s, that's the cause.
+    - Or fix `_measure_decode_at_context` to use chunked prefill matching the bench.
+    - Document in CLAUDE.md that `efficiency_profile`'s decode tok/s readings systematically lower than `hypercar_bench`'s by ~30% — the two tools measure the same thing but through different patch stacks.
+  - **Effort**: ~6 min (1 cycle slot). Cheap-to-validate as the cron prompt prefers.
+
+- **Task 287**: Variance series run #2 — quality REPLICATES exactly, wall-time +44% (bimodal timing confirmed) (2026-04-25, 12:08-13:15 PDT)
+  - **Goal**: second sample for noise-floor characterization (Task 286 was run #1).
+  - **Result**: ALL 11 GATES PASS in 3998.2s (66.6 min — vs run #1's 46.1 min).
+  - **Quality (PERFECT REPLICATION across 2 runs)**:
+
+    | Gate | Run 1 | Run 2 | Δ |
+    |---|---|---|---|
+    | Code intelligence | 5/5 (100%) | 5/5 (100%) | exact |
+    | MMLU-Pro | 62/100 (62%) | 62/100 (62%) | exact |
+    | LiveCodeBench | 8/20 (40%) | 8/20 (40%) | exact |
+    | HumanEval Lite | 19/20 (95%) | 19/20 (95%) | exact |
+    | NIAH 4K + 16K | both PASS | both PASS | exact |
+    | RULER | all 100% acc | all 100% acc | exact |
+    | Metal peak | 35.1 GB | 35.1 GB | exact |
+
+  - **Wall-time (HIGH variance — 44% gap between runs)**:
+
+    | Phase | Run 1 | Run 2 | Δ |
+    |---|---|---|---|
+    | Phase 0 Smoke | 0.3s | 0.3s | flat |
+    | Phase 1 Coherence | 1.4s | 2.0s | +43% |
+    | Phase 2 Code Intel | 4.2s | 6.2s | +48% |
+    | Phase 3 NIAH | 50.5s | 92.5s | **+83%** |
+    | Phase 3b RULER | 231.8s | 520.0s | **+124%** |
+    | Phase 3c MMLU-Pro | 879.3s | 1350.7s | +54% |
+    | Phase 3d LCB | 1561.1s | 1973.3s | +26% |
+    | Phase 4 HumanEval | 20.1s | 29.7s | +48% |
+    | **Total** | **2766s (46.1 min)** | **3998s (66.6 min)** | **+44%** |
+    | Swap peak | 3.6 GB | 10.4 GB | +189% |
+
+  - **Bimodal timing CONFIRMED** (Task 20 hypothesis). Run #1 hit fast-mode (no co-tenancy pressure); Run #2 hit slow-mode (system co-tenancy + swap pressure peaking at 10.4 GB). The 124% RULER slowdown matches Task 20's measured slow/fast ratio (~3× for some tasks, ~1.5-2× for others). The bimodality is REAL across the bench, not isolated to specific tasks.
+  - **Key implication for variance studies**: pre-condition the run to control for co-tenancy. Future variance runs should:
+    - Capture pre-run vm_stat / swapusage / process count.
+    - Tag run as "fast-mode" (clean system) or "slow-mode" (co-tenancy present) for stratified analysis.
+    - Quality gates can be aggregated naively (they're noise-free across both modes).
+    - Wall-time gates need stratification.
+  - **Snapshot saved** to `bench/snapshots/devloop-287_2026-04-25T12-08/`.
+  - **Followups**:
+    - For Goal 3 ("decode tok/s constant across context window"), the variance is the headline issue, not the metric itself. CLAUDE.md should call this out — currently it states absolute numbers without uncertainty bounds.
+    - Run 21's `aggregate.py --baseline` would benefit from a `--mode {fast,slow,all}` filter for honest regression detection.
+  - **Effort**: ~67 min (1 cycle slot exceeded, allowed per user).
 
 - **Task 286**: `--full` bench validation run — accumulated uncommitted state PASSES all gates (2026-04-25, 11:08-11:55 PDT)
   - **Goal**: validate that 32 tasks of accumulated uncommitted changes (Tasks 254-285) haven't silently regressed any gate. Also: establish run #1 of the variance series the cron prompt has been suggesting.
@@ -5661,3 +5843,182 @@ Pass 64 is the fifth pass in the post-Qwen3.6 pivot arc and the first explicitly
 - **Verify**: (a) Task 281 shipped first (gating dependency). (b) IsoQuant-Fast MLX/Metal stage-1 kernel matches paper's FMA-count claim (instrument the kernel for actual FMA-cycle count on M4 Pro GPU). (c) Per-token rotation cost vs shipped fused WHT: IsoQuant must beat WHT by ≥2× to justify the swap (the speedup-vs-CUDA-RotorQuant is 4.5×–4.7×, but Hypercar already ships fused WHT at 1.33× prefill at 8K, so the headroom is smaller). (d) End-to-end TQ3+IsoQuant matches TQ3+WHT on HumanEval / MMLU-Pro / NIAH within ±0.5 pp at 4K-128K. (e) If end-to-end quality regresses, the rotation-step replacement is not isolated — IsoQuant's rotation may produce a different codebook input distribution than WHT, breaking TurboQuant's Beta((d-1)/2,(d-1)/2) codebook validity assumption. (f) Decode speed delta vs TQ3+WHT: target ≥1.5× decode improvement at 16K to justify the engineering cost.
 - **Effort**: L (1-2 months) for evaluation, XL (3+ months) for shipping
 - **Depends on**: **Task 281 (Open-TQ-Metal port)** — strict prerequisite; this task is meaningless without the Metal-kernel infrastructure Task 281 establishes. Independent of Task 285 (GPTAQ) and Task 288 (KVLinC) — different stages of the pipeline (Task 285 is W3 weight calibration, Task 288 is KV codebook + adapter, this task is rotation-step kernel cost). Biggest risk: IsoQuant validation is **stage-1 only on synthetic vectors** in the source paper — real-model end-to-end quality is unmeasured; the rotation might be fast but introduce a worse codebook input distribution than WHT, breaking codebook validity. Mitigation: A-B test rotation only (codebook unchanged) against shipped WHT on a 4K calibration corpus before committing further. Secondary risk: CUDA-to-Metal port unknown — Apple Silicon's `simdgroup_matrix` 8×8 MMA is structurally different from CUDA's 32-thread warp-level FMA; the FMA-count claim may not translate to MMA-cycle-count on Metal. Mitigation: the Open-TQ-Metal team's published Metal kernel methodology (LIT_REVIEW pass 62) and the Kernel-Fused SAR `simdgroup_matrix` MMA-exploitation methodology (LIT_REVIEW pass 63) are the natural validation environment but require Task 281 + Task 284 to land first. Tertiary risk: single-author arxiv preprint with no peer-review provenance signal at pass-64 time. Mitigation: this is explicitly a speculative complement and is filed as evaluation-only, not shipping; if Task 281 ships and IsoQuant evaluation is negative, the negative result itself is research output.
+
+### 296. Port UAG-extended MLX-LM cross-family speculative decoding to Hypercar (Qwen2.5-1.5B drafter → Qwen3-Coder-30B-A3B target, Goal 3 path)
+- **Goal**: 3 (decode speed — speculative decoding amortizes per-step Metal-dispatch and KV-gather cost across multiple accepted tokens; 1.7× speedup measured for structured text on Apple Silicon directly addresses the 16K-32K cliff currently bottlenecking decode at 16/10 tok/s vs 50 tok/s target), 2 (intelligence — speculative decoding is verification-time-equivalent so quality is preserved by construction provided UAG translation handles the tokenizer mismatch correctly), 6 (48 GB M4 Pro fit — adding a 1.5B 8-bit drafter adds ~1 GB; needs careful budgeting against the 32K-decode peak at 40.7 GB / 0.5 GB headroom)
+- **Derived from**: LIT_REVIEW.md Pass 65 / 2604.16368 (Krzysztof Fonal, single-author arxiv, March 22 2026, revised April 21 2026). First arxiv-published paper demonstrating cross-tokenizer speculative decoding via Universal Assisted Generation (UAG) integrated into the MLX-LM framework directly. Validated on Bielik 11B Polish-specialized target with three drafter families (Bielik 1.5B, Qwen2.5-1.5B, Llama 3.2). Key empirical finding: the cross-family Qwen2.5-1.5B drafter outperforms the same-family Polish-specialized Bielik 1.5B drafter on acceptance rate, validating that context-aware token translation can overcome the tokenizer mismatch cost. Performance: 1.7× speedup on structured text on Apple Silicon; failures on varied instructions.
+- **Change**: Add cross-family speculative decoding path to Hypercar inference. Implementation steps: (a) Drafter selection — pair Qwen2.5-1.5B-8bit (or smallest available Qwen3-family model with similar MLX-LM compatibility) as the drafter; load into Metal alongside the 30B target with explicit memory accounting in `omlx/hypercar_server.py` to ensure 32K-decode peak stays under 41.2 GB ceiling. (b) UAG translation layer — port the context-aware token translation from the paper's MLX-LM extension (Python wrapper, no Metal kernel work); given a draft tokenizer T_d and target tokenizer T_t, translate the K accepted draft tokens to target-tokenizer space using surrounding context as disambiguation. (c) Verification path — run the existing decode forward pass on the K candidate tokens in parallel (already supported by the prefill path); compare token-by-token against the drafter sequence; accept the longest matching prefix. (d) Server integration — add `--draft-model` flag and `--max-draft-tokens` flag to `omlx/hypercar_server.py`; default OFF, opt-in for users to A-B test. (e) Benchmark gate — add to `omlx/bench/hypercar_bench.py` a "speculative decode" phase measuring acceptance rate and tok/s vs no-drafter baseline at 4K, 16K, 32K context, on coding workload (HumanEval prompts).
+- **Verify**: (a) Drafter loads alongside Qwen3-Coder-30B without crossing 41.2 GB Metal ceiling at 32K decode (Goal 6 boundary). (b) UAG translation produces token-by-token equivalence with single-tokenizer speculative decoding when drafter and target share tokenizer (degenerate case). (c) Acceptance rate on HumanEval prompts ≥ 50% (paper reports 1.7× speedup which implies ≥40% acceptance for Qwen-cross-family); if below 30% on Hypercar's coding workload, the technique does not transfer and ship as research-negative-result. (d) Decode tok/s @ 4K with drafter ≥ 1.3× baseline; @ 16K ≥ 1.5× baseline (the cliff steepens favoring speculative decoding more at long context). (e) Quality preservation: HumanEval pass@1 within ±1 pp of no-drafter baseline; MMLU-Pro within ±1 pp; NIAH at 4K, 16K PASS. (f) Memory budget at 32K decode with drafter loaded: peak ≤ 41.2 GB Metal ceiling. (g) Findings note `bench/snapshots/uag_mlx_speculative_findings.md` documenting drafter-family comparison (Qwen2.5-1.5B vs Qwen3-1.7B if available), acceptance rate by content-type bucket (structured code vs varied instructions vs tool-call JSON), and the cross-tokenizer translation failure modes.
+- **Effort**: M (2-4 weeks) — the algorithmic spec is well-defined; the open-source code release status is unconfirmed, so re-implementation effort is the bound. UAG translation layer is Python wrapper (low-risk). Drafter loading + memory budget integration is the harder engineering work.
+- **Depends on**: Independent of Tasks 281 (Open-TQ-Metal), 285 (GPTAQ), 288 (KVLinC), 289 (IsoQuant), 270 (W3 weights). **Composes with Task 257** (Qwen3.6 migration) — the natural integration point is the post-migration Qwen3.6-A3B inference path; once Qwen3.6 ships, the drafter pairing can use Qwen3-1.7B which is closer in tokenizer to the target. Composes orthogonally with all KV-compression work because speculative decoding amortizes per-step cost regardless of how the KV is stored. Biggest risk: "structured text" 1.7× speedup drops to "failing for varied instructions" — Hypercar's tool-calling agentic workload may match the failing case. Mitigation: A-B test on actual coding prompts before committing to default-on; ship as opt-in flag if speedup is workload-dependent. Secondary risk: 1.5B drafter at 8-bit adds ~1 GB; 32K decode is at 0.5 GB Metal headroom (Goal 6 boundary). Mitigation: use 4-bit drafter quantization to halve the memory cost; the drafter is on the speculate-and-discard path so per-step quality is less critical than verification quality. Tertiary risk: single-author preprint, no peer-review; mitigation is the algorithmic claim is straightforward and easy to validate.
+
+### 298. Research-evaluation: MoE expert-routing speculation for Apple Silicon unified-memory prefetch (does CUDA-offload-prefetch transfer to Metal cache hierarchy?)
+- **Goal**: 3 (decode speed — 14% TPOT reduction reported on CUDA-offload regime; on-device translation question is whether the prefetch overlap mechanism transfers to Apple Silicon's unified-memory cache-hierarchy where prefetch latency is microseconds not milliseconds), 6 (48 GB M4 Pro fit — orthogonal; technique is inference-time, no memory state changes)
+- **Derived from**: LIT_REVIEW.md Pass 65 / 2603.19289 (Vivan Madan, Prajwal Singhania, Abhinav Bhatele, Tom Goldstein, Ashwinee Panda; UMD + collaborators; March 9 2026). Speculate next layer's expert routing from current layer's intermediate activations, prefetching expert weights from CPU memory to overlap with current-layer computation. Up to 14% TPOT reduction on CUDA-offload regime. Open-source code released (axonn-ai/yalis, offload_prefetch branch).
+- **Change**: Research-evaluation, not direct shipping. Implementation steps: (a) Open-source-code audit — read axonn-ai/yalis offload_prefetch branch, document the activation-to-expert speculation methodology (linear probe? small MLP head? attention-pattern correlation?). (b) Apple Silicon memory-hierarchy probe — use Instruments (Metal System Trace + Memory Allocations) to measure expert-weight residency latency on Qwen3-Coder-30B-A3B at decode time; specifically measure (1) cache-cold expert weight read latency, (2) cache-warm expert weight read latency, (3) the latency gap (which is the prefetch headroom). (c) Speculation-accuracy probe — port the activation-to-expert speculator to MLX (small classifier on intermediate activations); measure prediction accuracy on Qwen3-Coder-30B-A3B over a coding workload. (d) End-to-end TPOT measurement — wire the speculator into the Hypercar inference path with a Metal-prefetch hint (`mlx.eval` on the predicted expert weights one layer ahead); measure TPOT delta vs baseline at 4K, 16K, 32K context. (e) Decision: if TPOT delta ≥ 3% on Apple Silicon, ship as opt-in feature; if < 1%, document as research-negative-result and close the axis.
+- **Verify**: (a) Memory-hierarchy probe completes; produces a measurable cache-cold vs cache-warm latency gap on M4 Pro (the prefetch headroom; if this is < 100ns, prefetch overlap cannot help and the axis is dead). (b) Speculator achieves ≥ 70% top-K-expert prediction accuracy on Qwen3-Coder-30B (Hypercar's MoE has ~64 experts per layer with K=8 active; 70% means 5.6/8 experts predicted correctly). (c) Wired-in TPOT delta at 16K context: target ≥ 3% improvement to justify the engineering. (d) Quality preservation — speculation is purely a prefetch hint, not a routing change, so quality is preserved by construction; verify with HumanEval / MMLU-Pro within ±0.2 pp. (e) Apple Silicon vs CUDA delta: document the per-platform gap (CUDA paper reports 14%; Apple Silicon will be smaller because prefetch latency is smaller); the gap itself is a research finding about the unified-memory architecture. (f) Findings note `bench/snapshots/moe_expert_speculation_findings.md` documenting (1) the Apple Silicon cache-hierarchy latency profile for MoE expert weights, (2) the speculation accuracy on Qwen3-Coder-30B, (3) the TPOT delta and whether it justifies shipping.
+- **Effort**: L (1-2 months) — research-evaluation with measurable kill criteria; the memory-hierarchy probe is the long pole.
+- **Depends on**: Independent of Tasks 281, 285, 288, 289, 296. Composes with Task 257 (Qwen3.6 migration) — the technique applies equally to Qwen3-Coder-30B-A3B and Qwen3.6-35B-A3B. Biggest risk: Apple Silicon's unified-memory prefetch latency target is structurally smaller than CUDA's CPU-offload latency, so the headroom may be 2-5% TPOT improvement rather than 14% — small enough that measurement overhead exceeds signal. Mitigation: file as research-evaluation, not direct shipping; the memory-hierarchy probe (verify step a) is the kill check before further engineering. Secondary risk: speculation accuracy on Qwen3-Coder routing is unmeasured; the paper validates on multiple MoE architectures but not Qwen3-family specifically. Mitigation: use the open-source code's prediction methodology as starting calibration; the speculator is a small classifier, training is cheap. Tertiary risk: Apple Silicon does not expose direct cache-prefetch primitives in MLX; the prefetch hint may need to use `mlx.eval` on the predicted weights one layer ahead, which is a coarser mechanism than CUDA's explicit `cudaMemPrefetchAsync`. Mitigation: measure whether `mlx.eval` is sufficient to warm Metal residency; if not, the technique is blocked on MLX adding a prefetch primitive (file as upstream gap).
+
+### 299. Methodology-investigation: AFM 2-bit QAT + cross-layer KV-cache sharing + LoRA-recovery applicability to Qwen3-Coder-30B / Qwen3.6-35B at M4 Pro 48 GB budget
+- **Goal**: 1 (1M context — 2-bit weight QAT pushes Hypercar's W3 baseline to W2, freeing ~5 GB at 30B redirectable to longer context; cross-layer KV-cache sharing composes with DuoKV's intra-layer head-partitioning to potentially halve KV memory beyond DuoKV alone), 2 (intelligence — LoRA adapters as quality-recovery mechanism after 2-bit compression is the Apple-validated post-shipped methodology; AFM-on-device's 3B at 2-bit shipped in Apple Intelligence production validates that the technique works at on-device scale), 6 (48 GB M4 Pro fit — primary target; AFM-validated stack potentially closes the 30B-at-W2KV2-with-quality gap)
+- **Derived from**: LIT_REVIEW.md Pass 65 / 2507.13575 (Apple ML team, Ethan Li lead, 396+ co-authors; tech report submitted July 17 2025, last revised August 27 2025). First arxiv-published Apple ML team document in the corpus. Apple Foundation Models (AFM) on-device 3B-parameter model optimized for Apple Silicon via (a) 2-bit quantization-aware training (QAT), (b) KV-cache sharing across attention layers, (c) low-rank LoRA adapters to recover quality lost during compression. Industry-adjacent: tech report not peer-reviewed, but production-shipped in Apple Intelligence — provenance signal is shipping at scale, not academic provenance.
+- **Change**: Methodology-investigation report (not shipping). Three-part deliverable: (Part A — 2-bit QAT applicability to 30B) Investigate whether the AFM 2-bit QAT methodology can be applied to Qwen3-Coder-30B-A3B / Qwen3.6-35B-A3B at the Hypercar compute budget. AFM's 2-bit QAT requires Apple-internal training compute; Hypercar's bound is M4 Pro 48 GB. Decompose the question: (1) Is 2-bit QAT a *retraining* requirement (full-pretraining-cost) or a *fine-tuning* requirement (per-layer QAT-LoRA)? (2) Can per-layer QAT-LoRA be done on M4 Pro 48 GB for a 30B model? (3) What is the calibration-corpus requirement? (Part B — Cross-layer KV-cache sharing) Investigate whether Apple's KV-cache sharing methodology can be reverse-engineered from the tech report and applied to Qwen3-family models. Specifically: (1) Which layers share KV in AFM (alternating? grouped? structured pattern?)? (2) How does sharing compose with DuoKV's intra-layer head-partitioning (head-partitioning × layer-sharing = KV memory reduction multiplier)? (3) Can sharing be retrofit post-hoc onto a pre-trained Qwen3 model, or does it require training-from-scratch? (Part C — LoRA-recovery adapters) Investigate the LoRA-recovery methodology on the existing W3 + KVLinC stack. Specifically: (1) After W3 + KVLinC quantization, what is the Hypercar quality delta vs fp16 baseline (HumanEval, MMLU-Pro, NIAH)? (2) Can a small-rank LoRA adapter (r=8 or r=16) recover the delta? (3) What is the LoRA training cost on M4 Pro 48 GB?
+- **Verify**: (a) Findings note `research/afm_methodology_investigation.md` filed answering Parts A, B, C with explicit "shippable / blocked / research-evaluation" verdict for each part. (b) Part A verdict produces a clear answer to "can Hypercar do 2-bit weight QAT on Qwen3-Coder-30B with M4 Pro 48 GB compute budget?" — yes / no with cost estimate (GPU-hours-equivalent). (c) Part B verdict produces a layer-sharing pattern recommendation for Qwen3-family, with composition analysis vs DuoKV. (d) Part C verdict measures the W3+KVLinC quality gap vs fp16 baseline and projects whether LoRA-recovery closes the gap. (e) If any part is "shippable," file a follow-on shipping task; if "research-evaluation," file a follow-on research task; if "blocked," document the upstream-gap and close the axis. (f) Cross-reference: Tasks 270 (W3 weights) — Part A informs whether W3 → W2 is feasible. Tasks 288 (KVLinC) — Part C informs whether the W3+KVLinC stack benefits from LoRA-recovery. Tasks 265 Fix 2 (streaming/retrieval split) — Part B informs whether layer-sharing composes with the head-partitioning split.
+- **Effort**: M (2-4 weeks) for the investigation report; follow-on engineering tasks vary (XL for QAT, L for KV-sharing, M for LoRA-recovery).
+- **Depends on**: Independent of all pass-65 sibling tasks (296, 298). Composes with Task 270 (W3 weights — Part A is the W3→W2 evaluation), Task 288 (KVLinC — Part C uses the KVLinC quality baseline), Task 265 Fix 2 (streaming/retrieval split — Part B layer-sharing composition analysis). Biggest risk: AFM tech report omits critical engineering details (specifically: which layers share KV, whether 2-bit QAT requires Apple-internal compute beyond Hypercar's budget, whether LoRA adapters require continual training). Mitigation: the investigation produces "blocked / unknown" verdicts for any methodology component the tech report does not fully disclose; those become upstream-gap research questions, not shipping blockers. Secondary risk: AFM-on-device is 3B; Hypercar target is 30B+; the 10× scale gap means Apple's 2-bit QAT cost may not scale linearly. Mitigation: KVLinC's *post-training* (no QAT) approach is the lower-cost shipping path baseline (already shipping under Task 288); AFM is methodology reference for what's *possible* at the post-shipped quality bar, not a required path. Tertiary risk: tech report is industry-adjacent, not peer-reviewed; the disclosures may have been written for marketing not reproducibility. Mitigation: cross-reference with academic 2-bit QAT papers (LoftQ 2310.08659, LoTA-QAF 2505.18724, CoA-LoRA 2509.25214) for the methodology baseline; AFM is the production-validated provenance signal layered on top.
+
+## Static-analysis tasks (from research/analyst_runs/2026-04-25/static_review.md)
+
+Pre-pass static review of `omlx/duo_kv_cache.py` and `omlx/patches/duo_split_attention.py` ahead of the scheduled midnight analyst run. Twelve findings (F1-F12) documented in the review note; nine concrete tickets logged here. Every claim still needs a profiler or `claims`-harness measurement to confirm — these are **hunt items, not conclusions**. Tickets listed in priority order (P0 first).
+
+### 290. [P0] Skip `update_and_fetch` gather+mask when running under `--kv-mode duo-split`
+- **Goal**: 3 (decode speed — eliminates fully-wasted work on the duo-split path; this is plausibly *the* fix that flips split-attention from regression to projected ≥50% gain at 16K), 5 (swap pressure — removes per-step transient allocations on a system at 99.8% Metal ceiling)
+- **Derived from**: static_review.md F9. The split-attention patch (`omlx/patches/duo_split_attention.py:189-202`) ignores the unified `(B, H_kv, T_total, D)` output of `update_and_fetch` and re-fetches via `get_streaming_kv()` / `get_retrieval_kv()`. The split path therefore pays the gather+mask+zero-write cost AND the split-SDPA cost. The patch's documented regression (-13% at 8K, -20% at 16K — see `omlx/patches/duo_split_attention.py:8-12`) may not be a structural finding about attention-vs-non-attention work; it may be that the wasted gather is consuming the savings.
+- **Change**: Add `_skip_unified_output` flag on DuoKVCache (default False). When `apply_duo_split_attention_patch()` runs, set the flag on every cache instance during model construction. In `update_and_fetch` (`omlx/duo_kv_cache.py:295`), if the flag is set, skip the entire trim-path block (`omlx/duo_kv_cache.py:341-374`) and return `(self._keys[:, :, :T_total, :], self._values[:, :, :T_total, :])` directly — the split patch ignores this return value anyway. Allocator pressure drops by the F1 numbers (~3.1 GB transients per decode step at 16K, eliminated).
+- **Verify**: (a) `--kv-mode duo-split` smoke + coherence + NIAH gates pass identically (the unified output is unused on the split path; semantics must be preserved). (b) Decode tok/s at 8K and 16K under `--kv-mode duo-split`: regression numbers from `duo_split_attention.py:8-12` should reverse — target is parity-or-better with `--kv-mode duo` at 8K and a measurable improvement at 16K. (c) Heap diff during decode: `mx.get_peak_memory()` delta per step should drop sharply on the duo-split path. (d) NIAH at 16K under duo-split must continue to pass — failure means the split path was relying on the masked unified output for some semantic, which the static review didn't catch.
+- **Effort**: XS (≤ 1 day) — single flag, two-line guard in `update_and_fetch`, zero change to the split patch itself
+- **Depends on**: Independent. Composes with Task 277 (split-attention v2 evaluation) — this is a direct fix for the regression that closed Task 277. Biggest risk: the unified output may be consumed somewhere outside the split-attention patch (e.g., a benchmark scoring gather, a logging hook); a grep for `_keys` and `_values` consumers is required before flipping the flag default. Secondary risk: NIAH at 16K could pass on the masked path due to mask robustness and fail on the skip path due to a subtle semantic difference; mitigation is a per-context-length progression (4K → 16K → 64K) before declaring done.
+
+### 291. [P0] Replace `mx.where(mask, x, mx.zeros_like(x))` with scalar zero broadcast in DuoKV trim path
+- **Goal**: 5 (swap pressure — eliminates ~16 MB × 2 × 48 layers ≈ 1.5 GB of per-decode-step transient allocation on a system at 99.8% Metal ceiling), 3 (decode speed — fewer allocations means less Metal allocator traffic, which `decode_cliff_8k_16k.md` Path B identifies as a real component of the cliff)
+- **Derived from**: static_review.md F1, finding 1 of 3. `omlx/duo_kv_cache.py:371-372`:
+
+  ```python
+  out_k = mx.where(mask[None, :, :, None], out_k, mx.zeros_like(out_k))
+  out_v = mx.where(mask[None, :, :, None], out_v, mx.zeros_like(out_v))
+  ```
+
+  At T_total=16384 with H_kv=4, D=128, the `mx.zeros_like(out_k)` allocates a fresh `(1, 4, 16384, 128)` fp16 tensor (~16 MB) every layer per decode step. 48 layers × 2 (K and V) = ~1.5 GB of fresh-allocated zeros per decode step, immediately consumed by `mx.where`. MLX's `mx.where` accepts a scalar third argument and broadcasts internally without allocating.
+- **Change**: Replace both lines with `mx.where(mask[None, :, :, None], out_k, 0.0)` and `mx.where(mask[None, :, :, None], out_v, 0.0)`. Two-character change (`mx.zeros_like(out_k)` → `0.0`) in `omlx/duo_kv_cache.py`. The cast to `out_k.dtype` may be needed depending on MLX's broadcasting rules — confirm with a unit test on the actual cache.
+- **Verify**: (a) Output of the modified line is bit-identical to the original on a small test fixture (B=1, H_kv=4, T_total=512, D=128, with mask containing both True and False positions). (b) Decode tok/s at 16K under `--kv-mode duo`: target ≥+5% (allocator pressure reduction). (c) `mx.get_peak_memory()` during a 16K decode: target measurable drop. (d) NIAH at 16K passes. (e) `claims.Claim` with the modified code as `optimized` and the original as `baseline`: expected ratio depends on how much of the per-step time is allocator-bound; ratio > 1.0 is sufficient.
+- **Effort**: XS (≤ 1 hour)
+- **Depends on**: Independent. Highest leverage-per-character ratio in this batch. Biggest risk: MLX's `mx.where` may upcast scalar 0.0 to fp32, changing the output dtype — verify with explicit dtype check. Mitigation: `mx.array(0.0, dtype=out_k.dtype)` instead of bare `0.0` if needed.
+
+### 292. [P0] Audit whether `mx.broadcast_to` materializes when consumed by `mx.take_along_axis`
+- **Goal**: 5 (swap pressure — if materialization happens, that's another ~32 MB int32 × 48 layers ≈ 1.5 GB of per-decode-step transients), 3 (decode speed — same allocator-pressure mechanism)
+- **Derived from**: static_review.md F1, finding 2 of 3. `omlx/duo_kv_cache.py:356-360`:
+
+  ```python
+  g = g_2d[None, :, :, None]                              # (1, H_kv, T_total, 1)
+  g = mx.broadcast_to(g, (B, H_kv, T_total, D))           # int32, view OR materialized?
+  out_k = mx.take_along_axis(self._keys[:, :, :T_total, :], g, axis=2)
+  ```
+
+  The MLX docs describe `broadcast_to` as creating a view without copying; the question is whether `take_along_axis` then materializes the index tensor internally for its dispatch. If yes, that's a 32 MB int32 transient per layer per decode step (~1.5 GB total at 16K).
+- **Change**: Read MLX C++/Metal source for `take_along_axis` (likely `.venv/lib/python*/site-packages/mlx/_core/`). Determine whether the broadcast index is materialized. If yes, three options: (a) write a tiny Metal kernel that does the conditional gather inline using the (H_kv, T_total) compact index without expanding to D; (b) check if MLX has an alternate `take` variant that accepts broadcast indices natively; (c) replace the gather entirely — for retrieval heads, the index is `arange(T_total)` and the gather is a no-op (Task 295 covers this directly).
+- **Verify**: (a) MLX source audit produces a definitive answer documented in `research/analyst_runs/2026-04-25/take_along_axis_audit.md`. (b) If materialization confirmed, micro-bench the alternatives in isolation with `claims.Claim`. (c) Decode tok/s improvement at 16K under `--kv-mode duo` after the chosen fix: target ≥+5%.
+- **Effort**: S (1-3 days, mostly source-reading)
+- **Depends on**: Independent. Composes with Task 290 (which sidesteps the issue under duo-split) and Task 295 (which removes the gather for retrieval heads regardless). Biggest risk: MLX may not expose any way to avoid materialization without a custom kernel; the fix may need to wait for Task 281 (Open-TQ-Metal kernel infrastructure).
+
+### 293. [P1] Cache per-layer `(H_kv, T_total)` gather index and mask matrices across decode steps
+- **Goal**: 3 (decode speed — eliminates 96 Python list comprehensions and 96 `mx.stack` calls per decode step at 48 layers × 2 operations)
+- **Derived from**: static_review.md F3. Tasks 269/271 added a module-level cache for the underlying `stream_arr` / `retrieval_arr` mx.arrays and the masks, but the **per-layer assembly** still rebuilds two list comprehensions and calls `mx.stack` twice on every decode step:
+
+  ```python
+  # omlx/duo_kv_cache.py:353-354 and 366-369
+  gather_rows = [stream_arr if self._is_streaming[h] else retrieval_arr for h in range(H_kv)]
+  g_2d = mx.stack(gather_rows, axis=0)  # (H_kv, T_total)
+  mask_rows = [stream_mask if self._is_streaming[h] else retrieval_mask for h in range(H_kv)]
+  mask = mx.stack(mask_rows, axis=0)
+  ```
+
+  `self._is_streaming` is per-layer-immutable (set in `__init__`). The (H_kv, T_total) gather_idx and mask are deterministic functions of the layer's classification + T_total + sink + window. They can be cached on the layer instance and invalidated only when T_total changes by more than `_step` (the slab pre-allocation headroom).
+- **Change**: Add `self._cached_gather_2d`, `self._cached_mask_2d`, `self._cached_T_total` fields to DuoKVCache. In the trim block (`omlx/duo_kv_cache.py:341-374`), before constructing `gather_rows`, check if cached values match current T_total. If yes, reuse. If no, compute and cache. Invalidate cache in `state.setter` (line 587) to handle session reload. Memory cost: ~64 KB int32 + 16 KB bool per layer at 16K = ~3.8 MB total across 48 layers — negligible.
+- **Verify**: (a) Decode tok/s at 16K under `--kv-mode duo`: target ≥+3% from the dispatch-count reduction. (b) `claims.Claim` benchmark: time `update_and_fetch` over 100 decode steps, baseline = current code, optimized = cached version. (c) NIAH at 16K passes. (d) `tracer.trace_class(DuoKVCache, mlx=True)` shows zero `mx.stack` calls during steady-state decode.
+- **Effort**: S (1-2 days)
+- **Depends on**: Independent. Composes with Task 290 (under duo-split this code path is dead). Biggest risk: cache invalidation bugs across save/load + fork/rewind. Mitigation: invalidate aggressively in any state-mutating method.
+
+### 294. [P1] Eliminate dead pad-and-concatenate in `_update_quantized` merge path
+- **Goal**: 3 (decode speed under `--duo-quantize`), 5 (swap pressure — 4 dead `mx.concatenate` calls per layer per step plus their `mx.zeros` allocations)
+- **Derived from**: static_review.md F6. `omlx/duo_kv_cache.py:484-498`:
+
+  ```python
+  if ret_k.shape[2] < max_len:
+      pad = max_len - ret_k.shape[2]
+      ret_k = mx.concatenate([ret_k, mx.zeros((B, len(ret_idx), pad, D), dtype=ret_k.dtype)], axis=2)
+      ret_v = mx.concatenate([ret_v, mx.zeros((B, len(ret_idx), pad, D), dtype=ret_v.dtype)], axis=2)
+  if str_k.shape[2] < max_len:
+      pad = max_len - str_k.shape[2]
+      str_k = mx.concatenate([str_k, mx.zeros((B, len(str_idx), pad, D), dtype=str_k.dtype)], axis=2)
+      str_v = mx.concatenate([str_v, mx.zeros((B, len(str_idx), pad, D), dtype=str_v.dtype)], axis=2)
+  out_k = mx.zeros((B, H_kv, max_len, D), dtype=keys.dtype)
+  out_v = mx.zeros((B, H_kv, max_len, D), dtype=values.dtype)
+  out_k[:, ret_idx] = ret_k
+  out_v[:, ret_idx] = ret_v
+  out_k[:, str_idx] = str_k
+  out_v[:, str_idx] = str_v
+  ```
+
+  The pad-and-concatenate produces a tensor whose padded zeros are immediately overwritten by the `out_k[:, ret_idx] = ret_k` assignment into the pre-zeroed `out_k`. Four `mx.concatenate` calls + four `mx.zeros` pad allocations are dead work.
+- **Change**: Delete lines 484-491 (the four `if ... pad ... mx.concatenate` blocks). Lines 492-498 already create `out_k` / `out_v` as zeros and write the head slices in. The unpadded `ret_k` / `str_k` will write into their head positions; positions beyond their length stay zero from the initial allocation. Confirm that `out_k[:, ret_idx] = ret_k` accepts the unpadded shape (it should, since the assignment uses fancy indexing on the head axis, not the position axis).
+- **Verify**: (a) Output bit-identical to current code on a fixture with `ret_k.shape[2] \!= str_k.shape[2]` (the actual pad case). (b) NIAH at 4K under `--duo-quantize` passes. (c) `claims.Claim`: baseline = current code, optimized = simplified merge; expected ratio > 1.0. (d) Decode tok/s under `--duo-quantize` at 4K and 16K: target small but measurable improvement.
+- **Effort**: XS (≤ 1 day) — line-deletion change, primarily a verification exercise
+- **Depends on**: Independent. Only fires under `--duo-quantize` (Goal 1 path to 1M). Biggest risk: I may have misread the assignment semantics — `out_k[:, ret_idx] = ret_k` could require shape `(B, len(ret_idx), max_len, D)` even though only the first `ret_k.shape[2]` positions matter. If yes, the original padding is structurally required and this ticket becomes "audit and document why pad is necessary".
+
+### 295. [P1] Skip the gather entirely for retrieval heads (arange identity)
+- **Goal**: 3 (decode speed — halves the gather work when streaming/retrieval split is roughly 50/50; entirely eliminates it for layers where all heads are retrieval), 5 (swap pressure)
+- **Derived from**: static_review.md F1, finding 3 of 3. The retrieval heads' gather index is `mx.arange(T_total)` and their mask is all-True (`omlx/duo_kv_cache.py:81, 89`). `take_along_axis(x, arange(T_total), axis=2)` is the identity operation on the position axis — equivalent to `x[:, :, :T_total, :]`. The mask is also a no-op since all positions are True.
+- **Change**: Restructure the trim block (`omlx/duo_kv_cache.py:341-374`) to gather/mask only the streaming heads. Two paths: (a) if `self._n_streaming == 0`, skip the entire block and return the unified buffer (already a degenerate case, easy to add). (b) if `self._n_streaming < H_kv`, run gather+mask only on streaming-head slices and concatenate with the un-touched retrieval-head slices via `mx.zeros` + write — equivalent to Task 294's pattern. Halves the work when split is 50/50.
+- **Verify**: (a) Output bit-identical to current code on a B=1, H_kv=4, T_total=512 fixture with mixed streaming/retrieval classification. (b) NIAH at 16K passes. (c) Decode tok/s at 16K under `--kv-mode duo`: target ≥+5% (cuts gather work by ~50%). (d) Layers with all-retrieval classification execute the trim block in O(1) Python time (skip path).
+- **Effort**: S (1-2 days)
+- **Depends on**: Independent. Composes with Task 290 (skipped entirely under duo-split) and Task 293 (the cached gather/mask matrices simplify the streaming-only restructure). Biggest risk: the unified `(B, H_kv, T_total, D)` buffer must continue to satisfy whatever consumer expects it (currently the standard-SDPA path). Mitigation: produce the same shape via direct slice + write, not via gather.
+
+### 296. [P2] Pre-allocate `compute_attention` output buffer instead of `mx.zeros_like(queries)` per call
+- **Goal**: 3 (decode speed — small per-call allocation × 48 layers × decode steps), 5 (swap pressure — small but non-zero contribution to allocator traffic)
+- **Derived from**: static_review.md F4. `omlx/duo_kv_cache.py:547`: `out = mx.zeros_like(queries)` then writes via fancy indexing on lines 560, 567, 577. Per call the allocation is small (32 heads × T_q × 128 × fp16 ≈ 8 KB at decode T_q=1), but it happens 48 layers × decode steps. ~400 KB/step of fresh allocations.
+- **Change**: Pre-allocate a per-cache-instance scratch buffer for the merged attention output, sized to (B, H_q_max, T_q_max, D). Reuse across calls; resize lazily if T_q exceeds the prior allocation. Alternatively (cleaner): replace the fancy-index writes with two separate SDPA outputs returned as `(ret_out, ret_q_idx, str_out, str_q_idx)` and let the caller assemble — pushes the merge cost into a single shape-aware step.
+- **Verify**: (a) Output bit-identical on a fixture. (b) Decode tok/s at 16K under `--duo-quantize`: target small but measurable improvement. (c) `tracer.trace_class(DuoKVCache, mlx=True)` shows fewer allocations per step.
+- **Effort**: S (1-2 days)
+- **Depends on**: Independent. Lower priority than P0/P1 because the per-call cost is small in absolute terms — only matters if the analyst's wall-time decomposition shows compute_attention dispatch overhead is meaningful. Biggest risk: the scratch buffer adds permanent state that must be cleared on session save/load/fork.
+
+### 297. [P2] Property-test `StreamingKVCache.update_and_fetch` boundary cases
+- **Goal**: 2 (intelligence — quality regression risk if the ring-buffer position math is off-by-one), 1 (1M context — same risk magnified at long context where the boundary is crossed many times)
+- **Derived from**: static_review.md F8. `omlx/duo_kv_cache.py:159-175` — the fill→ring transition path uses `(self.offset - self.capacity) % ring_len` on line 172 *after* `self.offset = end` on line 165, reading the just-mutated value. The relationship between the increment and the ring positions is non-obvious; correctness depends on subtle invariants between `T_new`, `actual`, `remaining`, and `self.offset`.
+- **Change**: Add `tests/test_streaming_kv_boundary.py`. Property test `StreamingKVCache.update_and_fetch` against a brute-force Python reference (list-based, naive shift) for the following T_new sequences against fixed (window=256, sink=4): (a) all-1 increments through 0..1024 — pure decode pattern. (b) one big T_new of `capacity - 1`, then T_new=2 — straddle case. (c) one big T_new of `capacity + window` — overflow on first call. (d) random sequences with `T_new ∈ {1, 2, 8, 64, 256, 512}`. After each call, compare `cache.state` to the reference. Any divergence is a P0 correctness bug, not a P2 perf finding.
+- **Verify**: (a) Test file lands. (b) All four sequences produce bit-identical state to the reference. (c) If divergence is found, escalate to P0 with reproducer.
+- **Effort**: XS (≤ 1 day)
+- **Depends on**: Independent. Cheap insurance; the test could uncover a latent correctness bug that NIAH passes through because it's mask-tolerant. Biggest risk: the test passes and we learn nothing new — that's still a positive outcome (the suspicion is closed).
+
+### 298. [P2] Promote per-head streaming ring buffers to a shared buffer with per-head offsets under `--duo-quantize`
+- **Goal**: 3 (decode speed — replaces ~96 small MLX dispatches per decode step with 48 batched dispatches; saves dispatch latency, not compute)
+- **Derived from**: static_review.md F5. `omlx/duo_kv_cache.py:471-479` runs a Python `for` loop over streaming heads, slicing `keys[:, h:h+1, :, :]` per head and calling `update_and_fetch` on a separate `StreamingKVCache` per head, then `mx.concatenate` to reassemble. With ~2 streaming heads × 48 layers × decode steps, that's 96 slicing dispatches + 48 concat dispatches per step.
+- **Change**: Replace `self._streaming_head_caches: dict[int, StreamingKVCache]` with a single `SharedStreamingKVCache` that holds `(B, n_streaming, capacity, D)` keys and values, plus one offset per head. The `update_and_fetch` becomes a single batched scatter: `self._keys[:, :, positions, :] = keys[:, str_idx, :, :]` where `positions` is per-head. Eliminates the Python loop and the concatenate.
+- **Verify**: (a) Output bit-identical to current per-head implementation on a fixture. (b) NIAH at 4K under `--duo-quantize` passes. (c) Decode tok/s under `--duo-quantize` at 4K-64K: target small improvement (savings are dispatch-latency, not compute; magnitude depends on Metal command-queue depth). (d) `tracer.trace_class(DuoKVCache, mlx=True)` shows the reduction in dispatch count.
+- **Effort**: M (3-5 days) — non-trivial because per-head ring-buffer offsets need to stay independent (different streaming heads can have different fill states across save/load/fork)
+- **Depends on**: Independent. Lower priority than the unified-DuoKV path because `--duo-quantize` is a less common mode. Biggest risk: per-head offsets in a shared buffer are a state-management refactor; save/load/fork compatibility must be verified.
+
+### 299. [P3] Drop dead state in DuoKVCache: unused Python lists + `self.offset` shadow counter
+- **Goal**: Cosmetic / maintenance. No direct Hypercar-goal mapping; reduces cognitive load for future readers and signals which optimizations are "done".
+- **Derived from**: static_review.md F2 + F7. (F2) `_trim_indices_for` (`omlx/duo_kv_cache.py:75-100`) returns a dict containing both Python lists (`stream_padded`, `retrieval_idx`) and their mx.array versions. After Task 271 the Python lists are stored but never read by `update_and_fetch`. (F7) `self.offset` (`omlx/duo_kv_cache.py:228, 305-306, 593, 605`) is incremented every `update_and_fetch` call but the only reads found are inside `state.setter` itself; `self._kv_len` is the live counter.
+- **Change**: (a) Remove `stream_padded` and `retrieval_idx` from the cache dict construction (lines 76-77, 93-94). Verify no consumer reads them — grep `_TRIM_INDEX_CACHE` in the codebase. (b) Remove `self.offset` initialization, increments, and the `state.setter` assignment. Confirm via grep that no external consumer reads `cache.offset`. If a consumer is found (likely SnapKV or session save/load), document and keep `self.offset` aliased to `self._kv_len` for compat.
+- **Verify**: (a) `grep -rn 'stream_padded\|retrieval_idx' omlx/` returns only the deletion site. (b) `grep -rn '\.offset' omlx/duo_kv_cache.py` and consumers shows the field is genuinely unused (or alias correctly). (c) Full test suite passes. (d) `hypercar_bench --quick` all gates pass.
+- **Effort**: XS (≤ 1 hour) — pure cleanup
+- **Depends on**: Independent. Lowest priority in this batch but lowest risk and cheapest to ship. Useful as a "warm-up" task to validate the analyst-tooling branch is wired up correctly. Biggest risk: `self.offset` may be consumed by SnapKV's `compact_cache` or by mlx-lm's state-management protocol; keeping an alias preserves the contract with zero ongoing cost.
+
+### 300. [P0] Fix StreamingKVCache scatter-with-duplicate-positions silent corruption
+- **Goal**: 2 (intelligence — streaming-head KV state is silently corrupted during prefill of any prompt longer than `window=256` tokens), 1 (1M context — same risk magnified at long context where it's normal to call `update_and_fetch` with `T_new >> window`)
+- **Derived from**: Task 297 property tests (`tests/test_streaming_kv_boundary.py`). The 5 random-sequence tests and one minimal deterministic reproducer (`test_overflow_with_duplicate_ring_writes_minimal_repro`) FAIL bit-identical comparison against a brute-force ring-buffer reference. Currently marked `xfail(strict=True)` referencing this task — when the fix lands, they will start passing and the strict marker will turn XPASS into a CI failure as the signal to remove it.
+- **Root cause**: `omlx/duo_kv_cache.py:172-174` (fill→ring overflow) and `:180-182` (pure ring mode) compute scatter positions as:
+  ```python
+  positions = ring_start + (mx.arange(T_new) + (self.offset - self.capacity)) % ring_len
+  self._keys[:, :, positions] = keys[:, :, :T_new]
+  self._values[:, :, positions] = values[:, :, :T_new]
+  ```
+  When `T_new > window`, `arange(T_new) % window` produces **duplicate ring positions** (e.g. `T_new=512, window=256` → every ring slot receives 2 writes; `T_new=64, window=8` → every ring slot receives 8 writes). MLX's scatter with duplicate destination indices is **undefined**: empirically the buffer ends up with neither the first nor the last write but some middle-write residue. Result: streaming heads silently retain stale tokens. NIAH masks this because attention is dot-product-tolerant of stale keys in masked regions.
+- **Change**: Dedupe scatter positions to keep only the *last* write per ring slot. In both ring-write branches:
+  ```python
+  # Only the last `window` writes survive ring-buffer semantics.
+  effective_T = min(T_new, ring_len)        # for the pure-ring branch
+  start = T_new - effective_T               # tokens [start, T_new) win
+  positions = ring_start + (mx.arange(effective_T) +
+                            (self.offset + start - self.capacity)) % ring_len
+  self._keys[:, :, positions] = keys[:, :, start:start+effective_T]
+  self._values[:, :, positions] = values[:, :, start:start+effective_T]
+  self.offset += T_new
+  ```
+  And the symmetric clamp in the fill→ring branch. The Python loop fallback is also acceptable for the rare `T_new > window` case if the deduped vectorized version proves harder to reason about — prefill efficiency in that branch is already not on the hot path.
+- **Verify**: (a) `MLX_AVAILABLE=1 .venv/bin/python -m pytest tests/test_streaming_kv_boundary.py -v` reports **all 14 tests passing** with no `xfailed` (the strict marker on the 6 currently-xfailed tests will trigger XPASS-as-failure, prompting marker removal — that IS the verification signal). (b) Remove the two `pytest.mark.xfail` decorators referencing this task. (c) `hypercar_bench --quick` all gates pass. (d) `hypercar_bench --kv-mode duo` NIAH at 4K and 16K passes (regression check — the buggy version passed NIAH so the fix must not introduce a regression on this gate either).
+- **Effort**: XS (≤ 1 hour) — fix is ~10 lines plus removing two xfail decorators. The verification is exact-match against the property test reference, no benchmark dependency.
+- **Depends on**: Task 297 (the test file is the reproducer). Composes with Task 298 (the SharedStreamingKVCache refactor needs the same dedup fix).
+- **Why P0**: Silent quality bug that fires on every prefill longer than the streaming window (~256 tokens), affecting every multi-turn agentic session. Hard to attribute degradation to this until the property test ran. Fix is small, contained, and has a deterministic acceptance criterion (the existing tests).

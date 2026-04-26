@@ -1,5 +1,5 @@
 # Hypercar Literature Review
-_Last updated: 2026-04-25 (pass 64)_
+_Last updated: 2026-04-25 (pass 65)_
 
 Focused pass against the six Hypercar goals (1=context, 2=intelligence-breadth,
 3=decode, 4=prefill, 5=swap<8GB, 6=M4 Pro 48GB fit). Every paper below maps to
@@ -20920,6 +20920,291 @@ algorithm port to TQ3+DuoKV), Task 289 is evaluation-gated
 (IsoQuant rotation-cost benchmark inside Open-TQ-Metal port).
 
 
+## Pass 65 — 2026-04-25 — Apple-Silicon Cross-Family Speculative Decoding (UAG-MLX-LM) + MoE Expert-Speculation Prefetching + Apple Foundation Models 2-bit-QAT Industry Reference (Adjacent-Search Pass)
+
+Pass 65 is the second consecutive opportunistic pass after the
+pass-63 wind-down recommendation; user explicitly chose to keep
+the cron firing every 6h ("insatiable thirst to know more"), so
+the search strategy pivots from gap-driven to **adjacent-axis
+exploration** — angles deliberately distinct from passes 60-64's
+heavy concentration on AWQ/GPTQ refinements, MoE-quant variants,
+and rotation-family axes. Three new search axes fired this pass:
+(1) industry-adjacent on-device foundation-model engineering,
+(2) MLX-LM-native speculative decoding extensions on Apple
+Silicon, (3) MoE expert-speculation as a prefetching technique
+distinct from MoE-Spec's verification-time budgeting.
+
+### 2604.16368 — Cross-Family Speculative Decoding for Polish Language Models on Apple Silicon: An Empirical Evaluation of Bielik 11B with UAG-Extended MLX-LM
+
+**Author / venue**: Krzysztof Fonal, single-author arxiv,
+submitted March 22 2026, revised April 21 2026 (4 days before
+pass 65 — fresh).
+
+**Key claim**: First systematic Apple-Silicon evaluation of
+**cross-tokenizer speculative decoding** via Universal Assisted
+Generation (UAG) integrated directly into the MLX-LM framework.
+The authors extend MLX-LM with a UAG layer that performs
+**context-aware token translation between draft and target
+tokenizers**, enabling speculative decoding when draft and
+target models do not share a tokenizer (the standard speculative-
+decoding requirement). Validated on Bielik 11B Polish-specialized
+model with three draft-model families: Bielik 1.5B, Qwen2.5-1.5B,
+Llama 3.2 (size unspecified). The Qwen2.5-1.5B drafter
+**outperforms the Polish-specialized Bielik 1.5B drafter on
+acceptance rate** — the cross-family Qwen draft model is
+*better* despite tokenizer mismatch, validating the UAG
+translation approach.
+
+**Why it's high-leverage for Hypercar**: This is the **first
+arxiv paper in the corpus** demonstrating speculative decoding
+on Apple Silicon via MLX-LM specifically (passes 1-64 surveyed
+QuantSpec, MoE-Spec, MoESD, ConFu, Variational Speculative
+Decoding, MoE-SpeQ — all CUDA-validated). Hypercar runs
+Qwen3-Coder-30B-A3B with no draft model today; pairing with a
+Qwen2.5-1.5B or Qwen3-1.7B-class drafter via this UAG-MLX-LM
+extension is the **most direct path to lifting decode tok/s
+under Goal 3** without further KV compression. Goal-3 status:
+short-context decode is at 46 tok/s (smoke at 53), but the
+16K-32K cliff (16 → 10 tok/s) is the dominant gap. Speculative
+decoding amortizes the per-step Metal-dispatch and KV-gather
+cost over multiple accepted tokens — exactly the cost
+component CLAUDE.md identifies as the structural cliff
+(DuoKV gather O(T_total) per step). 1.7× speedup measured for
+*structured text* on Apple Silicon (the relevant content type
+for Hypercar's coding workload). Implementation effort is
+moderate: UAG translation layer is a Python wrapper, not a
+custom Metal kernel, and the MLX-LM extension is the natural
+integration point (Hypercar already runs against MLX-LM
+infrastructure). Code release status not confirmed in abstract,
+but the algorithmic spec is well-defined enough to reimplement
+directly — and the cross-family acceptance result tells us
+*which drafter to pair* with Qwen3-Coder-30B (use the smallest
+Qwen3-family model with reasonable acceptance, not a Qwen3-Coder
+distillation if none exists).
+
+**Risk**: (a) "structured text" speedup of 1.7× drops to
+"failing for varied instructions" — Hypercar's tool-calling
+agentic workload may match the failing case rather than the
+structured case; mitigation is to A-B test on actual coding
+prompts before committing. (b) Single-author preprint, no
+peer-review; mitigation is the algorithmic claim is
+straightforward and easy to validate. (c) Memory headroom —
+adding a 1.5B draft model adds ~1 GB at 8-bit; Hypercar's
+Goal 6 (48 GB fit) currently has 7-13 GB headroom on duo mode
+at moderate context, narrowing to <0.5 GB at 32K decode peak;
+draft model must be loaded carefully to avoid pushing peak
+past the 41.2 GB Metal ceiling.
+
+**Composition**: Independent of Tasks 281 (Open-TQ-Metal), 285
+(GPTAQ), 288 (KVLinC), 289 (IsoQuant). Composes with Task 257
+(Qwen3.6 migration) — the natural integration point is the
+post-migration build-out of the Qwen3.6-A3B inference path.
+Composes orthogonally with all KV-compression work because
+speculative decoding amortizes per-step cost regardless of how
+the KV is stored.
+
+### 2603.19289 — Speculating Experts Accelerates Inference for Mixture-of-Experts
+
+**Authors / venue**: Vivan Madan, Prajwal Singhania, Abhinav
+Bhatele, Tom Goldstein, Ashwinee Panda; UMD + collaborators;
+arxiv preprint submitted March 9 2026.
+
+**Key claim**: Speculate the *next layer's expert routing*
+from the *current layer's intermediate activations*, enabling
+expert-weight prefetch from CPU memory to overlap with current-
+layer computation. Up to **14% TPOT reduction** vs on-demand
+expert loading, validated on multiple MoE architectures.
+Open-source code released (axonn-ai/yalis,
+offload_prefetch branch).
+
+**Why it's high-leverage for Hypercar**: Qwen3-Coder-30B-A3B
+is a 30B MoE with 3B active parameters (CLAUDE.md). At any
+forward step, ~10% of expert weights are active per layer; the
+remaining 90% sits in unified memory waiting for future tokens
+to dispatch. Apple Silicon's unified memory model means there
+is no CPU/GPU transfer to overlap (which is the CUDA-offloading
+target of the paper) — but the *Metal residency / memory-bandwidth*
+analog *does* exist: when an expert weight is needed, it must
+be streamed from main RAM into the Metal compute unit's
+working set. **Speculating which experts to pre-warm into
+Metal cache one layer ahead** is the on-device translation of
+the paper's CPU-prefetch insight. This is a research-vertex
+question: does the per-layer expert-routing predictability
+(measured for CUDA in the paper) transfer to a within-die
+unified-memory cache-hierarchy regime where prefetch latency
+is microseconds, not milliseconds? If yes, the technique
+composes with Hypercar's existing inference path with no KV
+or quantization changes.
+
+**Risk**: (a) The paper's 14% gain is on CPU-offload regime;
+on Apple Silicon's unified memory the prefetch latency target
+is structurally smaller, so the headroom might be only 2-5%
+TPOT improvement — small enough that measurement overhead
+exceeds signal. Mitigation: file as research-evaluation, not
+direct shipping; verify with Instruments-level Metal-residency
+tracing before committing engineering effort. (b) Speculation
+accuracy depends on architecture; Qwen3-Coder routing patterns
+are unmeasured. Mitigation: use the open-source code's
+prediction methodology as starting calibration. (c) Composes
+with — but does not depend on — Task 257 (Qwen3.6 migration).
+
+**Composition**: Independent of all KV-compression and
+quantization tasks. Specifically targets the *MoE expert-
+dispatch* axis which has been under-explored at the Hypercar
+inference path level (passes 1-64 surveyed MoE quantization
+extensively but not MoE inference-time routing optimization
+beyond MoE-Spec/MoE-SpeQ verification budgeting). This is the
+**first paper in the corpus that targets MoE expert prefetch
+specifically as an inference-time technique distinct from
+quantization or budgeting**.
+
+### 2507.13575 — Apple Intelligence Foundation Language Models: Tech Report 2025
+
+**Authors / venue**: Apple ML team (Ethan Li lead, 396+ co-
+authors); arxiv tech report submitted July 17 2025, last
+revised August 27 2025; the canonical Apple-published reference
+for the on-device 3B foundation model that powers Apple
+Intelligence. **Industry-adjacent**, not a standard arxiv
+research paper — but the methodology disclosures are signal
+for Hypercar's on-device target.
+
+**Key claim**: Apple's on-device 3B-parameter Apple Foundation
+Model (AFM-on-device) is optimized for Apple Silicon via
+**(a) 2-bit quantization-aware training (QAT)**, **(b) KV-
+cache sharing across attention layers**, **(c) low-rank LoRA
+adapters to recover quality lost during compression**, all
+unified under a single Swift-centric Foundation Models
+framework. The server-side companion is a Parallel-Track
+MoE (PT-MoE) transformer running on Apple's Private Cloud
+Compute.
+
+**Why it's high-leverage for Hypercar**: This is the **first
+arxiv-published Apple ML team document** entered into the
+corpus (passes 1-64 surveyed Apple ML *research* publications
+on machinelearning.apple.com but no arxiv-published official
+foundation-model technical report). It establishes three
+methodology baselines that Hypercar can compare directly
+against: (a) **2-bit QAT** as the Apple-validated weight-
+quantization target — KVLinC (Task 288, pass 64) targets
+2-bit *KV*; AFM's 2-bit QAT targets 2-bit *weights*; together
+these define a **complete W2A?KV2 pipeline** that Hypercar's
+TQ3 + KVLinC + W3 stack does not yet match (Hypercar is at
+W3KV3 → W3KV2 with KVLinC). (b) **KV-cache sharing across
+attention layers** is the *cross-layer* analog of DuoKV's
+*intra-layer* head-partitioning; the cross-layer sharing
+methodology is unexplored in the Hypercar corpus and could
+compose with DuoKV (head-partitioning intra-layer ×
+KV-sharing across layers). (c) **LoRA adapters to recover
+quality lost during compression** is a directly-shipping
+post-compression quality-recovery methodology — Hypercar
+has the W3 + KVLinC infrastructure to ship this without
+new architecture work; the AFM precedent validates that
+the technique works at on-device scale. The paper is a
+**provenance signal**, not a research vertex itself —
+Apple has shipped 2-bit on-device QAT in production, so the
+viability question is closed; the open question is whether
+Hypercar's compute/memory budget on M4 Pro 48 GB can
+reproduce it on a 30B model (5-10× larger than AFM-on-
+device's 3B).
+
+**Risk**: (a) Tech report, not peer-reviewed research; the
+methodology disclosures may omit critical engineering details
+(specifically: which layers share KV, whether 2-bit QAT
+requires Apple-internal training compute Hypercar cannot
+afford, whether LoRA adapters require continual training).
+Mitigation: treat as methodology-baseline reference, not
+direct-shipping recipe. (b) AFM-on-device is 3B; Hypercar
+target is 30B Qwen3-Coder or 35B Qwen3.6 — the 10× scale
+gap means Apple's 2-bit QAT cost may not scale linearly to
+30B+. Mitigation: KVLinC's *post-training* (no QAT)
+approach is the lower-cost shipping path; AFM is a
+methodology reference for what's *possible* at the
+post-shipped quality bar.
+
+**Composition**: Compose with Task 270 (W3 weights) +
+Task 288 (KVLinC 2-bit KV) — together these define the
+"match Apple's AFM compression" goal at the 30B+ scale.
+Compose with Task 265 Fix 2 (streaming/retrieval split) —
+the KV-cache-sharing methodology in AFM is the cross-layer
+analog of DuoKV's intra-layer head-partitioning; the two
+techniques may compose to reduce KV memory by an additional
+20-30% beyond DuoKV alone. Independent of Task 281
+(Open-TQ-Metal Metal kernel port) and Task 282 (FreeKV
+speculative retrieval) — the AFM techniques are
+architectural / training-time, while those tasks are
+inference-time kernel-engineering.
+
+### Pass 65 summary
+
+**Three papers ingested under signal-only acceptance bar**:
+UAG-MLX-LM cross-family speculative decoding (2604.16368,
+single-author arxiv, MLX-LM-native, 1.7× speedup on
+structured text), Speculating Experts MoE prefetch
+(2603.19289, UMD + collaborators, 14% TPOT reduction on
+CUDA-offload regime, open-source code), Apple Intelligence
+Foundation Models tech report (2507.13575, official Apple
+ML team publication, 2-bit QAT + KV-cache sharing + LoRA
+adapters as methodology reference).
+
+**No new dead ends formalized this pass** — eight total
+across passes 52-63 still holds.
+
+**Highest-leverage find**: **2604.16368 (UAG-MLX-LM
+cross-family speculative decoding)** — direct shipping
+candidate for the Goal-3 decode-tok/s axis, MLX-LM-native
+integration point (no Metal kernel work needed), 1.7×
+speedup on structured text matches Hypercar's coding
+workload, and demonstrates that *cross-family* draft models
+(Qwen drafter for Bielik target) can outperform same-family
+drafters — opening the Qwen2.5-1.5B → Qwen3-Coder-30B
+speculative-decoding pairing without requiring a custom
+Qwen3-Coder distillation. Runner-up is **2603.19289
+(Speculating Experts MoE prefetch)** — research-evaluation
+candidate for the MoE expert-dispatch optimization axis;
+the on-device translation question (does CUDA-offload-
+prefetch transfer to Apple Silicon unified-memory cache-
+hierarchy?) is the right next experimental question.
+**2507.13575 (Apple Intelligence Foundation Models)** is
+the methodology-reference closure for the industry-adjacent
+search axis — first arxiv-published Apple ML team document
+in the corpus, establishes 2-bit QAT + KV-sharing + LoRA-
+recovery as the Apple-validated on-device methodology
+baseline.
+
+**Pass 65 meta**: second opportunistic pass after pass-63
+wind-down recommendation. Search strategy pivoted from
+gap-driven to adjacent-axis exploration. Four queries fired:
+(1) activation quantization / W8A8 SmoothQuant successors —
+no Hypercar-actionable 2026 finds, (2) MoE speculative
+decoding 2026 — surfaced 2603.19289, (3) MLX / Apple Silicon
+on-device foundation models — surfaced 2604.16368 and
+2507.13575, (4) block-sparse attention long-context Apple
+Silicon dynamic mask — surfaced DAM (2506.11104, June 2025)
+which falls below the 2026-novelty cutoff and was rejected.
+All three accepted papers verified as not in LIT_REVIEW
+pre-pass-65.
+
+**Eight total dead ends across passes 52-63**; sixty-five
+passes in, the research loop continues operating in
+opportunistic-search mode. Pass 65's three finds suggest the
+asymptote is *softer* than pass-64 diagnosed — when search
+angles pivot to adjacent axes (industry-adjacent, MLX-native
+infrastructure, MoE-routing-optimization-not-quantization),
+shipping-relevant signal emerges. **Recommendation: keep
+cron firing**; pass 65's UAG-MLX-LM + AFM tech report
+together provide ~1 quarter of follow-on engineering work
+(speculative decoding integration + 2-bit QAT methodology
+investigation). Tasks 296, 298, 299 track pass-65 code actions:
+Task 296 direct shipping (UAG-MLX-LM cross-family speculative
+decoding port to Hypercar), Task 298 research-evaluation
+(MoE expert prefetch on-device translation experiment),
+Task 299 methodology-investigation (AFM 2-bit QAT + KV-
+sharing + LoRA-recovery applicability to Qwen3-Coder-30B
++ Qwen3.6-35B at the M4 Pro 48 GB budget). Task 297 is
+already in flight (unrelated StreamingKVCache property
+tests, claimed by parallel /loop cycle).
+
+
 ## Milestone Synthesis (Passes 40-50) — 2026-04-21
 
 Fifty passes in, we have a complete 4-part decomposition of the
@@ -21438,4 +21723,54 @@ Tasks 288-289 track pass-64 code actions; Task 288 direct
 shipping (KVLinC port to TQ3+DuoKV stack), Task 289
 evaluation-gated (IsoQuant rotation-cost benchmark inside
 Open-TQ-Metal port).**
+**Pass 65 adds the *cross-family speculative decoding via
+UAG-extended MLX-LM on Apple Silicon (2604.16368, single-
+author arxiv, 1.7× speedup on structured text, Qwen2.5-1.5B
+drafter outperforms same-family Bielik 1.5B drafter
+validating cross-tokenizer translation), MoE expert-routing
+speculation for prefetch overlap (2603.19289, UMD, 14% TPOT
+reduction on CUDA-offload regime, open-source code released,
+on-device translation question for Apple Silicon unified-
+memory cache hierarchy), and Apple Intelligence Foundation
+Language Models tech report as methodology-baseline reference
+(2507.13575, official Apple ML team publication, 2-bit QAT +
+cross-layer KV-cache sharing + LoRA-recovery adapters)*
+vertices — highest-leverage being **2604.16368 (UAG-MLX-LM
+cross-family speculative decoding)**, the first MLX-LM-native
+arxiv-published speculative-decoding paper in the corpus and
+direct shipping candidate for Goal 3 (decode tok/s) without
+requiring KV compression or Metal kernel work; the cross-
+family acceptance result (Qwen drafter beats same-family
+drafter) opens the Qwen2.5-1.5B → Qwen3-Coder-30B speculative
+pairing without needing a custom Qwen3-Coder distillation.
+Runner-up is **2603.19289** — research-evaluation candidate
+on the MoE expert-dispatch optimization axis, distinct from
+MoE-Spec/MoE-SpeQ verification budgeting and the first paper
+in the corpus targeting expert prefetch as inference-time
+technique. **2507.13575 (Apple Intelligence Foundation
+Models)** is methodology-reference closure for the industry-
+adjacent search axis — Apple's own 2-bit QAT + KV-sharing
++ LoRA-recovery establishes the on-device-validated
+methodology baseline Hypercar's W3 + KVLinC + DuoKV stack
+can compare against. **Pass 65 is opportunistic
+adjacent-search**; user explicitly chose to keep the cron
+firing every 6h after pass-64's wind-down recommendation.
+Four queries fired across new angles (W8A8 SmoothQuant
+successors, MoE speculative decoding 2026, MLX / Apple
+Silicon on-device foundation models, block-sparse attention
+long-context). No new dead ends formalized — **eight total
+across passes 52-63 still holds**. Sixty-five passes in,
+pass-65's three high-confidence finds suggest the asymptote
+is *softer* than pass-64 diagnosed when search angles pivot
+to adjacent axes (industry-adjacent / MLX-native /
+MoE-routing-optimization-not-quantization). **Recommendation:
+keep cron firing**; pass-65 finds together provide ~1 quarter
+of follow-on engineering work. Tasks 296, 298, 299 track
+pass-65 code actions; Task 296 direct shipping (UAG-MLX-LM
+cross-family speculative decoding), Task 298 research-
+evaluation (MoE expert prefetch on-device translation),
+Task 299 methodology-investigation (AFM 2-bit QAT +
+KV-sharing + LoRA-recovery applicability at 30B+ scale).
+(Task 297 already in flight — unrelated StreamingKVCache
+property tests claimed by parallel /loop cycle.)**
 
