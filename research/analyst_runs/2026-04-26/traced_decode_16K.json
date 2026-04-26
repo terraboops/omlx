@@ -1,0 +1,166 @@
+{
+  "elapsed_s": 67.8918,
+  "timers": [
+    {
+      "name": "duokv.update_and_fetch",
+      "count": 3264,
+      "total_s": 1.364602,
+      "mean_ms": 0.4181,
+      "min_ms": 0.0239,
+      "p50_ms": 0.0455,
+      "p95_ms": 1.2412,
+      "p99_ms": 1.6518,
+      "max_ms": 2.2804
+    }
+  ],
+  "counters": [
+    {
+      "name": "duokv._update_quantized.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokv.compute_attention.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokv.state.get.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokv.state.set.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokv.update_and_fetch.calls",
+      "value": 3264.0,
+      "updates": 3264
+    },
+    {
+      "name": "streamkv.state.get.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streamkv.update_and_fetch.calls",
+      "value": 0.0,
+      "updates": 0
+    }
+  ],
+  "meta": {
+    "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+    "kv_mode": "duo",
+    "context_tokens": 16384,
+    "n_input_tokens": 16384,
+    "decode_steps": 64,
+    "prefill_dt_s": 50.1491,
+    "decode_dt_s": 6.4525,
+    "prefill_tok_per_s": 326.71,
+    "decode_tok_per_s": 9.92,
+    "load_diff": {
+      "dt_s": 8.4039,
+      "delta_metal_active_gb": 32.4406,
+      "delta_metal_peak_gb": 32.4406,
+      "delta_rss_gb": 10.1269,
+      "delta_phys_footprint_gb": 32.6899,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-load",
+        "t": 22619.9742,
+        "metal": {
+          "active_gb": 0.0,
+          "peak_gb": 0.0,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 0.3269,
+        "phys_footprint_gb": 0.2648,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-load",
+        "t": 22628.3781,
+        "metal": {
+          "active_gb": 32.4406,
+          "peak_gb": 32.4406,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 10.4538,
+        "phys_footprint_gb": 32.9547,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    },
+    "prefill_diff": {
+      "dt_s": 50.1494,
+      "delta_metal_active_gb": 1.6361,
+      "delta_metal_peak_gb": 2.636,
+      "delta_rss_gb": -2.4948,
+      "delta_phys_footprint_gb": 5.7241,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-prefill",
+        "t": 22631.2604,
+        "metal": {
+          "active_gb": 32.4406,
+          "peak_gb": 32.4406,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 10.3614,
+        "phys_footprint_gb": 32.9687,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-prefill",
+        "t": 22681.4098,
+        "metal": {
+          "active_gb": 34.0767,
+          "peak_gb": 35.0766,
+          "cache_gb": 3.9747
+        },
+        "rss_gb": 7.8665,
+        "phys_footprint_gb": 38.6929,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    },
+    "decode_diff": {
+      "dt_s": 6.4529,
+      "delta_metal_active_gb": 0.0003,
+      "delta_metal_peak_gb": 0.0,
+      "delta_rss_gb": 0.006,
+      "delta_phys_footprint_gb": 0.133,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-decode",
+        "t": 22681.4115,
+        "metal": {
+          "active_gb": 34.0767,
+          "peak_gb": 35.0766,
+          "cache_gb": 3.9747
+        },
+        "rss_gb": 7.8666,
+        "phys_footprint_gb": 38.6929,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-decode",
+        "t": 22687.8643,
+        "metal": {
+          "active_gb": 34.077,
+          "peak_gb": 35.0766,
+          "cache_gb": 4.1061
+        },
+        "rss_gb": 7.8726,
+        "phys_footprint_gb": 38.8258,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    }
+  }
+}

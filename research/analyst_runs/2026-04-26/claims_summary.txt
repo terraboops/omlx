@@ -1,0 +1,32 @@
+claims summary — analyst run 2026-04-26
+
+======================================================================
+
+F1a: mx.where(..., zeros_like) vs mx.where(..., 0.0)
+  T=  4096: baseline=0.364ms  optimized=0.276ms  speedup=1.32x  bit_identical=True
+           heap delta over repeats: baseline=+0.00MB  optimized=+0.00MB
+  T= 16384: baseline=0.845ms  optimized=0.606ms  speedup=1.40x  bit_identical=True
+           heap delta over repeats: baseline=+0.00MB  optimized=+0.00MB
+  T= 65536: baseline=1.842ms  optimized=0.803ms  speedup=2.29x  bit_identical=True
+           heap delta over repeats: baseline=+0.00MB  optimized=+0.00MB
+
+F1b: broadcast_to + take_along_axis vs slice (arange identity)
+  T=  4096: gather=0.271ms  slice=0.003ms  ratio=104.11x  bit_identical=True
+  T= 16384: gather=0.482ms  slice=0.002ms  ratio=219.18x  bit_identical=True
+  T= 65536: gather=1.410ms  slice=0.002ms  ratio=587.50x  bit_identical=True
+
+DuoKV update_and_fetch scaling
+  T_total=  1024: median=0.217ms
+  T_total=  4096: median=0.256ms
+  T_total=  8192: median=0.415ms
+  T_total= 16384: median=0.272ms
+    1024 -> 4096: T_ratio=4.00x  time_ratio=1.18x  -> SUBLINEAR
+    4096 -> 8192: T_ratio=2.00x  time_ratio=1.62x  -> LINEAR
+    8192 -> 16384: T_ratio=2.00x  time_ratio=0.66x  -> SUBLINEAR
+
+StreamingKVCache.update_and_fetch (ring mode, T_new=1)
+  median=0.042ms  min=0.039  max=0.051
+
+F1 absolute cost in 48-layer simulation
+  T=  4096: baseline 48L = 1.73ms  optimized 48L = 1.60ms  savings/step = 0.13ms
+  T= 16384: baseline 48L = 5.88ms  optimized 48L = 5.46ms  savings/step = 0.42ms

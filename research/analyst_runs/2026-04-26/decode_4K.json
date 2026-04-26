@@ -1,0 +1,293 @@
+{
+  "elapsed_s": 22.5777,
+  "timers": [],
+  "counters": [
+    {
+      "name": "duokvcache._update_quantized.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokvcache.compute_attention.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokvcache.state.get.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokvcache.state.set.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "duokvcache.update_and_fetch.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._get_fp16_keys.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._get_fp16_values.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._rerope_keys.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._select_fair.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._select_global.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._select_segmented.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._select_submodular.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv._unpack_captured.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.apply_snapkv_to_generate.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.capture_attention_weights.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.check_ger_safety.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compact_cache.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compact_cache_pyramidal.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_attention_importance.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_caote_importance.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_freshness_scores.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_ger.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_importance_from_real_q.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.compute_multi_layer_importance.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.count_kept.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.get_keep_indices.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.install_kv_capture_hooks.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.install_q_capture_hook.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "snapkv.snapkv_select.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention._merge_outputs.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention._online_softmax_update.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention.clear_chunk_hint.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention.self_attention_with_lse.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention.set_chunk_hint.calls",
+      "value": 0.0,
+      "updates": 0
+    },
+    {
+      "name": "streaming_attention.streaming_tq_attention.calls",
+      "value": 0.0,
+      "updates": 0
+    }
+  ],
+  "meta": {
+    "model": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+    "kv_mode": "duo",
+    "context_tokens": 4096,
+    "decode_steps_requested": 64,
+    "decode_steps_observed": 64,
+    "prefill_dt_s": 11.999,
+    "decode_dt_s": 1.7685,
+    "decode_tok_per_s": 36.19,
+    "load_diff": {
+      "dt_s": 8.6152,
+      "delta_metal_active_gb": 32.4406,
+      "delta_metal_peak_gb": 32.4406,
+      "delta_rss_gb": 10.9538,
+      "delta_phys_footprint_gb": 32.6853,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-load",
+        "t": 22450.6034,
+        "metal": {
+          "active_gb": 0.0,
+          "peak_gb": 0.0,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 0.3267,
+        "phys_footprint_gb": 0.2645,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-load",
+        "t": 22459.2187,
+        "metal": {
+          "active_gb": 32.4406,
+          "peak_gb": 32.4406,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 11.2804,
+        "phys_footprint_gb": 32.9497,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    },
+    "prefill_diff": {
+      "dt_s": 11.9993,
+      "delta_metal_active_gb": 0.4591,
+      "delta_metal_peak_gb": 1.1812,
+      "delta_rss_gb": -0.0659,
+      "delta_phys_footprint_gb": 0.9509,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-prefill",
+        "t": 22459.4111,
+        "metal": {
+          "active_gb": 32.4406,
+          "peak_gb": 32.4406,
+          "cache_gb": 0.0
+        },
+        "rss_gb": 11.2395,
+        "phys_footprint_gb": 32.953,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-prefill",
+        "t": 22471.4104,
+        "metal": {
+          "active_gb": 32.8997,
+          "peak_gb": 33.6218,
+          "cache_gb": 0.3792
+        },
+        "rss_gb": 11.1736,
+        "phys_footprint_gb": 33.9039,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    },
+    "decode_diff": {
+      "dt_s": 1.7687,
+      "delta_metal_active_gb": -0.4383,
+      "delta_metal_peak_gb": 0.0,
+      "delta_rss_gb": 0.0004,
+      "delta_phys_footprint_gb": -0.395,
+      "delta_swap_gb": 0.0,
+      "before": {
+        "label": "pre-decode",
+        "t": 22471.4114,
+        "metal": {
+          "active_gb": 32.8795,
+          "peak_gb": 33.6218,
+          "cache_gb": 0.3994
+        },
+        "rss_gb": 11.1736,
+        "phys_footprint_gb": 33.9039,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      },
+      "after": {
+        "label": "post-decode",
+        "t": 22473.18,
+        "metal": {
+          "active_gb": 32.4412,
+          "peak_gb": 33.6218,
+          "cache_gb": 0.4424
+        },
+        "rss_gb": 11.174,
+        "phys_footprint_gb": 33.509,
+        "swap_used_gb": 1.0615,
+        "py_top_count": 0
+      }
+    }
+  }
+}
