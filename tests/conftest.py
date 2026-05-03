@@ -68,17 +68,18 @@ _SAFE_WITHOUT_MLX = {
     # Imports `from omlx.state_space.hybrid_layers` which is pure-Python
     # but lives under omlx.state_space which top-level imports MLX.
     "test_hybrid_layers.py",
-    # Spec-decode + Task 388 Phase 2 server-side wiring tests. Top-level
-    # imports are subprocess/inspect/pathlib only; the conftest's content
-    # filter false-positives on `from omlx.hypercar_server import` in a
-    # docstring. Tests use importlib at runtime which is fine on Metal-
-    # available hardware.
-    "test_hypercar_server_spec_decode.py",
     # Bench helper tests — lazily import omlx.bench.hypercar_bench inside
     # test functions; the helpers themselves are pure Python (chat-template
     # plumbing, EOS unification, hybrid memory projector). Tests were
     # silently filtered out before the safelist entry.
     "test_bench_helpers.py",
+    # NOTE: test_hypercar_server_spec_decode.py and
+    # test_ttt_distill_single_head.py used to be on this safelist as
+    # workarounds for the substring filter's docstring false-positives.
+    # The AST-based filter (see _has_omlx_import below) doesn't flag
+    # them — both files use importlib / scripts.* imports at runtime,
+    # not top-level `from omlx import` — so the safelist entries are
+    # now redundant. Removed 2026-05-03 to keep the safelist minimal.
 }
 
 def _has_omlx_import(path: Path) -> bool:
