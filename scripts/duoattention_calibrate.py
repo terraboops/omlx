@@ -51,17 +51,34 @@ def calibrate(
     from mlx_lm import load
     import mlx_lm.models.base as mlx_base
 
+    import sys as _sys
+    _sys.path.insert(0, ".")
+    from omlx.state_space import attention_layer_indices
+
     print(f"Loading model: {model_id}")
     model, tokenizer = load(model_id)
 
     n_layers = len(model.layers)
-    # Detect head counts
-    first_attn = model.layers[0].self_attn
+    # Hybrid-safe: SDPA only fires on attention layers. The capturing
+    # SDPA hook's call counter must be interpreted relative to the attn-
+    # layer subset, not all of model.layers. On dense Qwen3-Coder these
+    # are equal; on Qwen3.6 (10 of 40 are attention) they diverge.
+    attn_indices = attention_layer_indices(model)
+    n_attn = len(attn_indices)
+    if n_attn == 0:
+        raise RuntimeError(
+            f"Model {model_id} has no self_attn layers; calibration "
+            "cannot proceed."
+        )
+    # Detect head counts on the FIRST attention layer (which may not be
+    # layer 0 on hybrid models).
+    first_attn = model.layers[attn_indices[0]].self_attn
     n_heads = getattr(first_attn, 'n_heads', 32)
     n_kv_heads = getattr(first_attn, 'n_kv_heads', 4)
     gqa = n_heads // n_kv_heads
 
-    print(f"Model: {n_layers} layers, {n_heads} Q heads, {n_kv_heads} KV heads, GQA={gqa}")
+    print(f"Model: {n_layers} layers ({n_attn} attention), "
+          f"{n_heads} Q heads, {n_kv_heads} KV heads, GQA={gqa}")
     print(f"Window: {window}, Sink: {sink}, Threshold: {streaming_threshold}")
 
     # Build synthetic code context with a passkey
@@ -116,7 +133,10 @@ def transform(item: Dict[str, Any]) -> Dict[str, Any]:
 
         weights = mx.softmax(scores, axis=-1)
 
-        layer_idx = layer_counter[0] % n_layers
+        # On hybrid models, the i-th SDPA call corresponds to the i-th
+        # attention layer (in attn_indices order), NOT to model.layers[i].
+        cur_call = layer_counter[0] % n_attn
+        layer_idx = attn_indices[cur_call]
         layer_counter[0] += 1
 
         # Store per-head attention (sample middle rows for efficiency)
@@ -162,7 +182,11 @@ def transform(item: Dict[str, Any]) -> Dict[str, Any]:
 
     T = len(full_tokens)
 
-    for layer_idx in range(n_layers):
+    # Only emit policy entries for attention layers. On dense Qwen3-Coder
+    # this is every layer; on hybrid Qwen3.6 it's the sparse attn-only
+    # subset. Emitting for non-attention layers would falsely tag them
+    # all "retrieval" with local_fraction=0.0 (misleading at runtime).
+    for layer_idx in attn_indices:
         for head_idx in range(n_heads):
             key = (layer_idx, head_idx)
             if key not in attention_maps:
@@ -214,14 +238,15 @@ def transform(item: Dict[str, Any]) -> Dict[str, Any]:
                 "sink": sink,
             })
 
-    streaming_frac = streaming_count / (streaming_count + retrieval_count)
+    total_classified = streaming_count + retrieval_count
+    streaming_frac = streaming_count / total_classified
     print(f"\nClassification:")
-    print(f"  Streaming: {streaming_count}/{n_heads * n_layers} ({streaming_frac:.0%})")
-    print(f"  Retrieval: {retrieval_count}/{n_heads * n_layers} ({1-streaming_frac:.0%})")
+    print(f"  Streaming: {streaming_count}/{total_classified} ({streaming_frac:.0%})")
+    print(f"  Retrieval: {retrieval_count}/{total_classified} ({1-streaming_frac:.0%})")
 
-    # Per-layer summary
+    # Per-layer summary (attention layers only)
     print(f"\nPer-layer breakdown:")
-    for l in range(n_layers):
+    for l in attn_indices:
         layer_policies = [p for p in policies if p["layer"] == l]
         n_stream = sum(1 for p in layer_policies if p["policy"] == "streaming")
         fracs = [p["local_fraction"] for p in layer_policies]
@@ -238,7 +263,9 @@ def transform(item: Dict[str, Any]) -> Dict[str, Any]:
     # Save policy
     output = {
         "model": model_id,
-        "n_layers": n_layers,
+        "n_layers": n_layers,            # total layers (incl. SSM on hybrid)
+        "n_attn_layers": n_attn,         # attention layers only
+        "attn_layer_indices": attn_indices,
         "n_heads": n_heads,
         "n_kv_heads": n_kv_heads,
         "context_len": context_len,

@@ -64,6 +64,10 @@ _SAFE_WITHOUT_MLX = {
     "test_ttt_linear.py",
     "test_ttt_distill_single_head.py",
     "test_ttt_head_router.py",
+    # Hybrid-layer introspection helper (Task 388 hybrid-arch audit).
+    # Imports `from omlx.state_space.hybrid_layers` which is pure-Python
+    # but lives under omlx.state_space which top-level imports MLX.
+    "test_hybrid_layers.py",
 }
 
 collect_ignore = []

@@ -21,4 +21,5 @@ Planned:
   distills cleanly.
 """
 
+from .hybrid_layers import attention_layer_indices  # noqa: F401
 from .ttt_linear import TTTLinear, TTTLinearConfig  # noqa: F401

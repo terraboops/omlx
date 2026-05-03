@@ -39,7 +39,7 @@ import mlx.optimizers as mxopt
 from mlx.utils import tree_flatten, tree_unflatten
 
 sys.path.insert(0, ".")
-from omlx.state_space import TTTLinear, TTTLinearConfig
+from omlx.state_space import TTTLinear, TTTLinearConfig, attention_layer_indices
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -335,24 +335,6 @@ def tile_prompt_to_length(tokenizer, prompt: str, target_len: int) -> list[int]:
         raise ValueError(f"Empty token list for prompt: {prompt[:80]!r}")
     reps = (target_len // len(tokens)) + 1
     return (tokens * reps)[:target_len]
-
-
-def attention_layer_indices(model) -> list[int]:
-    """Return the sorted list of indices in ``model.layers`` whose layer
-    has a ``self_attn`` module.
-
-    On dense-attention models (Qwen3-Coder) this is just ``list(range(
-    len(model.layers)))``. On hybrid SSM+attention models (Qwen3.6,
-    every-4th-attention layout) it's a sparse subset, e.g.,
-    ``[3, 7, 11, ..., 39]``. The capturing SDPA hook fires once per
-    attention layer per forward, so the hook's call counter must be
-    interpreted relative to THIS list, not ``len(model.layers)``.
-    """
-    indices = []
-    for i, layer in enumerate(model.layers):
-        if getattr(layer, "self_attn", None) is not None:
-            indices.append(i)
-    return indices
 
 
 def _patch_sdpa_for_capture(
