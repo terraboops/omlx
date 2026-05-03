@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.ttt_distill_single_head import (
+    DEFAULT_CALIBRATION_PROMPTS,
     HeadSelection,
     cos_sim_per_token,
     make_synthetic_pairs,
@@ -25,6 +26,7 @@ from scripts.ttt_distill_single_head import (
     mse_loss,
     pick_streaming_head,
     run_synthetic,
+    tile_prompt_to_length,
 )
 
 
@@ -222,6 +224,60 @@ def test_make_synthetic_pairs_multi_truth_seed_pins_dynamics():
     assert mx.max(mx.abs(x0 - x1)).item() < 1e-10
     # Outputs differ (different projections)
     assert mx.max(mx.abs(o0 - o1)).item() > 0.05
+
+
+# ---------------------------------------------------------------------------
+# Multi-prompt capture helpers (model-load-free tests)
+# ---------------------------------------------------------------------------
+
+
+def test_default_calibration_prompts_are_distinct():
+    """Each calibration prompt should be a distinct string — varied content
+    is the whole point of the prompt set, so accidental duplicates would
+    silently reduce N_effective during capture-mode multi-prompt training."""
+    assert len(DEFAULT_CALIBRATION_PROMPTS) >= 4
+    assert len(set(DEFAULT_CALIBRATION_PROMPTS)) == len(DEFAULT_CALIBRATION_PROMPTS)
+
+
+def test_default_calibration_prompts_cover_code_and_prose():
+    """At least one prompt must be code-shaped (contains 'def' or 'import'
+    or ';') and at least one must be prose-shaped (no obvious code marker)
+    — diversity is the methodology gap fix."""
+    code_markers = ("def ", "import ", "SELECT", "CREATE", "= re.compile")
+    has_code = any(any(m in p for m in code_markers)
+                   for p in DEFAULT_CALIBRATION_PROMPTS)
+    has_prose = any(not any(m in p for m in code_markers)
+                    for p in DEFAULT_CALIBRATION_PROMPTS)
+    assert has_code, "no code-shaped prompt in DEFAULT_CALIBRATION_PROMPTS"
+    assert has_prose, "no prose-shaped prompt in DEFAULT_CALIBRATION_PROMPTS"
+
+
+class _StubTokenizer:
+    """Minimal tokenizer for tile_prompt_to_length tests — character-level."""
+    def encode(self, s: str) -> list[int]:
+        return [ord(c) for c in s]
+
+
+def test_tile_prompt_to_length_pads_short_prompts():
+    tok = _StubTokenizer()
+    out = tile_prompt_to_length(tok, "abc", target_len=10)
+    assert len(out) == 10
+    # First 9 are 3 reps of "abc", then "a" again
+    assert out[:9] == [97, 98, 99] * 3
+    assert out[9] == 97
+
+
+def test_tile_prompt_to_length_trims_long_prompts():
+    tok = _StubTokenizer()
+    out = tile_prompt_to_length(tok, "hello world", target_len=5)
+    assert len(out) == 5
+    assert out == [104, 101, 108, 108, 111]   # "hello"
+
+
+def test_tile_prompt_to_length_rejects_empty():
+    tok = _StubTokenizer()
+    with pytest.raises(ValueError, match="Empty token list"):
+        tile_prompt_to_length(tok, "", target_len=10)
 
 
 def test_early_stop_restores_best_params():

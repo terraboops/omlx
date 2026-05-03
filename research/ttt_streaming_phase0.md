@@ -84,6 +84,41 @@ The harness is now calibrated and methodology-honest. The next move is the user-
 
 Capture-mode is also extended in this cycle to use the multi-sequence training path. Currently `run_capture` still does single-prompt single-sequence; an obvious next-cycle extension is multi-prompt capture (call `model(x)` on N different prompts, accumulate `(Q_h, o_h)` pairs across them, train multi-sequence).
 
+---
+
+## 2026-05-03 follow-up #2 — multi-prompt capture mode (third methodology gap closed)
+
+The third gap from the post-fix list is now closed in `scripts/ttt_distill_single_head.py`:
+
+- **8 default calibration prompts** in `DEFAULT_CALIBRATION_PROMPTS` covering Python data transforms, NumPy/scientific code, prose documentation, SQL, error-handling patterns, long-form prose, regex-heavy code, and chat Q&A. The mix is deliberate: streaming heads' local windows hit different content distributions across these snippets, so train/val split *across prompts* (rather than within one) gives the optimizer the same kind of signal that the synthetic multi-seq fix delivered.
+- **`capture_attention_pairs_multi(model_id, layer, head, ctx_len, prompts=None)`** — loads model once, runs prefill on N prompts, captures per-prompt `(Q_h, o_h)`, stacks along batch dim → returns `(N, ctx_len, head_dim)`. Reset `layer_counter` between prompts so layer dispatch hits cleanly each call. SDPA monkey-patch + walk-`sys.modules` rebinding are factored into `_patch_sdpa_for_capture` / `_unpatch_sdpa` so they're testable + reusable.
+- **`capture_attention_pairs(...)`** — original single-prompt API kept as a thin wrapper around the multi-prompt path for back-compat.
+- **`run_capture` updated**: train/val split is now *across prompts* (default 6 train + 2 val), mirroring the synthetic recovery setup. LayerNorm is now ON in the capture path (was OFF previously — copy-paste of an earlier debugging variant).
+- **5 new model-load-free tests** in `tests/test_ttt_distill_single_head.py`:
+  - `test_default_calibration_prompts_are_distinct`: catches accidental duplicates that would silently reduce N_effective during multi-prompt training.
+  - `test_default_calibration_prompts_cover_code_and_prose`: ensures the mix is actually varied.
+  - `test_tile_prompt_to_length_pads_short_prompts` / `test_tile_prompt_to_length_trims_long_prompts` / `test_tile_prompt_to_length_rejects_empty`: pin the helper that prepares prompt tokens for capture.
+- Total distillation tests: **22/22 pass**.
+
+The user-invokable `--capture` run now does:
+```
+.venv/bin/python scripts/ttt_distill_single_head.py --capture \
+    --policy omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json \
+    --model mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit \
+    --context-len 1024 --n-steps 1500 --lr 3e-3 \
+    --output research/ttt_phase0_capture_qwen3_coder.json
+```
+
+This loads the 8-bit Qwen3-Coder, picks the highest-`local_fraction` streaming head from the policy file (layer 27, head 30, lf=0.99+), captures across 8 prompts × 1024 tokens, trains multi-seq with early-stop, and writes the cos-sim summary + curves to JSON. Wall-time estimate: ~2 min model load + ~3 min × 8 prefills (~25 min) + ~30 s training = ~30 min total.
+
+All three methodology gaps from the prior cycle are now addressed:
+
+| Gap | Status |
+|---|---|
+| 1. Multi-sequence training (synthetic gives one trajectory only) | ✅ via `make_synthetic_pairs_multi` |
+| 2. Early-stop on val MSE | ✅ via `train_ttt(..., early_stop=True)` (default on) |
+| 3. Capture-mode positional split needs state-threading review | ✅ replaced with cross-prompt split via `capture_attention_pairs_multi` |
+
 ## Files in this cycle
 
 - `scripts/ttt_distill_single_head.py` — distillation harness (300 lines)

@@ -266,33 +266,96 @@ def make_synthetic_pairs_multi(
 # ---------------------------------------------------------------------------
 
 
-def capture_attention_pairs(
-    model_id: str,
-    layer_idx: int,
-    head_idx: int,
-    context_len: int,
-) -> tuple[mx.array, mx.array, int]:
-    """Load model, run prefill on a calibration prompt, capture per-head
-    queries and per-head SDPA output for ``(layer_idx, head_idx)``.
+# Default calibration prompts — varied content so the captured per-head
+# (Q_h, o_h) sequences sample TTT state space from multiple starting
+# distributions. Streaming heads are local-attention dominant, but the
+# *content* of those local windows differs sharply across these snippets;
+# train/val split across prompts (rather than within one) prevents the
+# overfitting documented in the Phase 0 step 3 follow-up note.
+DEFAULT_CALIBRATION_PROMPTS: list[str] = [
+    # Code: pure-Python data transform
+    ("import json\nfrom pathlib import Path\n\n"
+     "def process(items):\n    return [str(x).upper() for x in items]\n\n"
+     "def main():\n    data = json.loads(Path('input.json').read_text())\n"
+     "    print(process(data))\n\n"),
+    # Code: numerical / scientific
+    ("import numpy as np\n\n"
+     "def gaussian(x, mu=0.0, sigma=1.0):\n"
+     "    z = (x - mu) / sigma\n"
+     "    return np.exp(-0.5 * z * z) / (sigma * np.sqrt(2 * np.pi))\n\n"
+     "def kl_divergence(p, q, eps=1e-12):\n"
+     "    return float(np.sum(p * np.log((p + eps) / (q + eps))))\n\n"),
+    # Prose: documentation / chat-like
+    ("The hypercar inference stack runs on Apple M4 Pro. The KV cache is\n"
+     "compressed via Walsh-Hadamard rotation followed by 3-bit affine\n"
+     "quantization. This composes with DuoAttention's per-head streaming\n"
+     "and retrieval split, where streaming heads attend mainly to a\n"
+     "local 256-token window plus 4 sink tokens, and retrieval heads\n"
+     "attend across the full context.\n\n"),
+    # Code: SQL-flavored / structured
+    ("CREATE TABLE events (id BIGINT PRIMARY KEY, ts TIMESTAMP, kind TEXT);\n"
+     "CREATE INDEX events_ts_idx ON events(ts);\n\n"
+     "SELECT kind, COUNT(*) AS n FROM events\n"
+     "WHERE ts >= NOW() - INTERVAL '7 days'\n"
+     "GROUP BY kind ORDER BY n DESC LIMIT 20;\n\n"),
+    # Code: error-handling pattern
+    ("def safe_divide(a: float, b: float) -> float:\n"
+     "    try:\n        return a / b\n    except ZeroDivisionError:\n"
+     "        return float('inf') if a > 0 else float('-inf')\n\n"
+     "assert safe_divide(1, 0) == float('inf')\n"
+     "assert safe_divide(-1, 0) == float('-inf')\n\n"),
+    # Prose: long-form prose
+    ("The proof proceeds by induction. Base case n=1: the recurrence\n"
+     "reduces to the identity map, which trivially satisfies the bound.\n"
+     "Inductive step: assume the claim for n=k; we show n=k+1. Apply\n"
+     "the update rule once more and observe that each component is\n"
+     "bounded above by the inductive hypothesis times the contraction\n"
+     "factor.\n\n"),
+    # Code: regex-heavy
+    ("import re\n\n"
+     "EMAIL = re.compile(r'^[\\w.+-]+@[\\w-]+\\.[\\w.-]+$')\n"
+     "URL   = re.compile(r'^https?://[^\\s/$.?#].[^\\s]*$')\n\n"
+     "def classify(token: str) -> str:\n"
+     "    if EMAIL.match(token): return 'email'\n"
+     "    if URL.match(token):   return 'url'\n"
+     "    return 'plain'\n\n"),
+    # Prose: chat-like Q&A
+    ("Q: How does TTT-Linear differ from softmax attention?\n"
+     "A: TTT-Linear uses a learnable linear map W as its hidden state,\n"
+     "updated per token via online SGD on a reconstruction loss. Per-\n"
+     "token compute is O(D^2) regardless of context length, vs softmax\n"
+     "attention's O(N*D) for the same step.\n\n"),
+]
 
-    Returns ``(Q_h, o_h, head_dim)`` where each of ``Q_h``/``o_h`` has
-    shape ``(1, L, head_dim)``.
+
+def tile_prompt_to_length(tokenizer, prompt: str, target_len: int) -> list[int]:
+    """Encode + tile a prompt up to (or above) ``target_len``, then trim."""
+    tokens = tokenizer.encode(prompt)
+    if not tokens:
+        raise ValueError(f"Empty token list for prompt: {prompt[:80]!r}")
+    reps = (target_len // len(tokens)) + 1
+    return (tokens * reps)[:target_len]
+
+
+def _patch_sdpa_for_capture(
+    layer_idx: int, head_idx: int, n_layers: int,
+) -> tuple[dict, list[int], object]:
+    """Install a capturing SDPA that records (Q_h, o_h) for one chosen
+    (layer, head) pair. Returns (captured_dict, layer_counter,
+    original_sdpa); call ``_unpatch_sdpa(original)`` when done.
+
+    The capturing SDPA mirrors ``duoattention_calibrate.py`` — handles
+    GQA expansion, ``mask='causal'`` string sentinel, and array masks.
+    Captured sub-tensors stay attached to MLX's compute graph; caller
+    is responsible for ``mx.eval`` after the prefill.
     """
-    from mlx_lm import load
     import mlx_lm.models.base as mlx_base
 
-    logger.info(f"Loading model: {model_id}")
-    model, tokenizer = load(model_id)
-
-    n_layers = len(model.layers)
-    captured: dict = {}      # filled by capturing_sdpa
+    captured: dict = {}
     layer_counter = [0]
-
     original_sdpa = mlx_base.scaled_dot_product_attention
 
     def capturing_sdpa(queries, keys, values, cache, scale, mask, sinks=None):
-        """Drop-in SDPA that records (Q_h, o_h) for the chosen layer."""
-        # mask handling — mirror duoattention_calibrate.py
         B, H_q, L_q, D = queries.shape
         H_kv = keys.shape[1]
         gqa = H_q // H_kv
@@ -321,7 +384,6 @@ def capture_attention_pairs(
             captured["head_dim"] = D
         return out
 
-    # Patch SDPA + walk imported model modules (D13 lesson)
     mlx_base.scaled_dot_product_attention = capturing_sdpa
     for mod_name, mod in list(sys.modules.items()):
         if mod is None:
@@ -330,36 +392,101 @@ def capture_attention_pairs(
             if hasattr(mod, "scaled_dot_product_attention"):
                 setattr(mod, "scaled_dot_product_attention", capturing_sdpa)
 
-    # Prefill on a code-heavy prompt
-    code = (
-        "import json\nfrom pathlib import Path\n\n"
-        "def process(items):\n    return [str(x).upper() for x in items]\n\n"
-    )
-    tokens = tokenizer.encode(code)
-    reps = (context_len // len(tokens)) + 1
-    full_tokens = (tokens * reps)[:context_len]
-    logger.info(f"Prefilling {len(full_tokens)} tokens to capture (l={layer_idx}, h={head_idx})...")
-    try:
-        x = mx.array([full_tokens])
-        t0 = time.perf_counter()
-        logits = model(x)
-        mx.eval(logits)
-        logger.info(f"Prefill {time.perf_counter() - t0:.1f}s")
-    finally:
-        mlx_base.scaled_dot_product_attention = original_sdpa
-        for mod_name, mod in list(sys.modules.items()):
-            if mod is None:
-                continue
-            if mod_name.startswith(("mlx_lm.models.", "mlx_vlm.models.")):
-                if hasattr(mod, "scaled_dot_product_attention"):
-                    setattr(mod, "scaled_dot_product_attention", original_sdpa)
+    return captured, layer_counter, original_sdpa
 
-    if "Q_h" not in captured:
-        raise RuntimeError(
-            f"Capture missed layer {layer_idx} — layer_counter wraparound or "
-            "SDPA dispatch path skipped that layer."
-        )
-    return captured["Q_h"], captured["o_h"], captured["head_dim"]
+
+def _unpatch_sdpa(original_sdpa) -> None:
+    import mlx_lm.models.base as mlx_base
+    mlx_base.scaled_dot_product_attention = original_sdpa
+    for mod_name, mod in list(sys.modules.items()):
+        if mod is None:
+            continue
+        if mod_name.startswith(("mlx_lm.models.", "mlx_vlm.models.")):
+            if hasattr(mod, "scaled_dot_product_attention"):
+                setattr(mod, "scaled_dot_product_attention", original_sdpa)
+
+
+def capture_attention_pairs_multi(
+    model_id: str,
+    layer_idx: int,
+    head_idx: int,
+    context_len: int,
+    prompts: Optional[list[str]] = None,
+) -> tuple[mx.array, mx.array, int]:
+    """Load model, run prefill on N calibration prompts, return per-head
+    queries and per-head SDPA output stacked along the batch dim.
+
+    Returns ``(Q_h, o_h, head_dim)`` where each of ``Q_h``/``o_h`` has
+    shape ``(N, context_len, head_dim)``. N defaults to
+    ``len(DEFAULT_CALIBRATION_PROMPTS)``.
+
+    Multi-prompt (vs the single-prompt earlier API) is the third
+    methodology fix from the Phase 0 step 3 follow-up note: train/val
+    split across prompts gives the optimizer signal to learn the
+    streaming-head dynamics rather than memorize one prompt's specifics.
+    """
+    from mlx_lm import load
+
+    if prompts is None:
+        prompts = DEFAULT_CALIBRATION_PROMPTS
+
+    logger.info(f"Loading model: {model_id}")
+    model, tokenizer = load(model_id)
+    n_layers = len(model.layers)
+
+    captured, layer_counter, original_sdpa = _patch_sdpa_for_capture(
+        layer_idx, head_idx, n_layers)
+
+    Q_h_list: list[mx.array] = []
+    o_h_list: list[mx.array] = []
+    head_dim: Optional[int] = None
+    try:
+        for i, prompt in enumerate(prompts):
+            tokens = tile_prompt_to_length(tokenizer, prompt, context_len)
+            x = mx.array([tokens])
+            captured.clear()
+            layer_counter[0] = 0  # reset so layer_idx hits on this prompt
+            t0 = time.perf_counter()
+            logits = model(x)
+            mx.eval(logits)
+            logger.info(
+                f"  prompt {i+1}/{len(prompts)}: {context_len} tok in "
+                f"{time.perf_counter() - t0:.1f}s"
+            )
+            if "Q_h" not in captured:
+                raise RuntimeError(
+                    f"Capture missed layer {layer_idx} on prompt {i} — "
+                    "layer_counter wraparound or SDPA dispatch path "
+                    "skipped that layer."
+                )
+            Q_h_list.append(captured["Q_h"])    # (1, L, D)
+            o_h_list.append(captured["o_h"])    # (1, L, D)
+            if head_dim is None:
+                head_dim = captured["head_dim"]
+    finally:
+        _unpatch_sdpa(original_sdpa)
+
+    Q_h = mx.concatenate(Q_h_list, axis=0)       # (N, L, D)
+    o_h = mx.concatenate(o_h_list, axis=0)       # (N, L, D)
+    return Q_h, o_h, head_dim
+
+
+def capture_attention_pairs(
+    model_id: str,
+    layer_idx: int,
+    head_idx: int,
+    context_len: int,
+) -> tuple[mx.array, mx.array, int]:
+    """Single-prompt capture (legacy API kept for back-compat).
+
+    Wraps ``capture_attention_pairs_multi`` with a one-element prompt
+    list — the first DEFAULT_CALIBRATION_PROMPTS entry. Returns shape
+    ``(1, L, D)`` to match the original contract.
+    """
+    return capture_attention_pairs_multi(
+        model_id, layer_idx, head_idx, context_len,
+        prompts=[DEFAULT_CALIBRATION_PROMPTS[0]],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -399,23 +526,39 @@ def run_synthetic(D: int, n_steps: int, lr: float, eta: float,
 
 def run_capture(model_id: str, policy_path: Path, context_len: int,
                 n_steps: int, lr: float, eta: float,
-                mini_batch_size: int) -> dict:
+                mini_batch_size: int,
+                prompts: Optional[list[str]] = None,
+                n_val_prompts: int = 2) -> dict:
+    """Capture per-head pairs across N prompts, train/val-split across
+    prompts (not within), train via the multi-sequence path that cleared
+    the synthetic gate at 0.9997.
+    """
     sel = pick_streaming_head(policy_path)
     logger.info(f"Selected streaming head: layer={sel.layer} head={sel.head} "
                 f"local_fraction={sel.local_fraction:.4f}")
-    Q_h, o_h, D = capture_attention_pairs(
-        model_id, sel.layer, sel.head, context_len)
+    if prompts is None:
+        prompts = DEFAULT_CALIBRATION_PROMPTS
+    if n_val_prompts >= len(prompts):
+        raise ValueError(
+            f"n_val_prompts ({n_val_prompts}) must be < len(prompts) "
+            f"({len(prompts)})."
+        )
+    Q_h, o_h, D = capture_attention_pairs_multi(
+        model_id, sel.layer, sel.head, context_len, prompts=prompts)
     logger.info(f"Captured {Q_h.shape} per-head queries + outputs "
                 f"(head_dim={D})")
-    # Train/val split (90/10)
-    L = Q_h.shape[1]
-    split = int(0.9 * L)
-    x_train, o_train = Q_h[:, :split, :], o_h[:, :split, :]
-    x_val, o_val = Q_h[:, split:, :], o_h[:, split:, :]
+
+    # Train on the first N - n_val prompts; val on the last n_val.
+    n_total = Q_h.shape[0]
+    split = n_total - n_val_prompts
+    x_train, o_train = Q_h[:split, :, :], o_h[:split, :, :]
+    x_val, o_val = Q_h[split:, :, :], o_h[split:, :, :]
+    logger.info(f"Train/val split: {x_train.shape[0]} prompts / "
+                f"{x_val.shape[0]} prompts")
 
     cfg = TTTLinearConfig(head_dim=D, eta=eta,
                           mini_batch_size=mini_batch_size,
-                          use_layer_norm=False)
+                          use_layer_norm=True)
     ttt = TTTLinear(cfg)
     out = train_ttt(ttt, x_train, o_train, x_val, o_val,
                     n_steps=n_steps, lr=lr)
@@ -423,6 +566,8 @@ def run_capture(model_id: str, policy_path: Path, context_len: int,
         "layer": sel.layer, "head": sel.head,
         "local_fraction": sel.local_fraction,
     }
+    out["n_train_prompts"] = int(x_train.shape[0])
+    out["n_val_prompts"] = int(x_val.shape[0])
     return out
 
 
@@ -448,6 +593,9 @@ def main():
                              "fp32 at long L; deployment uses small η + "
                              "mini-batch + LN for stability.")
     parser.add_argument("--mini-batch-size", type=int, default=64)
+    parser.add_argument("--n-val-prompts", type=int, default=2,
+                        help="Capture mode: how many prompts to hold out as "
+                             "val. Train uses the rest.")
     parser.add_argument("--output", type=Path, default=None,
                         help="Write JSON results to this path.")
     args = parser.parse_args()
@@ -466,6 +614,7 @@ def main():
             context_len=args.context_len,
             n_steps=args.n_steps, lr=args.lr,
             eta=args.eta, mini_batch_size=args.mini_batch_size,
+            n_val_prompts=args.n_val_prompts,
         )
 
     s = result["summary"]
