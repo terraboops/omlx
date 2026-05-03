@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-oMLX Hypercar — high-performance local LLM inference on Apple Silicon with compressed KV caches. Serves Qwen3-Coder-30B-A3B via OpenAI-compatible API with 1M token context window on 48GB.
+oMLX Hypercar — high-performance local LLM inference on Apple Silicon with compressed KV caches. Serves Qwen3.6-35B-A3B (Tier S2 hybrid SSM+attention) via OpenAI-compatible API; bench-validated to 512K context on 48 GB, 1M is the open Goal 1 frontier. Earlier Qwen3-Coder-30B-A3B path remains supported as a `--model` override.
 
 ## Hardware Target
 
@@ -327,7 +327,8 @@ Gate summary:
 
 ## Key Architecture
 
-- Model: Qwen3-Coder-30B-A3B-Instruct-8bit (17.2GB, 48 layers, MoE 3B active)
+- Default model: Qwen3.6-35B-A3B-4bit (19.5 GB, 40 layers hybrid 30 SSM + 10 full-attn, head_dim=256, MoE 3B active, native 262K)
+- Previous default (still supported via `--model`): Qwen3-Coder-30B-A3B-Instruct-8bit (17.2GB, 48 dense attention layers, MoE 3B active). All KV-mode tables and tuning notes below currently reflect Qwen3-Coder numbers; Qwen3.6 numbers are catalogued in `BENCHMARKS.md` and `research/qwen36_migration_ready.md`.
 - Server: omlx/hypercar_server.py (OpenAI-compat, prompt caching, tool parse safety)
 
 ### KV Cache Modes (`--kv-mode`)
@@ -376,10 +377,10 @@ python -m omlx.hypercar_server --kv-mode tq3 --fp16-layers 1 --port 8080
 # Long context (64K+, lower quality but fits more tokens)
 python -m omlx.hypercar_server --kv-mode native --port 8080
 
-# OpenCode connection
+# OpenCode connection (default Qwen3.6 — pin Qwen3-Coder via --model if needed)
 export OPENAI_API_BASE=http://localhost:8080/v1
 export OPENAI_API_KEY=hypercar
-opencode --model "hypercar/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+opencode --model "hypercar/mlx-community/Qwen3.6-35B-A3B-4bit"
 ```
 
 ### Sparse prefill (MInference, Task 351 path identified, opt-in)
