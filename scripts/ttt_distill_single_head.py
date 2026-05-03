@@ -36,6 +36,7 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as mxopt
+from mlx.utils import tree_flatten, tree_unflatten
 
 sys.path.insert(0, ".")
 from omlx.state_space import TTTLinear, TTTLinearConfig
@@ -118,11 +119,22 @@ def train_ttt(
     n_steps: int = 2000,
     lr: float = 1e-3,
     log_every: int = 200,
+    early_stop: bool = True,
 ) -> dict:
     """Adam-train a TTT-Linear block to regress ``o`` from ``x``.
 
-    Returns a dict with the train/val loss curves and the final cos-sim
-    summary (mean, p10, p50, p90 per-token).
+    Inputs ``x_train`` / ``o_train`` / ``x_val`` / ``o_val`` may be
+    multi-sequence batches: shape ``(N, L, D)`` where N=1 collapses to
+    the single-sequence case. The TTT forward already handles per-batch
+    state.
+
+    With ``early_stop=True`` (the default), tracks the best val cos-sim
+    across eval points and restores those parameters at the end of
+    training. Mitigates the single-sequence overfitting found in the
+    Phase 0 step 3 prototype (Phase 0 follow-up note).
+
+    Returns a dict with train/val loss curves, the final cos-sim summary
+    (computed from restored-best parameters), and the best-step pointer.
     """
     optimizer = mxopt.Adam(learning_rate=lr)
 
@@ -132,7 +144,11 @@ def train_ttt(
 
     loss_and_grad = nn.value_and_grad(ttt, loss_fn)
 
-    train_losses, val_losses = [], []
+    train_losses, val_losses, val_cos_curve = [], [], []
+    best_cos = -2.0
+    best_step = 0
+    best_params = None
+
     for step in range(n_steps):
         loss, grads = loss_and_grad(ttt, x_train, o_train)
         optimizer.update(ttt, grads)
@@ -142,18 +158,31 @@ def train_ttt(
             pred_v, _ = ttt(x_val)
             v_loss = mse_loss(pred_v, o_val).item()
             t_loss = loss.item()
-            train_losses.append((step, t_loss))
-            val_losses.append((step, v_loss))
             sims = cos_sim_per_token(pred_v, o_val)
             mean_cos = mx.mean(sims).item()
+            train_losses.append((step, t_loss))
+            val_losses.append((step, v_loss))
+            val_cos_curve.append((step, mean_cos))
+            marker = ""
+            if early_stop and mean_cos > best_cos:
+                best_cos = mean_cos
+                best_step = step
+                best_params = tree_flatten(ttt.parameters())
+                marker = "  ★ best"
             logger.info(
                 f"  step {step:>5d}  train_mse={t_loss:.4e}  "
-                f"val_mse={v_loss:.4e}  val_cos_mean={mean_cos:.4f}"
+                f"val_mse={v_loss:.4e}  val_cos_mean={mean_cos:.4f}{marker}"
             )
 
-    # Final eval
+    # Restore best params (if early_stop tracked any)
+    if early_stop and best_params is not None:
+        ttt.update(tree_unflatten(best_params))
+        logger.info(f"  Restored best params from step {best_step} "
+                    f"(val_cos_mean={best_cos:.4f})")
+
+    # Final eval (against restored-best params)
     pred_v, _ = ttt(x_val)
-    sims = cos_sim_per_token(pred_v, o_val)        # (B, L)
+    sims = cos_sim_per_token(pred_v, o_val)
     sims_flat = sims.reshape(-1)
     sims_np = sorted(sims_flat.tolist())
     n = len(sims_np)
@@ -166,11 +195,14 @@ def train_ttt(
         "max_cos": sims_np[-1],
         "final_train_mse": train_losses[-1][1],
         "final_val_mse": val_losses[-1][1],
+        "best_step": best_step,
+        "best_val_cos_mean": best_cos,
     }
     return {
         "summary": summary,
         "train_curve": train_losses,
         "val_curve": val_losses,
+        "val_cos_curve": val_cos_curve,
     }
 
 
@@ -198,6 +230,33 @@ def make_synthetic_pairs(
                           use_layer_norm=use_layer_norm)
     truth = TTTLinear(cfg)
     x = mx.random.normal((1, L, D))
+    o, _ = truth(x)
+    return x, o
+
+
+def make_synthetic_pairs_multi(
+    n_seqs: int, L: int = 1024, D: int = 128, eta_truth: float = 0.05,
+    truth_seed: int = 0, data_seed: int = 0,
+    mini_batch_size: int = 64, use_layer_norm: bool = True,
+) -> tuple[mx.array, mx.array]:
+    """Generate ``n_seqs`` independent sequences sharing one ground-truth
+    TTT-Linear. Returns ``(x, o)`` each shape ``(n_seqs, L, D)``.
+
+    Two seeds: ``truth_seed`` controls the ground-truth projections (held
+    fixed across train/val), ``data_seed`` controls the input distribution
+    (varied across train/val). This is the multi-sequence analog of
+    `make_synthetic_pairs`; methodology fix from the Phase 0 step 3
+    follow-up note.
+    """
+    # Ground truth fixed across all sequences
+    mx.random.seed(truth_seed)
+    cfg = TTTLinearConfig(head_dim=D, eta=eta_truth,
+                          mini_batch_size=mini_batch_size,
+                          use_layer_norm=use_layer_norm)
+    truth = TTTLinear(cfg)
+    # Then sample input sequences with the data seed
+    mx.random.seed(data_seed)
+    x = mx.random.normal((n_seqs, L, D))
     o, _ = truth(x)
     return x, o
 
@@ -309,17 +368,26 @@ def capture_attention_pairs(
 
 
 def run_synthetic(D: int, n_steps: int, lr: float, eta: float,
-                  mini_batch_size: int) -> dict:
-    """Synthetic recovery: positional split on one sequence (mirrors
-    capture mode) so train and val share the recurrence dynamics."""
-    logger.info(f"Synthetic mode: D={D} n_steps={n_steps} lr={lr} "
-                f"eta={eta} mini_batch_size={mini_batch_size}")
-    L_total = 1280
-    x_full, o_full = make_synthetic_pairs(
-        L=L_total, D=D, eta_truth=eta, mini_batch_size=mini_batch_size)
-    split = int(0.8 * L_total)
-    x_train, o_train = x_full[:, :split, :], o_full[:, :split, :]
-    x_val, o_val = x_full[:, split:, :], o_full[:, split:, :]
+                  mini_batch_size: int, n_train_seqs: int = 8,
+                  n_val_seqs: int = 4, L: int = 1024) -> dict:
+    """Synthetic recovery via multi-sequence training.
+
+    Generates ``n_train_seqs`` + ``n_val_seqs`` independent sequences
+    sharing one ground-truth TTT-Linear's projections. Trains the student
+    on the train sequences and evals on the val sequences (which share
+    the dynamics but are drawn from different inputs). This is the
+    Phase 0 step 3 follow-up methodology — single-sequence positional
+    split overfits at step ~200 (peak val cos-sim 0.69 → degrades).
+    """
+    logger.info(f"Synthetic mode (multi-sequence): D={D} L={L} "
+                f"n_train={n_train_seqs} n_val={n_val_seqs} n_steps={n_steps} "
+                f"lr={lr} eta={eta} mini_batch_size={mini_batch_size}")
+    x_train, o_train = make_synthetic_pairs_multi(
+        n_seqs=n_train_seqs, L=L, D=D, eta_truth=eta,
+        truth_seed=0, data_seed=42, mini_batch_size=mini_batch_size)
+    x_val, o_val = make_synthetic_pairs_multi(
+        n_seqs=n_val_seqs, L=L, D=D, eta_truth=eta,
+        truth_seed=0, data_seed=99, mini_batch_size=mini_batch_size)
 
     cfg = TTTLinearConfig(head_dim=D, eta=eta,
                           mini_batch_size=mini_batch_size,

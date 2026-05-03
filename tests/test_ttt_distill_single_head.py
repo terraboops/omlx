@@ -21,6 +21,7 @@ from scripts.ttt_distill_single_head import (
     HeadSelection,
     cos_sim_per_token,
     make_synthetic_pairs,
+    make_synthetic_pairs_multi,
     mse_loss,
     pick_streaming_head,
     run_synthetic,
@@ -162,31 +163,85 @@ def test_make_synthetic_pairs_distinct_seeds():
 
 
 def test_synthetic_training_recovers_ground_truth():
-    """The script's training loop must recover a TTT-Linear ground truth.
+    """Multi-sequence + early-stop must clear the 0.95 spike gate on the
+    synthetic-recovery EASY case (target exactly expressible as TTT-Linear).
 
-    If we generate (x, o) by forward-running a TRUE TTT-Linear with known
-    random projections, then training another TTT-Linear from random init
-    on (x, o) should drive cos-sim to a high value on held-out data — the
-    target IS exactly expressible as a TTT-Linear, so the only obstacle
-    is the optimizer landscape, not architectural mismatch.
+    With single-sequence training (the previous setup), the same harness
+    overfit at step ~200 to peak val cos-sim 0.69 → degraded. Multi-seq
+    averaging across N=8 sequences sharing one ground-truth gives the
+    optimizer enough signal to learn the dynamics rather than memorize
+    one sequence's specifics.
 
-    This is a very fast (~5s) convergence test; we don't aim for the full
-    0.95 spike gate (which would need more steps + tuning), but for a
-    clear improvement above the random-init baseline.
+    Compute budget is intentionally tight (~5s) — uses D=16, fewer steps
+    than the script's default — so this catches regressions in the loop
+    without slowing the suite.
     """
     result = run_synthetic(
         D=16, n_steps=400, lr=3e-3, eta=0.05, mini_batch_size=64,
+        n_train_seqs=4, n_val_seqs=2, L=512,
     )
     summary = result["summary"]
-    # After 400 Adam steps on a 1K-token synthetic, the held-out cos-sim
-    # mean must clearly clear random init (~0). 0.5 is a soft sanity gate.
-    assert summary["mean_cos"] > 0.5, (
-        f"training did not move cos-sim above 0.5 — optimizer "
-        f"landscape may be broken. summary={summary}"
+    assert summary["mean_cos"] > 0.95, (
+        f"synthetic recovery missed 0.95 gate at small budget: "
+        f"summary={summary}"
     )
-    # The val MSE must improve over the course of training.
-    val_curve = result["val_curve"]
-    first, last = val_curve[0][1], val_curve[-1][1]
-    assert last < first, (
-        f"val MSE did not decrease: first={first:.4e} last={last:.4e}"
+    # Best-step bookkeeping must be populated by early stopping.
+    assert summary["best_step"] >= 0
+    assert summary["best_val_cos_mean"] > 0.95
+
+
+def test_make_synthetic_pairs_multi_shapes():
+    x, o = make_synthetic_pairs_multi(n_seqs=4, L=32, D=8)
+    assert x.shape == (4, 32, 8)
+    assert o.shape == (4, 32, 8)
+
+
+def test_make_synthetic_pairs_multi_distinct_data_seeds():
+    """Same truth_seed + different data_seed → same dynamics, different
+    inputs. Sequences from data_seed=0 must differ from data_seed=1, and
+    both run through the same ground-truth dynamics produce structurally
+    related (but not identical) outputs."""
+    x0, o0 = make_synthetic_pairs_multi(
+        n_seqs=2, L=16, D=8, truth_seed=0, data_seed=0)
+    x1, o1 = make_synthetic_pairs_multi(
+        n_seqs=2, L=16, D=8, truth_seed=0, data_seed=1)
+    # Inputs should differ
+    assert mx.max(mx.abs(x0 - x1)).item() > 0.1
+    # Outputs differ too (different inputs → different dynamics trace)
+    assert mx.max(mx.abs(o0 - o1)).item() > 0.1
+
+
+def test_make_synthetic_pairs_multi_truth_seed_pins_dynamics():
+    """Same data_seed, different truth_seed → same inputs run through
+    different ground-truth projections, so outputs differ."""
+    x0, o0 = make_synthetic_pairs_multi(
+        n_seqs=2, L=16, D=8, truth_seed=0, data_seed=42)
+    x1, o1 = make_synthetic_pairs_multi(
+        n_seqs=2, L=16, D=8, truth_seed=99, data_seed=42)
+    # Inputs match
+    assert mx.max(mx.abs(x0 - x1)).item() < 1e-10
+    # Outputs differ (different projections)
+    assert mx.max(mx.abs(o0 - o1)).item() > 0.05
+
+
+def test_early_stop_restores_best_params():
+    """Early stopping is the load-bearing post-fix from the methodology
+    note. Verify the bookkeeping: best_step / best_val_cos_mean are in
+    the summary, and the params at end equal the best snapshot.
+
+    Sanity, not perf: we run a tiny 200-step training. The implementation
+    is correct iff the best_val_cos_mean in the summary equals the
+    eval-on-restored-params cos-sim (the script's `summary["mean_cos"]`
+    is computed AFTER restoration). They should match within tolerance.
+    """
+    result = run_synthetic(
+        D=8, n_steps=200, lr=3e-3, eta=0.05, mini_batch_size=64,
+        n_train_seqs=2, n_val_seqs=1, L=256,
+    )
+    s = result["summary"]
+    # After restoration, the post-restore eval cos-sim should equal the
+    # tracked best_val_cos_mean (within fp tolerance for re-eval noise).
+    assert abs(s["mean_cos"] - s["best_val_cos_mean"]) < 1e-3, (
+        f"early-stop bookkeeping mismatch: post-restore mean_cos="
+        f"{s['mean_cos']:.6f} vs best_val_cos_mean={s['best_val_cos_mean']:.6f}"
     )

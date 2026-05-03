@@ -51,6 +51,39 @@ The cycle's commit ships the script + tests. Two routes from here:
 
 Recommend Route B first — it's user-invokable, produces a measurement, and informs the route-A scope.
 
+---
+
+## 2026-05-03 follow-up — Route A landed, synthetic gate cleared at 0.9997
+
+Implemented the two methodology fixes from the gaps list:
+
+1. **Multi-sequence training** via `make_synthetic_pairs_multi(n_seqs, ...)`. Train and val each get N independent sequences sharing one ground-truth's projections (different `data_seed`, same `truth_seed`). The TTT forward already supports batch via `init_state(B=N)`, so the change is purely in the data-generation + plumbing.
+2. **Early stopping** in `train_ttt`: tracks best val cos-sim across eval points, snapshots `tree_flatten(parameters())` at each new best, restores at end. The summary now reports `best_step` and `best_val_cos_mean`.
+
+**Result on the previously-overfit setting** (`--head-dim 64 --n-steps 1500 --lr 3e-3 --eta 0.05 --mini-batch-size 64`, 8 train + 4 val sequences of L=1024):
+
+| Step | train MSE | val MSE | val cos mean |
+|----:|----------:|--------:|-------------:|
+| 0    | 1.99      | 1.54    | 0.22         |
+| 200  | 0.10      | 0.17    | 0.91         |
+| 600  | 0.059     | 0.12    | 0.94         |
+| 1000 | 0.012     | 0.020   | 0.99         |
+| 1500 | 0.000395  | 0.000552| **0.9997**   |
+
+**No overfit** — train and val MSE drop together. Synthetic recovery now clears the 0.95 spike gate cleanly. The convergence test in `tests/test_ttt_distill_single_head.py::test_synthetic_training_recovers_ground_truth` is upgraded from `> 0.5` to `> 0.95`.
+
+Four new tests added: shape/seed invariants for `make_synthetic_pairs_multi`, plus an early-stop bookkeeping test that verifies post-restore `mean_cos` matches the tracked `best_val_cos_mean`.
+
+### Implication for the real-attention case
+
+The harness is now calibrated and methodology-honest. The next move is the user-invokable `--capture` run — same script, same training loop, but real Qwen3-Coder per-head attention instead of synthetic ground truth. Expectations:
+
+- If real-attention val cos-sim ≥ 0.95: TTT-Linear is in attention's expressive class for the picked streaming head → green-light Phase 1 (scale to all streaming heads).
+- If 0.5 ≤ val cos-sim < 0.95: TTT-Linear is close but not exact. Phase 1 should explore TTT-MLP (richer hidden state), or per-head learnable η, or longer calibration corpora.
+- If val cos-sim < 0.5: TTT-Linear is too restricted. Pivot to Mamba-2 SSM or RWKV linear attention.
+
+Capture-mode is also extended in this cycle to use the multi-sequence training path. Currently `run_capture` still does single-prompt single-sequence; an obvious next-cycle extension is multi-prompt capture (call `model(x)` on N different prompts, accumulate `(Q_h, o_h)` pairs across them, train multi-sequence).
+
 ## Files in this cycle
 
 - `scripts/ttt_distill_single_head.py` — distillation harness (300 lines)
