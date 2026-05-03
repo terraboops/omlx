@@ -74,6 +74,11 @@ _SAFE_WITHOUT_MLX = {
     # docstring. Tests use importlib at runtime which is fine on Metal-
     # available hardware.
     "test_hypercar_server_spec_decode.py",
+    # Bench helper tests — lazily import omlx.bench.hypercar_bench inside
+    # test functions; the helpers themselves are pure Python (chat-template
+    # plumbing, EOS unification, hybrid memory projector). Tests were
+    # silently filtered out before the safelist entry.
+    "test_bench_helpers.py",
 }
 
 def _has_omlx_import(path: Path) -> bool:

@@ -258,3 +258,65 @@ def test_project_kv_mode_compresses_kv():
 
     assert proj_int4 < proj_fp16, (
         f"int4 ({proj_int4:.1f}) should be smaller than fp16 ({proj_fp16:.1f})")
+
+
+# ---------------------------------------------------------------------------
+# Task 388 Phase 3 validation: --ttt-router-policy + --ttt-router-blocks-dir
+# ---------------------------------------------------------------------------
+
+
+def test_bench_argparse_includes_ttt_router_flags():
+    """The bench CLI surface mirrors the server's TTT-router flags so
+    Phase 3 A/B validation runs through the gate runner: bench with
+    bit-equivalence first, then bench with TTT blocks loaded.
+
+    Source-level grep — the bench's argparse is constructed inside
+    main() rather than a separate build_parser, so a runtime parser
+    introspection isn't trivial. The grep is sufficient as a pin."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "omlx" / "bench" /
+           "hypercar_bench.py").read_text()
+    assert '"--ttt-router-policy"' in src, (
+        "bench main() must register --ttt-router-policy. Without it "
+        "the gate runner can't validate the Phase 2 router."
+    )
+    assert '"--ttt-router-blocks-dir"' in src, (
+        "bench main() must register --ttt-router-blocks-dir."
+    )
+
+
+def test_bench_invokes_apply_ttt_head_router_patch():
+    """The flag wiring must actually install the patch — verifying via
+    source grep that apply_ttt_head_router_patch is called when
+    --ttt-router-policy is set."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "omlx" / "bench" /
+           "hypercar_bench.py").read_text()
+    assert "apply_ttt_head_router_patch" in src, (
+        "bench main() must call apply_ttt_head_router_patch when the "
+        "TTT-router flags are set, otherwise the flags are no-ops."
+    )
+    assert "TTTHeadRouter.from_policy" in src or "TTTHeadRouter" in src, (
+        "bench main() must construct a TTTHeadRouter from the policy "
+        "JSON path."
+    )
+
+
+def test_bench_logs_bit_equivalence_mode_for_no_blocks():
+    """Phase 3 starts with --ttt-router-policy alone (no blocks). The
+    log line must clearly indicate bit-equivalence mode so the user can
+    distinguish "router installed, gates measure delta vs baseline"
+    from "router installed but doing nothing different than baseline"."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "omlx" / "bench" /
+           "hypercar_bench.py").read_text()
+    # Find the bench-side TTT block and verify it logs bit-equivalence.
+    # Looking near "TTT head router INSTALLED" for the no-blocks branch.
+    idx = src.find("TTT head router INSTALLED")
+    assert idx >= 0, "missing TTT-router install log line"
+    # The bit-equivalence variant should appear within ~500 chars after.
+    nearby = src[idx:idx + 500]
+    assert "bit-equivalence" in nearby.lower() or "bit-equivalent" in nearby.lower(), (
+        "bench must log 'bit-equivalence' in the no-blocks branch so "
+        "Phase 3 A/B validation can be interpreted."
+    )

@@ -2241,6 +2241,22 @@ Examples:
     parser.add_argument("--prefill-sparse", type=str, default=None,
                         choices=["minference"],
                         help="Sparse prefill: minference (per-head pattern dispatch)")
+    parser.add_argument("--ttt-router-policy", type=str, default=None,
+                        help="Path to a DuoAttention policy JSON. When set, "
+                             "installs a TTTHeadRouter SDPA monkey-patch "
+                             "(Task 388 Phase 3 validation). Without "
+                             "--ttt-router-blocks-dir the router runs in "
+                             "BIT-EQUIVALENCE mode (gates should still pass "
+                             "exactly). With the blocks dir, streaming-tagged "
+                             "heads with a loaded TTT block route through "
+                             "the recurrence — gates measure the impact.")
+    parser.add_argument("--ttt-router-blocks-dir", type=str, default=None,
+                        help="Path to a TTT-Linear blocks directory. Requires "
+                             "--ttt-router-policy. Phase 3 A/B pattern: "
+                             "(1) bench with --ttt-router-policy alone — "
+                             "confirms patch installs cleanly, gates unchanged. "
+                             "(2) bench with both flags — measures cos-sim / "
+                             "quality / speed delta vs baseline.")
     parser.add_argument("--warmup", action="store_true", default=True,
                         help="Run a warmup pass before Phase 0 to prime Metal kernel cache (default: on)")
     parser.add_argument("--no-warmup", action="store_false", dest="warmup",
@@ -2424,6 +2440,45 @@ Examples:
                 logger.info("MInference sparse prefill ENABLED")
             else:
                 logger.warning("MInference sparse prefill FAILED — dense fallback")
+
+        # Task 388 Phase 3 validation hook: install TTTHeadRouter as an
+        # SDPA monkey-patch when --ttt-router-policy is set. Mirrors the
+        # server-side wiring in hypercar_server.py.
+        if (args.ttt_router_blocks_dir is not None
+                and args.ttt_router_policy is None):
+            logger.error(
+                "--ttt-router-blocks-dir requires --ttt-router-policy. "
+                "The blocks dir alone has no head classification → "
+                "router cannot decide which heads to route."
+            )
+        elif args.ttt_router_policy is not None:
+            from pathlib import Path as _Path
+            from omlx.patches.ttt_head_router import (
+                TTTHeadRouter, apply_ttt_head_router_patch,
+            )
+            ttt_dir = (_Path(args.ttt_router_blocks_dir)
+                       if args.ttt_router_blocks_dir else None)
+            router = TTTHeadRouter.from_policy(
+                _Path(args.ttt_router_policy), ttt_dir=ttt_dir,
+            )
+            if apply_ttt_head_router_patch(router):
+                n_blocks = len(router.ttt_blocks)
+                if n_blocks == 0:
+                    logger.info(
+                        "TTT head router INSTALLED (bit-equivalence — "
+                        "gates should still pass exactly)"
+                    )
+                else:
+                    logger.info(
+                        f"TTT head router INSTALLED with {n_blocks} TTT "
+                        f"blocks across {router.n_layers} layers × "
+                        f"{router.n_heads} heads — gates measure delta"
+                    )
+            else:
+                logger.warning(
+                    "TTT head router install FAILED (already patched?) — "
+                    "falling back to original SDPA"
+                )
 
         if watchdog.breached.is_set():
             logger.error("MEMORY BREACH during model load — aborting")

@@ -475,6 +475,21 @@ incrementally (e.g., copy one (layer, head) safetensors into the dir),
 re-run, confirm degradation is bounded. The bit-equivalence path is
 pinned by tests in `tests/test_ttt_head_router.py`.
 
+The same flags work on `hypercar_bench`:
+
+```bash
+# A: bit-equivalence — gates should pass exactly the same as baseline
+.venv/bin/python -m omlx.bench.hypercar_bench --quick \
+    --ttt-router-policy omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json
+
+# B: with TTT blocks loaded — gates measure the routing impact
+.venv/bin/python -m omlx.bench.hypercar_bench --full \
+    --ttt-router-policy omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json \
+    --ttt-router-blocks-dir phase0_ttt/
+```
+
+Phase 3 close-out is "(B) gates within tolerance of (A)".
+
 ### Speculative decoding (Task 348 integration, opt-in)
 
 After Task 347 falsified all fusion-based Goal 3 levers, speculative
