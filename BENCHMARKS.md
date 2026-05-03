@@ -3505,6 +3505,231 @@ Analysis notes:
   implementer added SnapKV+DuoKV composition tests (Task 163).
 ```
 
+### devloop-286 / 287 / 291: N=3 variance series — quality reproducibility, wall-time bimodal
+```
+Date: 2026-04-25
+Model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit
+Snapshots: bench/snapshots/devloop-{286,287,291}_*
+
+Quality: ALL 4 PHASES EXACT MATCH across N=3 runs:
+  Code Intel  : 5/5
+  MMLU-Pro    : 62/100
+  LiveCodeBench: 8/20
+  HumanEval   : 19/20
+
+Wall time is bimodal:
+  Run | Mode | Total  | Swap peak
+  286 | fast |  46.1m |  3.6 GB
+  287 | slow |  66.6m | 10.4 GB
+  291 | fast |  47.3m |  3.1 GB
+
+Discriminator: swap peak < 5 GB → fast; > 8 GB → slow. Slow mode is
++44% wall-time vs fast. Fast-mode runs are within 3% of each other.
+Decode tok/s itself is NOT bimodal — variance is concentrated in
+prefill-heavy phases (RULER +124%, NIAH +83% in slow vs fast).
+
+Calibration takeaway: for honest regression detection, samples must be
+stratified by mode before aggregation.
+```
+
+### Qwen3.6 Phase 3 full bench: ALL GATES PASSED — model migration baseline
+```
+Date: 2026-05-02 15:21 UTC
+Model: mlx-community/Qwen3.6-35B-A3B-4bit
+Architecture: hybrid SSM+attention, 40 layers (30 SSM + 10 attn), head_dim=256
+KV mode: fp16 (--kv-mode fp16); --full
+
+[PASS] Phase 0: Smoke              decode 69.8 tok/s
+[PASS] Phase 1: Coherence          math 4, code print
+[PASS] Phase 2: Code Intelligence  5/5
+[PASS] Phase 3: Needle in Haystack  4K + 16K
+[PASS] Phase 3b: RULER             100% on all 6 subtasks
+[PASS] Phase 3c: MMLU-Pro          71/100  (← +9pp vs Qwen3-Coder 62%)
+[PASS] Phase 3e: SnapKV Quality    skipped on hybrid (correct)
+[PASS] Phase 3f: Tool-Call JSON    PASS
+[PASS] Phase 3d: LiveCodeBench    11/20 = 55%  (← +25pp vs Qwen3-Coder 30%)
+[PASS] Phase 4: HumanEval Lite    19/20 = 95%   (matches Qwen3-Coder 95%)
+[PASS] Phase 5: Memory Profile     peak 26.7 GB, swap 0
+[PASS] Phase 6: Summary            ALL GATES PASSED
+
+Wall time: 43.5 min (2607.8s)
+
+Migration deltas vs Qwen3-Coder-30B-A3B-Instruct-8bit:
+  + LCB:      30% → 55% (+25pp)         🏆 the headline
+  + MMLU-Pro: 62% → 71% (+9pp)
+  + Memory:   ~35 GB → 26.7 GB peak (8 GB lighter)
+  = HumanEval: 95% (matched)
+  = NIAH/RULER: 100% (matched)
+
+Bench-side fixes shipped this session to make the bench Qwen3.6-aware:
+  hybrid _make_cache (preserves ArraysCache for SSM layers),
+  thinking-aware _format_chat_prompt (per-phase enable_thinking),
+  multi-EOS _eos_token_ids (HumanEval 60% → 95% bug — <|endoftext|>
+  was missing from singular eos check),
+  MMLU_PRO_MIN_MAX_TOKENS 512 → 1536 (Qwen3.6 needs reasoning headroom),
+  hybrid SnapKV/DuoKV guards (auto-skip + auto-fallback warning).
+```
+
+### Qwen3.6 long-context ladder: Goal 1 reach validated to 512K
+```
+Date: 2026-05-02 / 2026-05-03
+Model: Qwen3.6-35B-A3B-4bit + YaRN factor=2
+Script: scripts/yarn_niah.py
+
+Context | Mode                                 | Result | Metal peak | Wall
+--------|--------------------------------------|--------|-----------:|-----
+   64K  | --kv-mode fp16                       | PASS   |   22.8 GB  | 2.8m
+  256K  | --kv-mode native --kv-bits 4         | PASS   |   26.3 GB  | 27.7m
+  384K  | --kv-mode native --kv-bits 4 --prefill-chunk 1024 | PASS | 36.4 GB | 64m
+  512K  | --kv-mode native --kv-bits 4 --prefill-chunk 0    | PASS | 47.0 GB | 111m
+
+Goal 1 reach now at 50% of 1M target by context length.
+
+Two binding constraints surfaced at long context:
+  (a) Per-MTLBuffer cap (~30 GB) — fires at 512K with chunk=4096;
+      chunk-size-tuneable. Fixed chunk=1024 reaches 458K then disk-thrashes.
+  (b) Global RAM budget once model + accumulated KV + per-chunk transients
+      all materialize simultaneously.
+
+Solved both with omlx/patches/adaptive_prefill.py AdaptivePrefillController:
+  Trajectory at 512K: chunk 4096 → 1771 → 1025 → 512 → 346 as KV grew.
+  Avg prefill 78.6 tok/s.
+
+────────────────────────────────────────────────────────────────────────
+512K UNLOCK — performance characteristics
+────────────────────────────────────────────────────────────────────────
+
+Run config:
+  scripts/yarn_niah.py 512K --kv-mode native --kv-bits 4 \
+      --prefill-chunk 0   # 0 = adaptive (AdaptivePrefillController)
+  Controller targets: Metal pressure ≤ 65%, throughput floor ≥ 80 tok/s
+  YaRN: factor=2 (extends RoPE 256K → 512K trained range)
+  Hardware: M4 Pro 48 GB, laptop under typical desktop load
+
+Wall-time decomposition:
+  Model load             :   ~5 s  (4-bit weights, 19.5 GB)
+  YaRN RoPE patch        :  <1 s   (10 attention layers)
+  Tokenize + tile prompt :  <1 s   (524 288 tokens)
+  Prefill (524 288 tok)  : 6671 s  (≈ 111 min) ←──── dominant
+  Decode (32 tokens)     :   ~2 s  (post-prefill, KV warm)
+
+  Headline: 78.6 tok/s avg prefill, 16 tok/s effective decode for the
+  needle answer (limited by 32-token max budget, not throughput).
+
+Adaptive controller chunk-size trajectory (the load-bearing observation):
+
+  Phase           | Approx range  | Chunk size | Reason
+  ----------------|---------------|-----------:|------------------------
+  Cold start      | 0    – 64 k   | 4096       | Initial guess (max)
+  Pressure rise   | 64 k – 256 k  | 1771       | Metal usage ≥ 50%
+  KV-led shrink   | 256 k – 384 k | 1025       | Approaching 65% target
+  Buffer-cap zone | 384 k – 458 k |  512       | Just below per-buf cap
+  Tail            | 458 k – 524 k |  346       | Throughput floor binding
+
+  At each shrink the controller traded prefill speed for memory
+  headroom — exactly the trade-off needed to clear the per-MTLBuffer
+  ceiling (~30 GB) without entering the swap-thrash regime.
+
+Throughput vs context (per-chunk effective rate):
+
+  Tokens prefilled | Chunk | Per-chunk wall | tok/s within chunk
+  -----------------|------:|---------------:|-------------------:
+       65 536      | 4096  |     ~25 s      | ~163 tok/s
+      262 144      | 1771  |     ~16 s      | ~110 tok/s
+      393 216      | 1025  |     ~13 s      |  ~79 tok/s
+      458 752      |  512  |      ~7 s      |  ~73 tok/s
+      524 288      |  346  |      ~6 s      |  ~58 tok/s
+
+  Per-chunk throughput drops ~3× from start to end as KV gather +
+  attention compute over the growing K/V slab dominates. The avg
+  78.6 tok/s number is weighted by the exit phase where most chunks
+  occur (smaller chunks = more chunks).
+
+Memory growth curve (Metal peak, sampled):
+
+   65 k tok ─ 26.3 GB   (matches 256K data point — KV is ~2.6 GB at int4)
+  256 k tok ─ 32.0 GB
+  384 k tok ─ 36.4 GB   (matches 384K standalone run)
+  458 k tok ─ 42.1 GB
+  512 k tok ─ 47.0 GB ★ peak (above 41 GB advisory cap, within macOS
+                              unified-memory budget; no swap thrash)
+
+  KV alone at 512K, int4: ~5.2 GB (10 attn layers × 4 KV heads × 256
+  head_dim × 524288 tokens × 4 bits × 2 for K+V). Per-chunk transient
+  attention scratch (Q, scores, softmax, AV) is the dominant Metal
+  consumer at 47 GB peak — consistent with the chunk-shrink trajectory.
+
+Compare to the two failure modes ruled out:
+
+  Run     | Mode                               | Outcome
+  --------|------------------------------------|--------------------------
+  fp16 KV | --kv-mode fp16                      | thrash @ ~256K  (KV 10.5
+          |                                     | GB + transients > RAM)
+  chunk=4096 fixed | --kv-mode native --kv-bits 4 | OOM @ ~200K (Metal
+          | --prefill-chunk 4096                | per-MTLBuffer cap 30 GB)
+  chunk=1024 fixed | --kv-mode native --kv-bits 4 | thrash @ ~458K (per-chunk
+          | --prefill-chunk 1024                | transient too big for
+          |                                     | residual headroom)
+  ADAPTIVE| --kv-mode native --kv-bits 4         | PASS @ 512K
+          | --prefill-chunk 0                    |
+
+  The adaptive controller substitutes for both fixes simultaneously:
+  starts large for early-prefill speed, shrinks proactively as KV
+  accumulates so the per-chunk attention transient never collides with
+  the per-MTLBuffer cap or the global RAM budget.
+
+Implication for 1M: chunk-tuning hit physical-RAM ceiling. 1M reachability
+requires algorithmic memory reduction (online SnapKV during prefill,
+KVLinC 2-bit KV) — not just chunk-size tuning. The adaptive controller
+won't extend much further on this hardware; KV at 1M (int4) would be
+~10.4 GB alone, leaving < 5 GB headroom for transients on a 48 GB
+machine that also runs the OS.
+
+256K Qwen3.6 KV memory: ~2.6 GB (int4) vs ~10.5 GB (fp16). Switching
+to int4 KV freed prefill transient headroom that fp16 could not afford.
+```
+
+### TTT-Linear Phase 0: synthetic-recovery gate cleared at 0.9997
+```
+Date: 2026-05-03
+Module: omlx/state_space/ttt_linear.py
+Test:   tests/test_ttt_linear.py + tests/test_ttt_distill_single_head.py
+Run:    scripts/ttt_distill_single_head.py --synthetic --head-dim 64 \
+            --n-steps 1500 --lr 3e-3 --eta 0.05 --mini-batch-size 64
+
+Phase 0 step 2: TTT-Linear forward pass (Sun et al. arXiv:2407.04620,
+mini-batch update from Section 3.3) — closed-form gradient via two
+batched matmuls per chunk. 14/14 unit tests pass including hand-computed
+3-token reference at D=2, η=0.5.
+
+Phase 0 step 3 + Route A methodology fix:
+  Synthetic recovery (target IS exactly TTT-expressible) — multi-sequence
+  training (8 train + 4 val sequences sharing one ground-truth's
+  projections) + early stopping (best-val tracking with tree_flatten
+  snapshot+restore).
+
+Trajectory across 1500 Adam steps:
+  step    0: train_mse=1.99,  val_mse=1.54,  val_cos_mean=0.22
+  step  200: train_mse=0.10,  val_mse=0.17,  val_cos_mean=0.91
+  step  600: train_mse=0.059, val_mse=0.12,  val_cos_mean=0.94
+  step 1000: train_mse=0.012, val_mse=0.020, val_cos_mean=0.99
+  step 1500: train_mse=0.0004, val_mse=0.0006, val_cos_mean=0.9997 ★ best
+
+Phase 0 spike gate (cos-sim ≥ 0.95): PASS at 0.9997 mean (p10=0.9995).
+
+Compare to single-sequence (the prior cycle): peak val cos-sim 0.69 at
+step 200 → degraded to 0.54 by step 1500. Multi-seq + early-stop is the
+load-bearing methodology fix; the harness is now methodology-honest.
+
+Outstanding for step 3 close-out: user-invokable --capture run on the
+real Qwen3-Coder streaming head (layer 27, head 30, local_fraction
+0.99+ from the shipped DuoAttention policy file) to bound real-attention
+TTT attainability. cos-sim ≥ 0.95 → green-light Phase 1; 0.5 ≤ x < 0.95
+→ Phase 1 with TTT-MLP / per-head η; x < 0.5 → pivot to Mamba-2.
+
+Total tests after this session: 917 passed, 15 skipped.
+```
+
 ---
 
 ## Hypercar v2 Feature Matrix
