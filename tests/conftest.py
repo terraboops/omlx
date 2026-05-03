@@ -27,6 +27,43 @@ _SAFE_WITHOUT_MLX = {
     "test_grammar_live.py",
     "test_latent_kv_cache.py",
     "test_oplora.py",
+    # Observability subpackage uses lazy MLX imports (only inside
+    # `mlx_timer` and heap-snapshot helpers), so these tests are safe
+    # to collect on environments without Metal. Without this exemption
+    # they were silently filtered out of the default pytest run, even
+    # though they passed when invoked individually.
+    "test_observability.py",
+    "test_observability_autodump.py",
+    "test_observability_tracer.py",
+    # test_registry_diff also uses the observability registry for its
+    # end-to-end tests; same lazy-MLX rationale as the observability
+    # tests above.
+    "test_registry_diff.py",
+    # test_eval imports from omlx.eval.livecodebench / .base / .humaneval
+    # which are pure-Python (no MLX). Was filtered out by default
+    # ("from omlx" → match), making 53 eval tests invisible in the
+    # default run. They actually pass; the filter was too aggressive
+    # (Task 370 finding).
+    "test_eval.py",
+    # test_model_constants imports from omlx.model_constants which is
+    # pure-Python (no MLX, just module-level string constants). Filter
+    # was hiding the Task 253 Phase 5 / Task 377 coverage from the
+    # default run.
+    "test_model_constants.py",
+    # test_sparse_kv_cache imports from omlx.sparse_kv_cache which uses
+    # lazy MLX import (only inside method bodies). Pure-Python tests
+    # of position-tracking logic don't need MLX; tests that DO need
+    # MLX are guarded with skipif at the test level. Task 384 Phase 1.
+    "test_sparse_kv_cache.py",
+    # Task 388 Phase 0/2: TTT-Linear forward pass + distillation harness +
+    # head-routing dispatcher. Each module imports MLX at top-level (this
+    # is on-purpose — the math is MLX-native), so on Metal-less environments
+    # they'd SIGABRT. On the M4 Pro reference machine they pass cleanly.
+    # Without these entries the conftest filter silently drops 25+ tests
+    # from the default run.
+    "test_ttt_linear.py",
+    "test_ttt_distill_single_head.py",
+    "test_ttt_head_router.py",
 }
 
 collect_ignore = []

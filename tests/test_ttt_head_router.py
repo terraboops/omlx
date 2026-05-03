@@ -1,0 +1,249 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Lock-in tests for ``omlx/patches/ttt_head_router.py`` (Task 388
+Phase 2 cycle 1).
+
+The load-bearing property pinned here is **bit-equivalence in
+passthrough mode**: if a router is constructed with no TTT blocks
+loaded, every routed SDPA call must produce the same output as
+the original SDPA.
+
+Tests in this file don't load any model — they exercise the router
+against synthetic Q/K/V tensors and a stub ``original_sdpa``.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+import mlx.core as mx
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from omlx.patches.ttt_head_router import TTTHeadRouter
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _stub_sdpa(queries, keys, values, cache, scale, mask, sinks=None):
+    """Minimal SDPA implementation for tests — returns a deterministic
+    transformation of inputs we can identity-check."""
+    # weights @ values, with simple causal-aware scoring.
+    scores = (queries @ keys.transpose(0, 1, 3, 2)) * scale
+    if mask is not None and isinstance(mask, mx.array):
+        scores = scores + mask
+    weights = mx.softmax(scores, axis=-1)
+    return weights @ values
+
+
+def _toy_policy_dict(n_layers=2, n_heads=4, streaming_layer=0,
+                     streaming_heads=(1, 3)):
+    heads = []
+    for L in range(n_layers):
+        for H in range(n_heads):
+            policy = ("streaming" if (L == streaming_layer and H in streaming_heads)
+                      else "retrieval")
+            heads.append({
+                "layer": L, "head": H, "policy": policy,
+                "local_fraction": 0.99 if policy == "streaming" else 0.5,
+                "window": 256, "sink": 4,
+            })
+    return {
+        "model": "test", "n_layers": n_layers, "n_heads": n_heads,
+        "n_kv_heads": n_heads, "context_len": 1024, "window": 256,
+        "sink": 4, "streaming_threshold": 0.85,
+        "streaming_fraction": len(streaming_heads) / (n_layers * n_heads),
+        "streaming_count": len(streaming_heads),
+        "retrieval_count": n_layers * n_heads - len(streaming_heads),
+        "heads": heads,
+    }
+
+
+def _make_q_k_v(B=1, H=4, L=8, D=16, seed=0):
+    mx.random.seed(seed)
+    q = mx.random.normal((B, H, L, D))
+    k = mx.random.normal((B, H, L, D))
+    v = mx.random.normal((B, H, L, D))
+    return q, k, v
+
+
+# ---------------------------------------------------------------------------
+# Construction + policy parsing
+# ---------------------------------------------------------------------------
+
+
+def test_router_construction_with_explicit_classification():
+    classification = {(0, 1): "streaming", (0, 3): "streaming"}
+    router = TTTHeadRouter(
+        n_layers=2, n_heads=4, head_classification=classification)
+    assert router.n_layers == 2
+    assert router.n_heads == 4
+    assert router.head_classification[(0, 1)] == "streaming"
+    assert router.layer_counter == 0
+    assert router.ttt_blocks == {}
+
+
+def test_router_from_policy(tmp_path):
+    policy = _toy_policy_dict()
+    p = tmp_path / "policy.json"
+    p.write_text(json.dumps(policy))
+    router = TTTHeadRouter.from_policy(p)
+    assert router.n_layers == 2
+    assert router.n_heads == 4
+    assert router.head_classification[(0, 1)] == "streaming"
+    assert router.head_classification[(0, 0)] == "retrieval"
+    assert router.head_classification[(1, 0)] == "retrieval"
+    assert router.ttt_blocks == {}    # default to bit-equivalence mode
+
+
+def test_router_from_policy_accepts_real_qwen3_coder_policy():
+    p = Path("omlx/patches/duoattention_policies/"
+             "qwen3_coder_30b_a3b_instruct_8bit.json")
+    if not p.exists():
+        pytest.skip("Qwen3-Coder policy file not present")
+    router = TTTHeadRouter.from_policy(p)
+    assert router.n_layers == 48
+    assert router.n_heads == 32
+    # Policy file has "streaming" entries — at least one must show up.
+    streaming = [k for k, v in router.head_classification.items()
+                 if v == "streaming"]
+    assert len(streaming) > 0
+    # And ttt_blocks must default to empty (bit-equivalence mode).
+    assert router.ttt_blocks == {}
+
+
+# ---------------------------------------------------------------------------
+# streaming_heads_with_ttt
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_heads_with_ttt_empty_when_no_blocks_loaded():
+    classification = {(0, 1): "streaming", (0, 3): "streaming"}
+    router = TTTHeadRouter(n_layers=2, n_heads=4,
+                           head_classification=classification)
+    # No TTT blocks → no head triggers TTT routing.
+    assert router.streaming_heads_with_ttt(layer_idx=0) == []
+    assert router.streaming_heads_with_ttt(layer_idx=1) == []
+
+
+def test_streaming_heads_with_ttt_filters_to_streaming_AND_loaded():
+    """Loaded TTT for a retrieval head must NOT trigger TTT routing —
+    that would silently change retrieval semantics."""
+    classification = {
+        (0, 0): "retrieval",   # retrieval head with TTT loaded → ignored
+        (0, 1): "streaming",   # streaming, has TTT     → routes to TTT
+        (0, 2): "streaming",   # streaming, no TTT      → falls through
+        (0, 3): "retrieval",
+    }
+    blocks = {(0, 0): "block_a", (0, 1): "block_b"}
+    router = TTTHeadRouter(n_layers=1, n_heads=4,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+    assert router.streaming_heads_with_ttt(0) == [1]
+
+
+# ---------------------------------------------------------------------------
+# route_sdpa: the bit-equivalence load-bearing property
+# ---------------------------------------------------------------------------
+
+
+def test_route_sdpa_bit_equivalence_with_no_ttt_blocks():
+    """Empty ttt_blocks → output bit-matches original SDPA on every call."""
+    classification = {(0, 1): "streaming", (0, 3): "streaming"}
+    router = TTTHeadRouter(n_layers=2, n_heads=4,
+                           head_classification=classification)
+    q, k, v = _make_q_k_v()
+    expected = _stub_sdpa(q, k, v, cache=None, scale=0.25, mask=None)
+    actual = router.route_sdpa(
+        q, k, v, cache=None, scale=0.25, mask=None,
+        original_sdpa=_stub_sdpa,
+    )
+    diff = mx.max(mx.abs(actual - expected)).item()
+    assert diff == 0.0, f"bit-equivalence broken at diff={diff}"
+
+
+def test_route_sdpa_bit_equivalence_when_streaming_classified_but_no_ttt():
+    """Streaming-classified heads with NO TTT block loaded → still
+    bit-equivalent. This is the Phase 3 starting point: install the
+    router with the policy file, but with zero TTT weights → no
+    behavior change."""
+    classification = {(0, 1): "streaming", (1, 2): "streaming"}
+    router = TTTHeadRouter(n_layers=2, n_heads=4,
+                           head_classification=classification)
+    q, k, v = _make_q_k_v(seed=7)
+    expected = _stub_sdpa(q, k, v, None, 0.5, None)
+    # Call twice (one per layer).
+    actual_l0 = router.route_sdpa(q, k, v, None, 0.5, None,
+                                  original_sdpa=_stub_sdpa)
+    actual_l1 = router.route_sdpa(q, k, v, None, 0.5, None,
+                                  original_sdpa=_stub_sdpa)
+    assert mx.max(mx.abs(actual_l0 - expected)).item() == 0.0
+    assert mx.max(mx.abs(actual_l1 - expected)).item() == 0.0
+
+
+def test_route_sdpa_increments_layer_counter():
+    router = TTTHeadRouter(n_layers=3, n_heads=2)
+    q, k, v = _make_q_k_v(H=2)
+    assert router.layer_counter == 0
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+    assert router.layer_counter == 1
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+    assert router.layer_counter == 2
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+    assert router.layer_counter == 3
+    # Doesn't auto-wrap; modulo is applied at dispatch time.
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+    assert router.layer_counter == 4
+
+
+def test_layer_counter_modulo_handles_wraparound():
+    """When more SDPA calls happen than n_layers, the modulo decides
+    which (layer, head) classifications apply. This pin guards against
+    a future regression where someone changes the dispatch path to use
+    raw layer_counter without the modulo."""
+    router = TTTHeadRouter(n_layers=2, n_heads=4,
+                           head_classification={(0, 1): "streaming"})
+    q, k, v = _make_q_k_v()
+    expected = _stub_sdpa(q, k, v, None, 1.0, None)
+    # 5 calls: layer indices 0, 1, 0, 1, 0 (mod 2).
+    for _ in range(5):
+        out = router.route_sdpa(q, k, v, None, 1.0, None,
+                                original_sdpa=_stub_sdpa)
+        assert mx.max(mx.abs(out - expected)).item() == 0.0
+    assert router.layer_counter == 5
+
+
+# ---------------------------------------------------------------------------
+# reset_state
+# ---------------------------------------------------------------------------
+
+
+def test_reset_state_clears_layer_counter_and_states():
+    router = TTTHeadRouter(n_layers=2, n_heads=4)
+    router.layer_counter = 7
+    router.ttt_states[(0, 1)] = "stale"
+    router.reset_state()
+    assert router.layer_counter == 0
+    assert router.ttt_states == {}
+
+
+# ---------------------------------------------------------------------------
+# TTT-routed path stub (cycle 2 deliverable)
+# ---------------------------------------------------------------------------
+
+
+def test_route_with_ttt_raises_until_cycle2():
+    """Loaded TTT block on a streaming head → router calls _route_with_ttt
+    which is a NotImplementedError stub until distillation produces
+    real weights. Pinning this contract so we notice when cycle 2 lands."""
+    classification = {(0, 1): "streaming"}
+    blocks = {(0, 1): "stub_ttt_block"}
+    router = TTTHeadRouter(n_layers=1, n_heads=4,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+    q, k, v = _make_q_k_v(H=4)
+    with pytest.raises(NotImplementedError, match="Cycle 1 ships only"):
+        router.route_sdpa(q, k, v, None, 1.0, None,
+                          original_sdpa=_stub_sdpa)
