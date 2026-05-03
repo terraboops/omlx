@@ -68,6 +68,12 @@ _SAFE_WITHOUT_MLX = {
     # Imports `from omlx.state_space.hybrid_layers` which is pure-Python
     # but lives under omlx.state_space which top-level imports MLX.
     "test_hybrid_layers.py",
+    # Spec-decode + Task 388 Phase 2 server-side wiring tests. Top-level
+    # imports are subprocess/inspect/pathlib only; the conftest's content
+    # filter false-positives on `from omlx.hypercar_server import` in a
+    # docstring. Tests use importlib at runtime which is fine on Metal-
+    # available hardware.
+    "test_hypercar_server_spec_decode.py",
 }
 
 collect_ignore = []

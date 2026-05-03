@@ -42,321 +42,24 @@ import sys
 
 import mlx.core as mx
 
+from omlx.model_constants import SERVER_DEFAULT_MODEL_ID
 
-def apply_progress_logging(log_every: int = 8, max_think_tokens: int = 4096) -> None:
-    """Monkey-patch mlx_lm.generate.stream_generate to add:
-      - Per-token progress logging (decode tok/s, memory)
-      - Think token cap (prevents runaway <think> blocks)
-    """
-    import time
-    import importlib
-    gen_mod = importlib.import_module("mlx_lm.generate")
-
-    original = gen_mod.stream_generate
-    _logger = logging.getLogger("hypercar.generate")
-
-    # Load spec-decode gate for advisory logging
-    try:
-        from omlx.specdec_gate import SpecDecGate, load_constants
-        _specdec_gate = SpecDecGate(load_constants())
-    except Exception:
-        _specdec_gate = None
-
-    def logged_stream_generate(model, tokenizer, prompt, **kwargs):
-        prompt_len = len(prompt) if hasattr(prompt, '__len__') else 0
-        t_start = time.perf_counter()
-        t_first_token = None
-        n_tokens = 0
-
-        # Spec-decode gate advisory (logged, not enforced — no spec-decode
-        # runtime exists yet; this prepares the integration point)
-        if _specdec_gate is not None and prompt_len > 0:
-            should, decision = _specdec_gate.should_speculate(prompt_len)
-            if should:
-                _logger.debug(
-                    f"spec-decode gate: YES at {prompt_len} tokens "
-                    f"({decision.projected_speedup:.2f}x projected)"
-                )
-
-        # Think token tracking
-        think_start_id = getattr(tokenizer, 'think_start_id', None)
-        think_end_id = getattr(tokenizer, 'think_end_id', None)
-        in_think = False
-        think_count = 0
-
-        _logger.info(f"🔵 Generation starting: {prompt_len} prompt tokens")
-
-        for result in original(model, tokenizer, prompt, **kwargs):
-            if t_first_token is None:
-                t_first_token = time.perf_counter()
-                ttft = t_first_token - t_start
-                prefill_toks = prompt_len / ttft if ttft > 0 else 0
-                _logger.info(
-                    f"🟢 First token @ {ttft:.2f}s (prefill: {prefill_toks:.0f} tok/s)"
-                )
-
-            n_tokens += 1
-
-            # Think token cap
-            token_id = getattr(result, 'token', None)
-            if token_id is not None:
-                tid = token_id if isinstance(token_id, int) else int(token_id)
-                if tid == think_start_id:
-                    in_think = True
-                    think_count = 0
-                elif tid == think_end_id:
-                    in_think = False
-                    think_count = 0
-
-                if in_think:
-                    think_count += 1
-                    if think_count == max_think_tokens:
-                        _logger.info(f"🧠 Think cap hit ({max_think_tokens} tokens)")
-
-            if n_tokens % log_every == 0:
-                elapsed_decode = time.perf_counter() - t_first_token
-                decode_toks = n_tokens / elapsed_decode if elapsed_decode > 0 else 0
-                total_elapsed = time.perf_counter() - t_start
-                think_status = f" [thinking: {think_count}]" if in_think else ""
-                _logger.info(
-                    f"⚡ gen={n_tokens:>4d} | "
-                    f"decode={decode_toks:>5.1f} tok/s | "
-                    f"total={total_elapsed:>5.1f}s | "
-                    f"mem={mx.get_active_memory()/1e9:.1f}GB{think_status}"
-                )
-
-            yield result
-
-        # Final stats
-        total_time = time.perf_counter() - t_start
-        if t_first_token and n_tokens > 0:
-            decode_time = time.perf_counter() - t_first_token
-            final_toks = n_tokens / decode_time if decode_time > 0 else 0
-            _logger.info(
-                f"🏁 DONE: {n_tokens} tokens in {total_time:.1f}s "
-                f"({final_toks:.1f} tok/s decode)"
-            )
-
-    gen_mod.stream_generate = logged_stream_generate
-    # Also patch the imported reference in server
-    try:
-        import mlx_lm.server as server_mod
-        server_mod.stream_generate = logged_stream_generate
-    except ImportError:
-        pass
-
-
-def apply_hypercar_patches(fp16_layers: int = 0, bits: int = 3,
-                           group_size: int = 64, kv_mode: str = "native",
-                           dequant_chunk_size: int = 2048,
-                           min_quant_tokens: int = 512,
-                           quest_topk: int = 0,
-                           quantize_retrieval: bool = False) -> None:
-    """Apply all hypercar optimizations to mlx_lm runtime.
-
-    kv_mode controls the KV cache strategy:
-      "native" — MLX QuantizedKVCache (affine per-group, fast, proven)
-      "tq3"    — TurboQuant WHT codec (codebook, supports save/load/rewind/fork)
-      "fp16"   — No quantization (baseline, limited context)
-
-    Must be called BEFORE mlx_lm.server is imported/invoked.
-    """
-    from omlx.patches.prefill_last_logit import apply_prefill_last_logit_patch
-    from omlx.patches.vertical_eval import apply_vertical_eval_patch
-
-    # 1. Apply SDPA patch for TQ3 mode (routes attention through TQ codec)
-    if kv_mode == "tq3":
-        from omlx.patches.turboquant_attention import apply_turboquant_attention_patch
-        apply_turboquant_attention_patch()
-
-    # 1b. Split-SDPA for duo-quantize: per-layer compute_attention
-    if kv_mode == "duo" and quantize_retrieval:
-        import mlx_lm.models.base as base_mod
-        _orig_sdpa = base_mod.scaled_dot_product_attention
-
-        def _duo_split_sdpa(queries, keys, values, cache, scale, mask, sinks=None):
-            if hasattr(cache, 'compute_attention') and cache._quantize_retrieval:
-                return cache.compute_attention(queries, keys, values, scale, mask)
-            return _orig_sdpa(queries, keys, values, cache, scale, mask, sinks=sinks)
-
-        base_mod.scaled_dot_product_attention = _duo_split_sdpa
-        try:
-            import mlx_lm.models.qwen3_moe as qwen_mod
-            qwen_mod.scaled_dot_product_attention = _duo_split_sdpa
-        except (ImportError, AttributeError):
-            pass
-
-    # 2. Monkey-patch make_prompt_cache based on kv_mode
-    import mlx_lm.models.cache as cache_mod
-    from mlx_lm.models.cache import KVCache, QuantizedKVCache
-
-    def hypercar_make_prompt_cache(model, max_kv_size=None):
-        if hasattr(model, "make_cache"):
-            caches = model.make_cache()
-        else:
-            num_layers = len(model.layers)
-            caches = [KVCache() for _ in range(num_layers)]
-
-        if kv_mode == "fp16":
-            return caches
-
-        if kv_mode == "duo":
-            from omlx.duo_kv_cache import DuoKVCache, load_duo_policy
-            policy = load_duo_policy()
-            num_layers = len(caches)
-            return [DuoKVCache(policy, layer_idx=i, bits=bits,
-                              quantize_retrieval=quantize_retrieval)
-                    for i in range(num_layers)]
-
-        result = []
-        for i, c in enumerate(caches):
-            if i < fp16_layers:
-                result.append(c)
-            elif isinstance(c, KVCache):
-                if kv_mode == "tq3":
-                    from omlx.turboquant_kv import TurboQuantKVCache
-                    result.append(TurboQuantKVCache(
-                        bits=bits,
-                        dequant_chunk_size=dequant_chunk_size,
-                        min_quant_tokens=min_quant_tokens,
-                        quest_topk=quest_topk,
-                    ))
-                else:  # native
-                    result.append(QuantizedKVCache(group_size=group_size, bits=bits))
-            else:
-                result.append(c)
-        return result
-
-    cache_mod.make_prompt_cache = hypercar_make_prompt_cache
-
-    import mlx_lm.utils as utils_mod
-    if hasattr(utils_mod, "make_prompt_cache"):
-        utils_mod.make_prompt_cache = hypercar_make_prompt_cache
-
-    # 3. Hook model loading to apply per-model patches
-    import mlx_lm.utils as mlx_utils
-    original_load = mlx_utils.load
-
-    def hypercar_load(*args, **kwargs):
-        model, tokenizer = original_load(*args, **kwargs)
-        try:
-            apply_prefill_last_logit_patch(model)
-            if kv_mode == "tq3":
-                apply_vertical_eval_patch(model)
-                logging.info("TQ3 mode: vertical_eval ENABLED")
-            elif kv_mode == "native":
-                logging.info("Native mode: vertical_eval disabled (not needed)")
-        except Exception as e:
-            logging.warning(f"Some hypercar patches failed: {e}")
-
-        # Warmup: prime Metal kernel cache to eliminate first-request JIT penalty
-        # (Task 20/25: Metal JIT cold-start adds ~9s to first forward pass)
-        try:
-            import time as _time
-            from mlx_lm.models.cache import KVCache
-            _t0 = _time.perf_counter()
-            _warmup_cache = [KVCache() for _ in range(len(model.layers))]
-            _warmup_tokens = tokenizer.encode("Hello")
-            _x = mx.array([_warmup_tokens])
-            _logits = model(_x, cache=_warmup_cache)
-            mx.eval(_logits)
-            # Generate a few tokens to prime decode kernels too
-            for _ in range(4):
-                _tok = mx.argmax(_logits[:, -1, :], axis=-1)
-                mx.eval(_tok)
-                _x = _tok.reshape(1, 1)
-                _logits = model(_x, cache=_warmup_cache)
-                mx.eval(_logits)
-            del _warmup_cache, _logits, _x
-            import gc; gc.collect(); mx.clear_cache()
-            logging.info(f"Metal kernel warmup done in {_time.perf_counter() - _t0:.1f}s")
-        except Exception as e:
-            logging.warning(f"Warmup failed (non-fatal): {e}")
-
-        return model, tokenizer
-
-    mlx_utils.load = hypercar_load
-    # Also update mlx_lm.server's load reference if already imported
-    try:
-        import mlx_lm.server as server_mod
-        if hasattr(server_mod, "load"):
-            server_mod.load = hypercar_load
-    except ImportError:
-        pass
+# Task 355 Cycle 1: extracted apply_progress_logging + validate_drafter_for_request
+# into omlx/server/progress_logging.py. Re-export here for backward compat
+# (existing call sites import these names from omlx.hypercar_server).
+from omlx.server.progress_logging import (  # noqa: E402,F401
+    apply_progress_logging,
+    validate_drafter_for_request,
+)
+# Task 355 Cycle 2: extracted apply_hypercar_patches into omlx/server/patches.py.
+# Re-export here for backward compat.
+from omlx.server.patches import apply_hypercar_patches  # noqa: E402,F401
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Hypercar MLX server (OpenAI-compatible, TQ3 KV)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("--model",
-                        default="mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
-                        help="Model to serve (HF ID or local path)")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--fp16-layers", type=int, default=1,
-                        help="Number of fp16 layers (rest use TQ3). Default 1.")
-    parser.add_argument("--kv-mode", choices=["native", "tq3", "fp16", "duo"], default="duo",
-                        help="KV cache: duo (DuoAttention, best quality+speed), native (MLX affine), tq3 (WHT codebook), fp16 (no quant)")
-    parser.add_argument("--duo-quantize", action="store_true", default=False,
-                        help="DuoKV: use QuantizedKVCache(3-bit) for retrieval heads (saves ~8x memory, enables 1M context)")
-    parser.add_argument("--bits", type=int, default=3,
-                        help="KV quantization bits (default 3)")
-    parser.add_argument("--kv-group-size", type=int, default=64,
-                        help="Group size for native mode (default 64)")
-    parser.add_argument("--dequant-chunk", type=int, default=2048,
-                        help="Dequant chunk size for TQ3 streaming")
-    parser.add_argument("--min-quant-tokens", type=int, default=512,
-                        help="TQ3: stay fp16 below this threshold per layer")
-    parser.add_argument("--quest-topk", type=int, default=0,
-                        help="Quest page selection: attend to top-K pages during decode (0=off)")
-    parser.add_argument("--snapkv-keep", type=int, default=0,
-                        help="SnapKV eviction: keep top-K tokens after prefill (0=off). "
-                             "Activates for prompts >= 2*K tokens. Uses real Q capture.")
-    parser.add_argument("--caote", action="store_true", default=False,
-                        help="Use CAOTE scoring (attention × value distinctiveness) for "
-                             "SnapKV eviction. Requires --snapkv-keep > 0.")
-    parser.add_argument("--segmented-evict", type=int, default=0,
-                        help="BUZZ segmented eviction: per-segment top-K with this segment "
-                             "size (0=off, global top-K). Requires --snapkv-keep > 0.")
-    parser.add_argument("--freshness-evict", action="store_true", default=False,
-                        help="Freshness-aware eviction: penalize superseded tokens via "
-                             "cosine similarity conflict detection. Requires --snapkv-keep > 0.")
-    parser.add_argument("--pyramid-kv", action="store_true", default=False,
-                        help="PyramidKV per-layer budgets: allocate more KV to edge layers, "
-                             "less to redundant middle layers. Requires --snapkv-keep > 0.")
-    parser.add_argument("--submodular-evict", action="store_true", default=False,
-                        help="Submodular greedy selection with diversity penalty instead of "
-                             "independent top-K. Reduces redundancy in kept tokens.")
-    parser.add_argument("--fair-evict", action="store_true", default=False,
-                        help="Fair eviction: proportional budget per instruction partition. "
-                             "Prevents system prompt eviction. Requires --snapkv-keep > 0.")
-    parser.add_argument("--streaming-aggressive", action="store_true", default=False,
-                        help="Rebalance eviction budget: 2x weight for retrieval heads, "
-                             "0.5x for streaming heads. Requires --snapkv-keep > 0.")
-    parser.add_argument("--grammar", action="store_true", default=False,
-                        help="Enable XGrammar constrained decoding for tool calls and "
-                             "JSON schema response_format. Guarantees valid JSON output.")
-    parser.add_argument("--prefill-sparse", type=str, default=None,
-                        choices=["minference"],
-                        help="Sparse prefill strategy: minference (per-head pattern dispatch)")
-    parser.add_argument("--prefill-step-size", type=int, default=8192,
-                        help="Tokens per prefill chunk (default 8192, was 2048 for TQ3)")
-    parser.add_argument("--adaptive-chunk", action="store_true", default=False,
-                        help="Adaptive prefill chunking: auto-adjusts chunk size based on "
-                             "Metal memory pressure and throughput. Overrides --prefill-step-size.")
-    parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--temp", type=float, default=0.7)
-    parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--prompt-cache-size", type=int, default=8,
-                        help="LRU prompt cache entries")
-    parser.add_argument("--prompt-cache-bytes", type=int, default=20_000_000_000,
-                        help="Max bytes across all cached prompts")
-    parser.add_argument("--allowed-origins", default="*")
-    parser.add_argument("--log-level", default="INFO")
-
+    # Task 355 Cycle 3: argparse declarations extracted to omlx/server/cli_args.py.
+    from omlx.server.cli_args import build_parser
+    parser = build_parser(epilog=__doc__)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -409,13 +112,56 @@ def main():
         quest_topk=args.quest_topk,
         quantize_retrieval=args.duo_quantize,
     )
-    # Apply MInference sparse prefill if requested
+    # Apply MInference sparse prefill if requested. Pass model_id so the
+    # patch loads the right per-model pattern table (D2 / D3 fixes).
     if args.prefill_sparse == "minference":
         from omlx.patches.minference_prefill import apply_minference_prefill_patch
-        if apply_minference_prefill_patch():
+        if apply_minference_prefill_patch(model_id=args.model):
             logger.info("MInference sparse prefill ENABLED")
         else:
             logger.warning("MInference sparse prefill FAILED — falling back to dense")
+
+    # Apply TTT head-routing dispatcher if requested (Task 388 Phase 2).
+    # --ttt-router-policy alone → bit-equivalence mode (no behavior change),
+    # useful for confirming the patch installs cleanly before adding blocks.
+    # --ttt-router-policy + --ttt-router-blocks-dir → routes streaming heads
+    # with a loaded TTT block through the recurrence; retrieval heads keep
+    # softmax attention.
+    if args.ttt_router_blocks_dir is not None and args.ttt_router_policy is None:
+        logger.error(
+            "--ttt-router-blocks-dir requires --ttt-router-policy. "
+            "The blocks dir alone has no head classification → "
+            "router cannot decide which heads to route."
+        )
+    elif args.ttt_router_policy is not None:
+        from pathlib import Path
+        from omlx.patches.ttt_head_router import (
+            TTTHeadRouter, apply_ttt_head_router_patch,
+        )
+        ttt_dir = (Path(args.ttt_router_blocks_dir)
+                   if args.ttt_router_blocks_dir else None)
+        router = TTTHeadRouter.from_policy(
+            Path(args.ttt_router_policy), ttt_dir=ttt_dir,
+        )
+        if apply_ttt_head_router_patch(router):
+            n_blocks = len(router.ttt_blocks)
+            if n_blocks == 0:
+                logger.info(
+                    "TTT head router INSTALLED in bit-equivalence mode "
+                    "(policy loaded; no TTT blocks → all heads route to "
+                    "original SDPA, output bit-identical to baseline)"
+                )
+            else:
+                logger.info(
+                    f"TTT head router INSTALLED with {n_blocks} TTT blocks "
+                    f"loaded across {router.n_layers} layers × "
+                    f"{router.n_heads} heads"
+                )
+        else:
+            logger.warning(
+                "TTT head router install FAILED (already patched?) — "
+                "falling back to original SDPA"
+            )
 
     # Apply adaptive prefill if requested (must be BEFORE SnapKV — both wrap generate_step,
     # adaptive prefill is the outer wrapper that handles prefill, SnapKV is inner for eviction)
@@ -458,8 +204,39 @@ def main():
         except ImportError as e:
             logger.warning(f"XGrammar not available: {e}. Install with: uv pip install xgrammar")
 
-    apply_progress_logging(log_every=8)
+    # Load speculative-decoding drafter if --draft-model is set (Task 341).
+    # Loaded BEFORE the main model so a load failure surfaces early; main
+    # model load happens later via the patched mlx_utils.load.
+    drafter_model = None
+    if args.draft_model:
+        try:
+            from mlx_lm import load as _mlx_load
+            logger.info(f"Loading drafter for speculative decoding: {args.draft_model}")
+            drafter_model, drafter_tokenizer = _mlx_load(args.draft_model)
+            logger.info(
+                f"Drafter loaded (vocab_size={len(drafter_tokenizer)}, "
+                f"num_draft_tokens={args.num_draft_tokens})"
+            )
+            logger.info(
+                "  Tokenizer-identity vs main model is checked per-request; "
+                "mismatch disables drafter with a warning."
+            )
+        except Exception as e:
+            logger.error(f"Failed to load drafter {args.draft_model!r}: {e}")
+            logger.error("Continuing WITHOUT speculative decoding.")
+            drafter_model = None
+
+    apply_progress_logging(
+        log_every=8,
+        draft_model=drafter_model,
+        num_draft_tokens=args.num_draft_tokens,
+    )
     logger.info("Progress logging enabled (every 8 generated tokens)")
+    if drafter_model is not None:
+        logger.info(
+            f"Speculative decoding ENABLED: drafter={args.draft_model}, "
+            f"num_draft_tokens={args.num_draft_tokens}"
+        )
 
     # Fix Qwen3-Coder tool parser: ast.literal_eval crashes on malformed
     # JSON that the model sometimes generates for complex tool parameters

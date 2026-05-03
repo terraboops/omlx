@@ -440,6 +440,41 @@ because it directly attacks the dominant cost. Unlike Goal 3 (where
 all architectural levers were falsified), Goal 4 has this lever
 already implemented and predicted to close the gap.
 
+### TTT-Linear head routing (Task 388 Phase 2, opt-in)
+
+Per-(layer, head) attention dispatcher. Streaming-tagged heads with a
+loaded TTT-Linear block route through an O(D²)-per-token recurrence
+(replaces softmax attention's O(N·D) cost for those heads); retrieval-
+tagged heads keep softmax. The structural Goal 4 lever — see Task 388.
+
+Two modes:
+
+```bash
+# Bit-equivalence mode (no behavior change). Use this to confirm the
+# patch installs cleanly before turning on TTT blocks.
+python -m omlx.hypercar_server \
+    --ttt-router-policy omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json \
+    --port 8080
+
+# Active mode: routes streaming heads with loaded TTT blocks.
+# The blocks dir is produced by:
+#   python scripts/ttt_distill_single_head.py --capture --save-block-dir phase0_ttt/
+python -m omlx.hypercar_server \
+    --ttt-router-policy omlx/patches/duoattention_policies/qwen3_coder_30b_a3b_instruct_8bit.json \
+    --ttt-router-blocks-dir phase0_ttt/ \
+    --port 8080
+```
+
+Server logs will print one of:
+- `TTT head router INSTALLED in bit-equivalence mode` (no blocks loaded)
+- `TTT head router INSTALLED with N TTT blocks loaded across L layers × H heads`
+
+Phase 3 validation pattern: install in bit-equivalence first, run a
+golden-output bench → confirm output unchanged. Then enable blocks
+incrementally (e.g., copy one (layer, head) safetensors into the dir),
+re-run, confirm degradation is bounded. The bit-equivalence path is
+pinned by tests in `tests/test_ttt_head_router.py`.
+
 ### Speculative decoding (Task 348 integration, opt-in)
 
 After Task 347 falsified all fusion-based Goal 3 levers, speculative
