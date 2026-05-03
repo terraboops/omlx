@@ -430,7 +430,18 @@ class AttentionCapture:
 
             scores = (queries @ keys_exp.transpose(0, 1, 3, 2)) * scale
 
-            if mask is not None:
+            # mlx_lm passes mask as either an mx.array, the literal string
+            # "causal" (used during prefill when no explicit mask is built),
+            # or None. The string case needs an actual causal mask synthesized
+            # at the current shape.
+            if isinstance(mask, str) and mask == "causal":
+                # Build standard causal mask (q_seq, k_seq) — last L_q rows.
+                offset = L_kv - L_q
+                rows = mx.arange(L_q)[:, None] + offset
+                cols = mx.arange(L_kv)[None, :]
+                causal_mask = mx.where(cols <= rows, 0.0, -3.4e4).astype(scores.dtype)
+                scores = scores + causal_mask
+            elif mask is not None:
                 scores = scores + mask
 
             weights = mx.softmax(scores, axis=-1)
@@ -447,8 +458,28 @@ class AttentionCapture:
             out = weights @ values_exp
             return out
 
-        # Temporarily patch SDPA
+        # Temporarily patch SDPA. We have to walk every already-imported
+        # mlx_lm/mlx_vlm model module too — when a model file does
+        # `from .base import scaled_dot_product_attention`, the symbol is
+        # captured by reference at import time, so rebinding the attribute
+        # on the base module alone has no effect on already-imported callers
+        # (Qwen3.6's qwen3_next.py is one such caller). The runtime patch in
+        # `omlx/patches/minference_prefill.py` already does this; this is
+        # the calibration-time mirror of it.
+        import sys as _sys
         mlx_base.scaled_dot_product_attention = capturing_sdpa
+        _patched_modules = []
+        for mod_name, mod in list(_sys.modules.items()):
+            if mod is None:
+                continue
+            if not (mod_name.startswith("mlx_lm.models.")
+                    or mod_name.startswith("mlx_vlm.models.")):
+                continue
+            if hasattr(mod, "scaled_dot_product_attention"):
+                func = getattr(mod, "scaled_dot_product_attention")
+                if func is original_sdpa:
+                    setattr(mod, "scaled_dot_product_attention", capturing_sdpa)
+                    _patched_modules.append((mod, func))
 
         try:
             tokens = tokenizer.encode(prompt)[:max_seq_len]
@@ -460,8 +491,10 @@ class AttentionCapture:
 
             logger.info(f"Captured attention maps for {len(self.attention_maps)} (layer, head) pairs")
         finally:
-            # Restore original SDPA
+            # Restore original SDPA on every module we patched
             mlx_base.scaled_dot_product_attention = original_sdpa
+            for mod, func in _patched_modules:
+                setattr(mod, "scaled_dot_product_attention", func)
 
 
 # ---------------------------------------------------------------------------
@@ -490,29 +523,70 @@ def calibrate(
     logger.info(f"Loading model: {model_path}")
     model, tokenizer = load(model_path)
 
-    # Get model config
-    num_layers = len(model.layers)
-    # Detect num_attention_heads from first layer
-    first_layer = model.layers[0]
-    if hasattr(first_layer, 'self_attn'):
-        attn = first_layer.self_attn
-        if hasattr(attn, 'n_heads'):
-            num_heads = attn.n_heads
-        elif hasattr(attn, 'num_heads'):
-            num_heads = attn.num_heads
-        else:
-            # Infer from weight shapes
-            q_proj = attn.q_proj
-            if hasattr(q_proj, 'weight'):
-                num_heads = q_proj.weight.shape[0] // (q_proj.weight.shape[1] // (q_proj.weight.shape[0] // q_proj.weight.shape[1]))
-            else:
-                num_heads = 32  # Default for Qwen3-30B
-            logger.warning(f"Could not detect num_heads, defaulting to {num_heads}")
-    else:
-        num_heads = 32
-        logger.warning(f"No self_attn found, defaulting to {num_heads} heads")
+    # Walk attention layers explicitly — on hybrid models like Qwen3.6 only
+    # ~25% of `model.layers` are full-attention; the rest are SSM/linear and
+    # never call SDPA. The runtime patch in `omlx/patches/minference_prefill.py`
+    # increments `_LAYER_COUNTER` once per SDPA call, so the pattern table's
+    # ``num_layers`` must match the count of attention layers, not the total
+    # model depth.
+    attn_layer_indices = []
+    first_attn = None
+    for i, layer in enumerate(model.layers):
+        attn = getattr(layer, 'self_attn', None)
+        if attn is None:
+            continue
+        attn_layer_indices.append(i)
+        if first_attn is None:
+            first_attn = attn
 
-    logger.info(f"Model: {num_layers} layers, {num_heads} heads")
+    if first_attn is None:
+        raise RuntimeError(
+            f"No attention layers found in {model_path}. Pure-SSM models "
+            "have nothing for MInference to calibrate; this script is "
+            "attention-specific."
+        )
+
+    n_attn_layers = len(attn_layer_indices)
+    n_total_layers = len(model.layers)
+
+    # Multi-name attribute resolver for n_heads — Qwen3-Coder uses
+    # ``n_heads``; Qwen3NextAttention (Qwen3.6) uses ``num_attention_heads``.
+    def _attr(obj, *names, default=None):
+        for n in names:
+            v = getattr(obj, n, None)
+            if v is not None:
+                return v
+        return default
+
+    num_heads = _attr(
+        first_attn, 'n_heads', 'num_attention_heads', 'num_heads',
+        default=None,
+    )
+    if num_heads is None:
+        # Last-resort weight-shape probe
+        q_proj = getattr(first_attn, 'q_proj', None)
+        if q_proj is not None and hasattr(q_proj, 'weight'):
+            # q_proj.weight: (num_heads * head_dim, hidden_size)
+            head_dim = _attr(first_attn, 'head_dim', default=None)
+            if head_dim is not None:
+                num_heads = q_proj.weight.shape[0] // head_dim
+        if num_heads is None:
+            num_heads = 32
+            logger.warning(f"Could not detect num_heads, defaulting to {num_heads}")
+
+    if n_attn_layers != n_total_layers:
+        logger.info(
+            f"Hybrid model detected: {n_attn_layers} attention layers / "
+            f"{n_total_layers} total layers (SSM-skipped indices: "
+            f"{[i for i in range(n_total_layers) if i not in attn_layer_indices][:5]}...)"
+        )
+    # The pattern table uses ATTENTION-LAYER index (0..n_attn_layers-1), NOT
+    # the layer's position in `model.layers`. The runtime layer counter
+    # increments once per SDPA call, which by construction maps to attention
+    # layers in order.
+    num_layers = n_attn_layers
+
+    logger.info(f"Model: {num_layers} attention layers, {num_heads} heads")
     logger.info(f"Calibration seq_len: {seq_len}, target sparsity: {sparsity:.0%}")
 
     # Capture attention maps
@@ -585,9 +659,14 @@ def calibrate(
     avg_mse = pattern_table["summary"]["avg_mse"]
     dense_frac = pattern_counts["dense"] / max(1, num_entries)
 
-    assert avg_sparsity >= 0.85, (
-        f"Average sparsity {avg_sparsity:.1%} < 85% — model may not be suitable "
-        f"for MInference sparse attention"
+    # Threshold the assertion at 90% of the user's requested target sparsity
+    # rather than a hardcoded 85% — the script accepts ``--sparsity`` and
+    # should respect that target on the validation side too.
+    sparsity_floor = 0.9 * sparsity
+    assert avg_sparsity >= sparsity_floor, (
+        f"Average sparsity {avg_sparsity:.1%} < {sparsity_floor:.1%} (90% of "
+        f"requested target {sparsity:.1%}) — model may not be suitable for "
+        f"MInference sparse attention at this budget"
     )
     assert avg_mse < MAX_RECONSTRUCTION_MSE, (
         f"Average reconstruction MSE {avg_mse:.6f} >= {MAX_RECONSTRUCTION_MSE} — "

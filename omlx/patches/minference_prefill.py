@@ -42,6 +42,9 @@ def load_pattern_table(model_name: str = "qwen3_coder_30b_a3b_instruct_8bit") ->
 
     Returns:
         Pattern table dict with 'heads' list and 'num_layers'/'num_heads'.
+
+    Raises:
+        FileNotFoundError: if the table file is missing.
     """
     path = DEFAULT_PATTERN_DIR / f"{model_name}.json"
     if not path.exists():
@@ -58,10 +61,33 @@ def load_pattern_table(model_name: str = "qwen3_coder_30b_a3b_instruct_8bit") ->
         lookup[(entry["layer"], entry["head"])] = entry
     table["_lookup"] = lookup
 
+    # Task 382: detect synthetic-placeholder tables and warn LOUDLY.
+    # The pattern table at this path may be a synthetic placeholder
+    # (per the `note` field) rather than real calibration output.
+    # Dispatching with synthetic patterns produces:
+    #   - Plausible per-head pattern types (vertical_slash / a_shape / ...)
+    #   - Plausible param values (num_vertical_cols, band_width, ...)
+    #   - But the values DO NOT reflect the head's actual attention map
+    # → likely quality regression on retrieval/long-context gates,
+    #   speedup numbers cited in CLAUDE.md become unsubstantiated.
+    note = table.get("note", "")
+    is_synthetic = "SYNTHETIC" in note or "placeholder" in note.lower()
+    if is_synthetic:
+        logger.warning(
+            "MInference pattern table %s is a SYNTHETIC PLACEHOLDER "
+            "(note: %r) — per-head patterns are programmatic defaults, "
+            "NOT measured from actual attention maps. Quality regressions "
+            "on long-context gates are LIKELY. Predicted speedups in "
+            "CLAUDE.md are UNSUBSTANTIATED until calibration runs. To fix: "
+            "python scripts/minference_calibrate.py --model <your-model>",
+            path.name, note[:100],
+        )
+
     logger.info(
         f"Loaded MInference patterns: {table['num_layers']} layers × "
         f"{table['num_heads']} heads, "
         f"distribution: {table['summary']['pattern_counts']}"
+        f"{' [SYNTHETIC]' if is_synthetic else ''}"
     )
     return table
 
@@ -121,6 +147,16 @@ def _build_vertical_slash_mask(
     causal = cols <= rows
     band = (rows - cols) < band_width
 
+    # Always use the runtime K-norm heuristic to pick the top-K vertical
+    # columns. The calibration table records `vertical_col_indices` as a
+    # diagnostic, but those indices are POSITION-indexed (specific to the
+    # calibration prompt's content); at runtime with a different prompt,
+    # the high-attention positions are different. MInference's design
+    # intent is: calibration determines the PATTERN TYPE + PARAM COUNTS
+    # per head; the runtime selects the specific columns content-adaptively.
+    # Empirically: D15 (2026-05-03) — using stored indices caused 4K NIAH
+    # to retrieve `'postgresql://localhost:5432/app_db'` (config-block
+    # token) instead of the needle `'ALPHA-7749'`.
     if keys is not None and num_vert > 0:
         k_norms = mx.linalg.norm(keys[0, 0], axis=-1)  # (L_kv,)
         top_indices = mx.argsort(-k_norms)[:num_vert]
@@ -198,7 +234,11 @@ def _sparse_sdpa_single_head(
 
     # Apply sparse mask as additive mask (-inf for masked positions)
     # sparse_mask: (L, L) bool, True = attend
-    additive_mask = mx.where(sparse_mask, 0.0, -1e9).astype(q.dtype)
+    # Use -3.4e4 (fp16-safe just-below-max-finite) instead of -1e9 which
+    # clamps to -inf in fp16 and risks NaN propagation through softmax at
+    # high sparsity. SparseKVCache Phase 1 (Tasks 384-386) converged on the
+    # same constant for the same reason.
+    additive_mask = mx.where(sparse_mask, 0.0, -3.4e4).astype(q.dtype)
     additive_mask = additive_mask[None, None, :, :]  # (1, 1, L, L)
 
     # Combine with existing causal mask if present
@@ -304,7 +344,8 @@ def sparse_prefill_sdpa(
                 sparse_mask = None
 
             if sparse_mask is not None:
-                additive_mask = mx.where(sparse_mask, 0.0, -1e9).astype(queries.dtype)
+                # See note at _sparse_sdpa_single_head: -3.4e4 is fp16-safe.
+                additive_mask = mx.where(sparse_mask, 0.0, -3.4e4).astype(queries.dtype)
                 additive_mask = additive_mask[None, None, :, :]
                 if mask is not None and not isinstance(mask, str):
                     combined_mask = additive_mask + mask
@@ -336,10 +377,30 @@ def sparse_prefill_sdpa(
 # Patch application
 # ---------------------------------------------------------------------------
 
+def _model_id_to_pattern_name(model_id: str) -> str:
+    """Derive the pattern-table filename stem from a HuggingFace-style model ID.
+
+    Mirrors the convention used in `scripts/minference_calibrate.py` —
+    the snake_case stem of the last path component.
+    """
+    last = model_id.rstrip("/").split("/")[-1]
+    return last.lower().replace("-", "_")
+
+
 def apply_minference_prefill_patch(
     model_name: str = "qwen3_coder_30b_a3b_instruct_8bit",
+    model_id: str | None = None,
 ) -> bool:
     """Monkey-patch SDPA for MInference sparse prefill.
+
+    Args:
+        model_name: pattern-table filename stem (without ``.json``). Used
+            directly if provided.
+        model_id: full HuggingFace-style model ID (e.g.
+            ``"mlx-community/Qwen3.6-35B-A3B-4bit"``). If given, overrides
+            ``model_name`` by deriving the stem via the same convention as
+            the calibration script. This is the path bench/server use to
+            stay in sync with whatever model is loaded.
 
     This wraps the EXISTING SDPA (whether original or already patched by
     turboquant_attention) to add sparse dispatch during prefill.
@@ -348,6 +409,9 @@ def apply_minference_prefill_patch(
 
     if _PATCHED:
         return False
+
+    if model_id is not None:
+        model_name = _model_id_to_pattern_name(model_id)
 
     try:
         _PATTERN_TABLE = load_pattern_table(model_name)

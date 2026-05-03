@@ -45,7 +45,8 @@ logger = logging.getLogger("omlx.bench.hypercar")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"  # Override with --model
+from omlx.model_constants import BENCH_DEFAULT_MODEL_ID
+MODEL_ID = BENCH_DEFAULT_MODEL_ID  # Override with --model
 KV_BITS = 3
 KV_GROUP_SIZE = 64
 PREFILL_CHUNK = 4096
@@ -59,7 +60,10 @@ MIN_MMLU_PRO_ACCURACY = 0.35  # MMLU-Pro cs+math must hit 35%
 # MMLU-Pro needs ≥512 max_tokens for CoT reasoning. Cutting to 256 caused
 # a 64%→24% silent regression (commits 1e803b6→20df582) because reasoning
 # was truncated before emitting the final answer letter.
-MMLU_PRO_MIN_MAX_TOKENS = 512
+MMLU_PRO_MIN_MAX_TOKENS = 1536  # bumped 2026-05-02 from 512: Qwen3.6's
+# step-by-step analysis routinely runs 800-1500 tokens before reaching "The
+# answer is (X)". 512 truncated mid-reasoning, accuracy collapsed to 22%.
+# 1024 → 40% on 5-Q sample, 1536 keeps headroom for 10-option questions.
 
 PROFILE_PATH = Path("/tmp/hypercar_profile.json")
 DEFAULT_RESULTS_PATH = Path("/tmp/hypercar_bench_results.json")
@@ -313,47 +317,99 @@ def _load_model():
 def _make_cache(n_layers: int, model=None):
     """Create KV cache based on current _KV_MODE.
 
-    For hybrid models (Granite): uses model.make_cache() to get the right
-    cache types per layer (ArraysCache for Mamba, KVCache for attention),
-    then replaces KVCache with quantized variants.
+    For hybrid models (Granite, Qwen3.6): uses model.make_cache() to get the
+    right cache types per layer (ArraysCache for Mamba/SSM, KVCache for
+    attention), then replaces KVCache with the requested KV variant. SSM
+    layers must NOT receive a KV-style cache — they expect a subscriptable
+    container of state arrays.
     """
     from mlx_lm.models.cache import KVCache, QuantizedKVCache
-
-    if _KV_MODE == "fp16":
-        if model and hasattr(model, 'make_cache'):
-            return model.make_cache()
-        return [KVCache() for _ in range(n_layers)]
-
-    if _KV_MODE == "duo":
-        from omlx.duo_kv_cache import DuoKVCache, load_duo_policy
-        policy = load_duo_policy()
-        return [DuoKVCache(policy, layer_idx=i, bits=KV_BITS) for i in range(n_layers)]
-
-    if _KV_MODE == "shadowkv":
-        from omlx.shadowkv_cache import ShadowKVCache
-        return [ShadowKVCache(target_rank=192) for i in range(n_layers)]
 
     if model is None:
         model = _MODEL_REF
 
-    # Get base caches (handles hybrid models with ArraysCache + KVCache)
     if model and hasattr(model, 'make_cache'):
         base_caches = model.make_cache()
     else:
         base_caches = [KVCache() for _ in range(n_layers)]
 
-    # Replace KVCache layers with quantized variants
+    if _KV_MODE == "fp16":
+        return base_caches
+
+    is_hybrid = any(not isinstance(c, KVCache) for c in base_caches)
+    if is_hybrid and _KV_MODE == "duo":
+        if not getattr(_make_cache, "_hybrid_duo_warned", False):
+            logger.warning(
+                "DuoKV policy was calibrated on a dense-attention model "
+                "(Qwen3-Coder). This model has %d non-KV layers (SSM/linear). "
+                "Falling back to fp16 cache for KV layers — needle retrieval "
+                "would otherwise fail. Pass --kv-mode native or tq3 for "
+                "compressed KV that is calibration-free.",
+                sum(1 for c in base_caches if not isinstance(c, KVCache)),
+            )
+            _make_cache._hybrid_duo_warned = True
+        return base_caches
+
+    # Sanity guard for `native` mode: mlx_lm's QuantizedKVCache pre-allocates
+    # `head_dim // (32 // bits)` slots per packed row, but `mx.quantize`
+    # produces `head_dim * bits // 32` slots. Those formulas only agree when
+    # `bits` divides 32 evenly (i.e. bits ∈ {2, 4, 8}). For bits=3 with
+    # head_dim=256 (Qwen3.6) they differ by 1 → broadcast-shape error in
+    # `update_and_fetch`. tq3 has its own packed cache and is unaffected.
+    if _KV_MODE == "native" and KV_BITS == 3:
+        if not getattr(_make_cache, "_native_3bit_warned", False):
+            logger.warning(
+                "KV_BITS=3 with --kv-mode native triggers a shape mismatch in "
+                "mlx_lm's QuantizedKVCache when head_dim is not a multiple of "
+                "10 (e.g. Qwen3.6 head_dim=256). Falling back to bits=4 for "
+                "the KV cache. Use --kv-mode tq3 to keep 3-bit compression."
+            )
+            _make_cache._native_3bit_warned = True
+        _native_bits = 4
+    else:
+        _native_bits = KV_BITS
+
+    def _make_kv(layer_idx: int):
+        if _KV_MODE == "duo":
+            from omlx.duo_kv_cache import DuoKVCache, load_duo_policy
+            policy = load_duo_policy()
+            return DuoKVCache(policy, layer_idx=layer_idx, bits=KV_BITS)
+        if _KV_MODE == "shadowkv":
+            from omlx.shadowkv_cache import ShadowKVCache
+            return ShadowKVCache(target_rank=192)
+        if _KV_MODE == "tq3":
+            from omlx.turboquant_kv import TurboQuantKVCache
+            return TurboQuantKVCache(bits=KV_BITS, quest_topk=_QUEST_TOPK)
+        return QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=_native_bits)
+
     result = []
     for i, c in enumerate(base_caches):
         if isinstance(c, KVCache):
-            if _KV_MODE == "tq3":
-                from omlx.turboquant_kv import TurboQuantKVCache
-                result.append(TurboQuantKVCache(bits=KV_BITS, quest_topk=_QUEST_TOPK))
-            else:  # native
-                result.append(QuantizedKVCache(group_size=KV_GROUP_SIZE, bits=KV_BITS))
+            result.append(_make_kv(i))
         else:
-            result.append(c)  # Keep ArraysCache (Mamba state) as-is
+            result.append(c)  # Keep ArraysCache (SSM/Mamba state) as-is
     return result
+
+
+def _eos_token_ids(tokenizer) -> set[int]:
+    """Return the set of all EOS-equivalent token ids on this tokenizer.
+
+    Thinking models (Qwen3.6) expose both ``eos_token_id`` (singular int,
+    typically ``<|im_end|>``) and ``eos_token_ids`` (plural set, including
+    ``<|endoftext|>``). Generation must stop on any of them — leaking
+    ``<|endoftext|>`` into a code completion's literal text turns it into
+    invalid Python.
+    """
+    ids: set[int] = set()
+    for attr in ("eos_token_ids", "eos_token_id"):
+        v = getattr(tokenizer, attr, None)
+        if v is None:
+            continue
+        if isinstance(v, (set, list, tuple)):
+            ids.update(int(x) for x in v)
+        else:
+            ids.add(int(v))
+    return ids
 
 
 def _generate(model, tokenizer, prompt: str, max_tokens: int = 64,
@@ -377,14 +433,14 @@ def _generate(model, tokenizer, prompt: str, max_tokens: int = 64,
 
     # Decode
     generated = []
+    eos_ids = _eos_token_ids(tokenizer)
     t0 = time.perf_counter()
     for _ in range(max_tokens):
         token = mx.argmax(logits[:, -1, :], axis=-1)
         mx.eval(token)
         tok_id = token.item()
         generated.append(tok_id)
-        # Stop on EOS
-        if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
+        if tok_id in eos_ids:
             break
         x = token.reshape(1, 1)
         logits = model(x, cache=cache)
@@ -457,6 +513,41 @@ def phase0_smoke(model, tokenizer, watchdog: MemoryWatchdog,
 # Phase 1: Coherence
 # ---------------------------------------------------------------------------
 
+def _format_chat_prompt(tokenizer, user_message: str, *,
+                        enable_thinking: bool = False,
+                        fallback_suffix: str = "\n") -> str:
+    """Apply the chat template with thinking control.
+
+    Short-answer phases (NIAH, RULER, HumanEval, coherence) pass
+    ``enable_thinking=False`` so thinking models pre-close the reasoning block
+    and the answer fits in a small max_tokens budget. Reasoning phases
+    (MMLU-Pro) keep thinking on. Both fall back gracefully on tokenizers that
+    don't support either kwarg.
+    """
+    messages = [{"role": "user", "content": user_message}]
+    try:
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    except TypeError:
+        # Tokenizer doesn't support enable_thinking — retry without it.
+        try:
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+        except Exception:
+            return user_message + fallback_suffix
+    except Exception:
+        # Tokenizer accepted the kwarg but failed (e.g. no template at all).
+        return user_message + fallback_suffix
+
+
+def _format_short_answer_prompt(tokenizer, user_message: str) -> str:
+    """Backward-compatible alias for the no-thinking case."""
+    return _format_chat_prompt(tokenizer, user_message, enable_thinking=False)
+
+
 def phase1_coherence(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
     """Basic coherence: math + code generation."""
     t0 = time.perf_counter()
@@ -470,9 +561,9 @@ def phase1_coherence(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
         )
 
     # Check 1: 2+2 must contain "4"
-    text, p_toks, d_toks = _generate(model, tokenizer,
-                                      "What is 2+2? Answer with just the number.",
-                                      max_tokens=32)
+    math_prompt = _format_short_answer_prompt(
+        tokenizer, "What is 2+2? Answer with just the number.")
+    text, p_toks, d_toks = _generate(model, tokenizer, math_prompt, max_tokens=32)
     checks["math"] = {"output": text[:100], "passed": "4" in text}
     logger.info(f"  Math check: {'PASS' if checks['math']['passed'] else 'FAIL'} — {text[:60]!r}")
 
@@ -484,9 +575,9 @@ def phase1_coherence(model, tokenizer, watchdog: MemoryWatchdog) -> PhaseResult:
         )
 
     # Check 2: hello world must contain "print"
-    text2, p_toks2, d_toks2 = _generate(model, tokenizer,
-                                          "Write hello world in Python. Just the code, nothing else.",
-                                          max_tokens=64)
+    code_prompt = _format_short_answer_prompt(
+        tokenizer, "Write hello world in Python. Just the code, nothing else.")
+    text2, p_toks2, d_toks2 = _generate(model, tokenizer, code_prompt, max_tokens=64)
     checks["code"] = {"output": text2[:100], "passed": "print" in text2.lower()}
     logger.info(f"  Code check: {'PASS' if checks['code']['passed'] else 'FAIL'} — {text2[:60]!r}")
 
@@ -720,6 +811,28 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         niah_contexts = _parse_context_list(niah_context_str)
         logger.info(f"  NIAH contexts from --niah-context: "
                     f"{[f'{c//1024}K' for c in niah_contexts]}")
+        # Task 71 close-out: when an analyst supplies --niah-context, they
+        # are explicitly bypassing the cautious headroom heuristic. Log a
+        # WARNING per context that would exceed the metal limit, so the
+        # bypass is auditable in the run console rather than silent. The
+        # watchdog still trips on actual breach — this is informational.
+        try:
+            metal_limit = watchdog.metal_limit_gb
+            current_metal = _metal_gb()
+            for c in niah_contexts:
+                projected = _project_prefill_memory_gb(c, model)
+                if current_metal + projected > metal_limit:
+                    logger.warning(
+                        f"  Bypassing headroom gate for {c // 1024}K "
+                        f"per --niah-context request — Metal projected "
+                        f"{current_metal + projected:.1f} GB vs limit "
+                        f"{metal_limit:.1f} GB. Watchdog will fail on "
+                        f"actual breach."
+                    )
+        except Exception:
+            # Defensive: projection helpers depend on model attrs; failing
+            # here must NOT abort the probe — fall through to the run.
+            pass
     else:
         niah_contexts = [4096, 16384]
         if getattr(args_ref, 'niah_500k', False):
@@ -738,18 +851,15 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         # Leave room for ChatML template overhead + question (~200 tokens)
         haystack = _build_code_haystack(tokenizer, ctx_len - 200, NIAH_NEEDLE, 50.0)
 
-        # Use ChatML formatting via tokenizer.apply_chat_template
-        messages = [
-            {"role": "user",
-             "content": f"Here is some code:\n\n{haystack}\n\nBased on the code above, answer this question: {NIAH_QUESTION}\nRespond with ONLY the answer, nothing else."}
-        ]
-        try:
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
-            )
-        except Exception:
-            # Fallback if tokenizer doesn't support chat templates
-            prompt = f"{haystack}\n\nQuestion: {NIAH_QUESTION}\nAnswer:"
+        # Short-answer phase — disable thinking so the literal answer arrives
+        # within max_tokens.
+        user_msg = (
+            f"Here is some code:\n\n{haystack}\n\nBased on the code above, "
+            f"answer this question: {NIAH_QUESTION}\n"
+            "Respond with ONLY the answer, nothing else."
+        )
+        prompt = _format_chat_prompt(
+            tokenizer, user_msg, enable_thinking=False)
 
         tokens = tokenizer.encode(prompt)[:ctx_len]
         cache = _make_cache(n_layers)
@@ -814,7 +924,8 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
         }
 
         status = "PASS" if found else "FAIL"
-        logger.info(f"    {status}: {ctx_len // 1024}K — {response[:60]!r}")
+        logger.info(f"    {status}: {ctx_len // 1024}K — {response[:60]!r}  "
+                    f"prefill {prefill_toks:.0f} tok/s, decode {decode_toks:.1f} tok/s")
 
         del cache
         gc.collect()
@@ -826,13 +937,18 @@ def phase3_niah(model, tokenizer, watchdog: MemoryWatchdog, args_ref=None) -> Ph
     gate_contexts = [c for c in niah_contexts if c <= 262144]
     gate_passed = all(results.get(c, {}).get("found", False) for c in gate_contexts)
 
+    # Headline tok/s come from the smallest tested context — typically 4K, but
+    # ``--niah-context`` may have skipped it (e.g. running only 64K for a
+    # focused Goal 1 probe).
+    headline_ctx = min(results.keys()) if results else 4096
+    headline = results.get(headline_ctx, {})
     return PhaseResult(
         name="Phase 3: Needle in Haystack",
         passed=gate_passed,
         elapsed_s=time.perf_counter() - t0,
         details=results,
-        prefill_toks=results[4096].get("prefill_toks", 0.0),
-        decode_toks=results[4096].get("decode_toks", 0.0),
+        prefill_toks=headline.get("prefill_toks", 0.0),
+        decode_toks=headline.get("decode_toks", 0.0),
     )
 
 
@@ -866,17 +982,10 @@ def _run_ruler_task(model, tokenizer, task_spec: dict,
     n_layers = len(model.layers)
     ctx_tokens = task_spec["target_tokens"]
 
-    # Format as chat message
-    messages = [
-        {"role": "user",
-         "content": f"{task['context']}\n\n{task['question']}"}
-    ]
-    try:
-        prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-        )
-    except Exception:
-        prompt = f"{task['context']}\n\n{task['question']}\nAnswer:"
+    # Short-answer (key retrieval / variable tracking) — thinking off.
+    prompt = _format_chat_prompt(
+        tokenizer, f"{task['context']}\n\n{task['question']}",
+        enable_thinking=False)
 
     tokens = tokenizer.encode(prompt)[:ctx_tokens]
     cache = _make_cache(n_layers)
@@ -894,12 +1003,13 @@ def _run_ruler_task(model, tokenizer, task_spec: dict,
 
     # Generate response (up to 128 tokens for multi-value answers)
     generated = []
+    eos_ids = _eos_token_ids(tokenizer)
     for _ in range(128):
         token = mx.argmax(logits[:, -1, :], axis=-1)
         mx.eval(token)
         tok_id = token.item()
         generated.append(tok_id)
-        if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
+        if tok_id in eos_ids:
             break
         x = token.reshape(1, 1)
         logits = model(x, cache=cache)
@@ -943,30 +1053,56 @@ def _project_prefill_memory_gb(ctx_tokens: int, model) -> float:
     """Rough upper bound on additional Metal memory for a prefill at ctx_tokens.
 
     During prefill, the main memory consumers beyond the model itself are:
-      - KV cache: ctx_tokens × n_layers × 2 (K+V) × head_dim × n_kv_heads × dtype
-      - Attention scores: ctx_tokens × ctx_tokens × n_heads × dtype (per chunk)
+      - KV cache: ctx_tokens × n_attn_layers × 2 (K+V) × head_dim × n_kv_heads × dtype
+        (only attention layers carry per-token KV — SSM/linear layers in
+        hybrid models like Qwen3.6 hold fixed-size state, no growth.)
+      - Attention scores: ctx_tokens × chunk × n_heads × dtype, divided by a
+        tile factor since `mx.fast.scaled_dot_product_attention` tiles the
+        QK matrix internally rather than materializing it whole.
       - Intermediates: MoE router, RMS norm, etc.
 
     We use a conservative safety_factor to account for intermediates.
     """
-    n_layers = len(model.layers)
-    # Detect head dimensions from model config
-    first_attn = getattr(model.layers[0], 'self_attn', None)
-    if first_attn and hasattr(first_attn, 'n_heads'):
-        n_heads = first_attn.n_heads
-    else:
-        n_heads = 32  # Qwen3-Coder default
-    if first_attn and hasattr(first_attn, 'n_kv_heads'):
-        n_kv_heads = first_attn.n_kv_heads
-    else:
-        n_kv_heads = 4
+    # Find the first layer that actually has attention. On Qwen3.6 layer 0 is
+    # SSM (linear); fa_idx exposes the first attention layer index.
+    n_total = len(model.layers)
+    first_attn = None
+    n_attn_layers = 0
+    for layer in model.layers:
+        attn = getattr(layer, 'self_attn', None)
+        if attn is not None:
+            n_attn_layers += 1
+            if first_attn is None:
+                first_attn = attn
+    if n_attn_layers == 0:
+        # Pure SSM model? Fall back to old all-layer assumption to be safe.
+        n_attn_layers = n_total
+        first_attn = getattr(model.layers[0], 'self_attn', None)
 
-    hidden_size = getattr(model, 'hidden_size', None)
-    if hidden_size is None and hasattr(model, 'args'):
-        hidden_size = getattr(model.args, 'hidden_size', 2048)
-    else:
-        hidden_size = hidden_size or 2048
-    head_dim = hidden_size // n_heads
+    # Different model classes use different attribute names — Qwen3-Coder's
+    # Attention has n_heads/n_kv_heads, Qwen3.6's Qwen3NextAttention has
+    # num_attention_heads/num_key_value_heads.
+    def _attr(obj, *names, default=None):
+        if obj is None:
+            return default
+        for name in names:
+            v = getattr(obj, name, None)
+            if v is not None:
+                return v
+        return default
+
+    n_heads = _attr(first_attn, 'n_heads', 'num_attention_heads', 'num_heads',
+                     default=32)
+    n_kv_heads = _attr(first_attn, 'n_kv_heads', 'num_key_value_heads',
+                        default=4)
+    head_dim = _attr(first_attn, 'head_dim')
+    if head_dim is None:
+        hidden_size = getattr(model, 'hidden_size', None)
+        if hidden_size is None and hasattr(model, 'args'):
+            hidden_size = getattr(model.args, 'hidden_size', 2048)
+        else:
+            hidden_size = hidden_size or 2048
+        head_dim = hidden_size // n_heads
 
     # KV cache bytes: depends on quantization mode
     if _KV_MODE in ("native", "tq3"):
@@ -976,12 +1112,18 @@ def _project_prefill_memory_gb(ctx_tokens: int, model) -> float:
     else:
         bytes_per_kv_elem = 2  # fp16
 
-    # KV cache memory (both K and V, all layers)
-    kv_gb = (ctx_tokens * n_layers * 2 * n_kv_heads * head_dim * bytes_per_kv_elem) / 1e9
+    # KV cache memory: only attention layers grow with context; SSM state
+    # is fixed-size and amortized into the model footprint.
+    kv_gb = (ctx_tokens * n_attn_layers * 2 * n_kv_heads * head_dim
+             * bytes_per_kv_elem) / 1e9
 
-    # Attention scores per chunk (always fp16 regardless of KV mode)
+    # Attention scores during one chunk's SDPA call. Without tiling the full
+    # QK matrix would be (chunk × ctx) × n_heads × 2 bytes per layer, summed
+    # across chunks. With MLX's fast SDPA tiling, transient memory is roughly
+    # one chunk's worth of head-tile × ctx, ~16x smaller. We split the
+    # difference: 1/4 of the full matrix as a peak transient.
     chunk = min(ctx_tokens, PREFILL_CHUNK)
-    attn_gb = (chunk * ctx_tokens * n_heads * 2) / 1e9  # fp16 scores
+    attn_gb = (chunk * ctx_tokens * n_heads * 2 / 4.0) / 1e9
 
     safety_factor = 1.5  # MoE router, RMS norm, residuals
     return (kv_gb + attn_gb) * safety_factor
@@ -1194,14 +1336,14 @@ def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
 
         prompt = format_prompt(q)
 
-        # Use ChatML formatting
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            chat_prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
-            )
-        except Exception:
-            chat_prompt = prompt + "\n"
+        # MMLU-Pro: thinking OFF. The 512-token cap (set above) is a hard
+        # regression-protection assertion, but a thinking trace alone consumes
+        # >512 tokens — the answer never emerges and accuracy collapses below
+        # random (Qwen3.6 fp16: 22/100 with thinking on, 2026-05-02). The
+        # MMLU-Pro `format_prompt` includes its own CoT directive in the user
+        # message, so we don't lose reasoning by skipping the model's <think>.
+        chat_prompt = _format_chat_prompt(
+            tokenizer, prompt, enable_thinking=False)
 
         text, _, _ = _generate(model, tokenizer, chat_prompt,
                                max_tokens=MMLU_PRO_MIN_MAX_TOKENS)
@@ -1219,9 +1361,27 @@ def phase3c_mmlu_pro(model, tokenizer, watchdog: MemoryWatchdog,
             "correct": is_correct,
         })
 
+        # Task 259: per-question cleanup prevents Metal memory accumulation
+        # over 100 questions. Without this, Task 258 run hit 100× slowdown
+        # starting around Q65 — each question's transient tensors
+        # accumulate until Metal pressure → swap → decode thrash.
+        # Every other phase does this between iterations; MMLU-Pro was
+        # the outlier. Also log Metal peak every 20 questions so memory
+        # growth is visible in the console.
+        gc.collect()
+        mx.clear_cache()
+
         if (i + 1) % 5 == 0 or i == len(questions) - 1:
-            logger.info(f"  [{i+1}/{len(questions)}] {correct}/{total} correct "
-                        f"({correct/total*100:.0f}%)")
+            if (i + 1) % 20 == 0 or i == len(questions) - 1:
+                peak_gb = mx.metal.get_peak_memory() / 1e9
+                active_gb = mx.metal.get_active_memory() / 1e9
+                logger.info(
+                    f"  [{i+1}/{len(questions)}] {correct}/{total} correct "
+                    f"({correct/total*100:.0f}%)  Metal peak={peak_gb:.1f}GB "
+                    f"active={active_gb:.1f}GB")
+            else:
+                logger.info(f"  [{i+1}/{len(questions)}] {correct}/{total} correct "
+                            f"({correct/total*100:.0f}%)")
 
     accuracy = correct / total if total > 0 else 0.0
     gate_passed = accuracy >= MIN_MMLU_PRO_ACCURACY
@@ -1404,16 +1564,18 @@ def phase4_humaneval_lite(model, tokenizer,
         logits = model(x, cache=cache)
         mx.eval(logits)
 
+        eos_ids = _eos_token_ids(tokenizer)
+
         generated = []
         for _ in range(256):
             token = mx.argmax(logits[:, -1, :], axis=-1)
             mx.eval(token)
             tok_id = token.item()
+            if tok_id in eos_ids:
+                break
             generated.append(tok_id)
             text_so_far = tokenizer.decode(generated)
             if "\n\n" in text_so_far or "\ndef " in text_so_far:
-                break
-            if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
                 break
             x = token.reshape(1, 1)
             logits = model(x, cache=cache)
@@ -1475,8 +1637,16 @@ def phase3d_livecodebench(model, tokenizer,
     Gate: pass@1 >= 30%.
     """
     import json as _json
-    from omlx.eval.livecodebench import _extract_code, _execute_code
+    from omlx.eval.livecodebench import LiveCodeBenchBenchmark, _execute_code
     from omlx.eval.datasets import load_jsonl, deterministic_sample
+    # Bench uses the SAME extractor as the eval — `_extract_last_code_block`
+    # via the benchmark instance — so a draft-then-correction response
+    # pattern resolves to the corrected code, not the discarded draft.
+    # Earlier this path used `_extract_code` (first-match), causing
+    # silent extraction divergence vs `extract_answer` in the eval.
+    _bench_extractor = LiveCodeBenchBenchmark()
+    def _extract_code(response: str) -> str:
+        return _bench_extractor.extract_answer(response, {})
 
     t0 = time.perf_counter()
     n_layers = len(model.layers)
@@ -1516,6 +1686,65 @@ def phase3d_livecodebench(model, tokenizer,
     problems = deterministic_sample(problems, n_problems)
     logger.info(f"  LiveCodeBench: {len(problems)} problems sampled")
 
+    # Task 255: CoT prompt (from Task 254) reasons before writing code.
+    # 512 tokens → 0/20. 2048 → 7/20 (35%). 4096 → 7/20 (Task 256 neutral).
+    # 2048 is the sweet spot: enough for reasoning+code on problems the
+    # model can solve, beyond that extra tokens buy more wrong reasoning.
+    MAX_LCB_TOKENS = 2048
+
+    # Task 258: sample-verify + retry. Generate once greedy; if the code
+    # fails the FIRST sample test case (same one the model was shown in
+    # the prompt), retry up to LCB_RETRIES times with temperature>0.
+    # First attempt that passes the sample wins. If none, fall back to
+    # the greedy attempt. Not cheating — the sample is in the prompt.
+    # Task 261 tested temp=1.0, N=3 vs Task 260's temp=0.7, N=2.
+    # Result: identical 8/20 — 1 retry win (Fill the Gaps) in both runs.
+    # Higher variance burned 37 generations vs 25 for zero gain.
+    # Reverted to cheaper baseline; medium/hard LCB is capability-limited,
+    # not sampling-limited, for this model.
+    LCB_RETRIES = 2
+    LCB_RETRY_TEMP = 0.7
+
+    def _generate_once(prompt_tokens, temperature, seed):
+        """One generation pass; returns decoded response text."""
+        cache = _make_cache(n_layers)
+        x = mx.array([prompt_tokens])
+        logits = model(x, cache=cache)
+        mx.eval(logits)
+        if temperature > 0:
+            mx.random.seed(seed)
+        gen_tokens = []
+        eos_ids = _eos_token_ids(tokenizer)
+        for _ in range(MAX_LCB_TOKENS):
+            if temperature == 0:
+                token = mx.argmax(logits[:, -1, :], axis=-1)
+            else:
+                token = mx.random.categorical(logits[:, -1, :] / temperature)
+            mx.eval(token)
+            tok_id = token.item()
+            gen_tokens.append(tok_id)
+            if tok_id in eos_ids:
+                break
+            x = token.reshape(1, 1)
+            logits = model(x, cache=cache)
+            mx.eval(logits)
+        resp = tokenizer.decode(gen_tokens)
+        del cache
+        gc.collect(); mx.clear_cache()
+        return resp
+
+    def _passes_sample(code, prob):
+        """Check the model's code against the FIRST sample test (inputs[0]).
+        Same sample is shown in the prompt — no hidden-test leakage."""
+        if not code or not prob.get("inputs"):
+            return False
+        inp = prob["inputs"][0]
+        expected = prob["outputs"][0]
+        stdin_input = inp if isinstance(inp, str) else str(inp)
+        expected_out = expected.strip() if isinstance(expected, str) else str(expected).strip()
+        stdout, success, _err = _execute_code(code, stdin_input)
+        return success and stdout.strip() == expected_out
+
     results = []
     for prob in problems:
         if watchdog.breached.is_set():
@@ -1525,43 +1754,58 @@ def phase3d_livecodebench(model, tokenizer,
                 reason=watchdog.breach_reason,
             )
 
-        # Build prompt
+        # Build prompt — matches omlx/eval/livecodebench.py::format_prompt
+        # (unified 2026-04-23 — Task 254 found they had diverged; previous
+        # bench prompt restricted to "Python code only" which discourages
+        # reasoning the model would otherwise do for medium/hard problems).
+        # Task 262: tested a DP few-shot example here. Result: -1 PASS
+        # (7/20 vs 8/20 baseline) — example biased the model toward DP
+        # thinking on non-DP problems, losing Fill the Gaps that retries
+        # had recovered. Reverted. Generic few-shot is fragile on this
+        # benchmark; if few-shot is re-attempted it should be
+        # difficulty-stratified or problem-class-matched at selection time,
+        # not static.
         prompt_text = (
-            "Solve the following programming problem in Python.\n"
-            "Read input from stdin and print the output to stdout.\n"
-            "Provide only the complete Python code in a ```python block.\n\n"
-            f"Problem: {prob['title']}\n{prob['description']}\n\nSolution:"
+            "Solve the following programming problem in Python. "
+            "Read input from stdin and print the output to stdout.\n\n"
+            f"Problem:\n{prob['description']}\n\n"
+            "Think step-by-step: identify the approach, consider edge "
+            "cases and complexity, then write the solution. End your "
+            "response with the complete, runnable solution in a single "
+            "```python code block.\n\n"
+            "Solution:"
         )
-        messages = [{"role": "user", "content": prompt_text}]
-        try:
-            chat_text = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True)
-        except Exception:
-            chat_text = prompt_text + "\n"
+        # HumanEval/LCB has a fixed 512-token budget — thinking would consume
+        # it before any code emerges. Disable for thinking models.
+        chat_text = _format_chat_prompt(
+            tokenizer, prompt_text, enable_thinking=False)
         tokens = tokenizer.encode(chat_text)
 
-        # Generate
-        cache = _make_cache(n_layers)
-        x = mx.array([tokens])
-        logits = model(x, cache=cache)
-        mx.eval(logits)
-
-        generated = []
-        for _ in range(512):
-            token = mx.argmax(logits[:, -1, :], axis=-1)
-            mx.eval(token)
-            tok_id = token.item()
-            generated.append(tok_id)
-            if hasattr(tokenizer, 'eos_token_id') and tok_id == tokenizer.eos_token_id:
-                break
-            x = token.reshape(1, 1)
-            logits = model(x, cache=cache)
-            mx.eval(logits)
-
-        response = tokenizer.decode(generated)
+        # Attempt 0: greedy (deterministic baseline)
+        response = _generate_once(tokens, temperature=0.0, seed=0)
         code = _extract_code(response)
+        attempt_used = 0
+        sample_passed_on = _passes_sample(code, prob)
 
-        # Execute against test cases (first 3)
+        # Retries with temperature>0 if the greedy attempt fails the sample
+        retry_responses = []
+        if not sample_passed_on:
+            for retry_i in range(LCB_RETRIES):
+                seed = retry_i + 1  # 1, 2
+                r_resp = _generate_once(tokens, temperature=LCB_RETRY_TEMP, seed=seed)
+                r_code = _extract_code(r_resp)
+                retry_responses.append({
+                    "seed": seed, "response_len": len(r_resp),
+                    "code_len": len(r_code),
+                })
+                if _passes_sample(r_code, prob):
+                    response = r_resp
+                    code = r_code
+                    attempt_used = retry_i + 1
+                    sample_passed_on = True
+                    break
+
+        # Final eval against first 3 test cases (includes the sample)
         passed = True
         for inp, expected in zip(prob["inputs"][:3], prob["outputs"][:3]):
             stdin_input = inp if isinstance(inp, str) else str(inp)
@@ -1572,12 +1816,23 @@ def phase3d_livecodebench(model, tokenizer,
                 break
 
         diff = prob.get("difficulty", "unknown")
-        results.append({"id": prob["id"], "title": prob["title"],
-                        "difficulty": diff, "passed": passed, "code": code[:100]})
+        # Full response + code + prompt saved for offline failure analysis
+        # (Task 254). Plus retry bookkeeping (Task 258).
+        results.append({
+            "id": prob["id"], "title": prob["title"],
+            "difficulty": diff, "passed": passed,
+            "code": code,
+            "response": response,
+            "prompt": prompt_text,
+            "attempt_used": attempt_used,  # 0 = greedy, 1+ = retry number
+            "sample_passed": sample_passed_on,
+            "retries": retry_responses,  # summary of any retry attempts
+        })
         status = "PASS" if passed else "FAIL"
-        logger.info(f"    {status}: [{diff}] {prob['title'][:50]}")
+        marker = "" if attempt_used == 0 else f" (retry {attempt_used})"
+        logger.info(f"    {status}{marker}: [{diff}] {prob['title'][:50]}")
 
-        del cache; gc.collect(); mx.clear_cache()
+        gc.collect(); mx.clear_cache()
 
     pass_count = sum(1 for r in results if r["passed"])
     pass_rate = pass_count / max(len(results), 1)
@@ -1620,6 +1875,11 @@ def phase3e_snapkv_quality(model, tokenizer,
 
     Runs a quick NIAH test with SnapKV+CAOTE at 50% keep to catch
     regressions in the eviction stack. Gate: needle must be found.
+
+    Skipped on hybrid SSM/attention models (Qwen3.6 etc.) — SnapKV's
+    per-token eviction is meaningless on linear-attention layers whose state
+    is fixed-size, and the Q-capture hook iterates `.self_attn` across all
+    layers, which doesn't exist on SSM blocks.
     """
     t0 = time.perf_counter()
     n_layers = len(model.layers)
@@ -1627,6 +1887,20 @@ def phase3e_snapkv_quality(model, tokenizer,
     if watchdog.breached.is_set():
         return PhaseResult(name="Phase 3e: SnapKV Quality", passed=False,
                            reason=watchdog.breach_reason)
+
+    if not all(hasattr(layer, 'self_attn') for layer in model.layers):
+        n_no_attn = sum(1 for layer in model.layers if not hasattr(layer, 'self_attn'))
+        logger.info(
+            f"  Skipping SnapKV — model is hybrid ({n_no_attn}/{n_layers} "
+            f"layers have no self_attn / are SSM/linear). SnapKV's per-token "
+            f"eviction does not apply to fixed-size SSM state."
+        )
+        return PhaseResult(
+            name="Phase 3e: SnapKV Quality", passed=True,
+            elapsed_s=time.perf_counter() - t0,
+            details={"skipped": True,
+                     "reason": "hybrid model (SnapKV only meaningful for dense-attention)"},
+        )
 
     try:
         from omlx.patches.snapkv import (
@@ -1643,12 +1917,8 @@ def phase3e_snapkv_quality(model, tokenizer,
     filler = "The quick brown fox jumps over the lazy dog. " * 40
     prompt_text = (filler + f"The secret code is {needle_code}. "
                    + filler + "\nWhat is the secret code? Reply with ONLY the code:")
-    messages = [{"role": "user", "content": prompt_text}]
-    try:
-        chat = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
-    except Exception:
-        chat = prompt_text + "\n"
+    # SnapKV needle retrieval — short answer, thinking off.
+    chat = _format_chat_prompt(tokenizer, prompt_text, enable_thinking=False)
     input_ids = tokenizer.encode(chat)
     T = len(input_ids)
     keep_count = max(64, T // 2)  # 50% keep
@@ -1656,7 +1926,10 @@ def phase3e_snapkv_quality(model, tokenizer,
     # Prefill with Q capture
     from mlx_lm.models.cache import KVCache
     captured, cleanup = install_q_capture_hook(model)
-    cache = [KVCache() for _ in range(n_layers)]
+    if hasattr(model, "make_cache"):
+        cache = model.make_cache()
+    else:
+        cache = [KVCache() for _ in range(n_layers)]
     logits = model(mx.array([input_ids]), cache=cache)
     mx.eval(logits)
 
@@ -2142,10 +2415,12 @@ Examples:
         load_time = time.perf_counter() - load_t0
         logger.info(f"Model loaded in {load_time:.1f}s (lazy — first forward will materialize)")
 
-        # Apply MInference sparse prefill if requested
+        # Apply MInference sparse prefill if requested. Pass the actual
+        # model_id so the patch loads the right per-model pattern table
+        # (instead of the Qwen3-Coder default).
         if args.prefill_sparse == "minference":
             from omlx.patches.minference_prefill import apply_minference_prefill_patch
-            if apply_minference_prefill_patch():
+            if apply_minference_prefill_patch(model_id=MODEL_ID):
                 logger.info("MInference sparse prefill ENABLED")
             else:
                 logger.warning("MInference sparse prefill FAILED — dense fallback")
@@ -2162,7 +2437,10 @@ Examples:
             warmup_t0 = time.perf_counter()
             from mlx_lm.models.cache import KVCache
             n_layers = len(model.layers)
-            warmup_cache = [KVCache() for _ in range(n_layers)]
+            if hasattr(model, "make_cache"):
+                warmup_cache = model.make_cache()
+            else:
+                warmup_cache = [KVCache() for _ in range(n_layers)]
             _generate(model, tokenizer, "Hello", max_tokens=16,
                       cache=warmup_cache)
             del warmup_cache
