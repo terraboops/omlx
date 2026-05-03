@@ -50,8 +50,8 @@ class TTTLinearConfig:
         mini_batch_size: How many tokens are processed per inner gradient
             step. Defaults to 1 (true online); set to 4096 to match
             ``PREFILL_CHUNK`` for prefill efficiency.
-        use_layer_norm: Apply LayerNorm to ``Q_t`` before output computation
-            (paper found this stabilizes training).
+        use_layer_norm: Apply LayerNorm to ``W_t Q_t`` before returning
+            outputs (paper found this stabilizes training).
     """
 
     head_dim: int
@@ -61,12 +61,7 @@ class TTTLinearConfig:
 
 
 class TTTLinear(nn.Module):
-    """A single (layer, head) TTT-Linear block.
-
-    NOT YET IMPLEMENTED — this is a scaffolding stub from Task 388 Phase 0
-    step 1. The forward pass below documents the intended shape contract.
-    Each method is annotated with the paper section it implements.
-    """
+    """A single (layer, head) TTT-Linear block."""
 
     def __init__(self, config: TTTLinearConfig):
         super().__init__()
@@ -78,23 +73,18 @@ class TTTLinear(nn.Module):
         self.W_Q = nn.Linear(D, D, bias=False)
         self.W_K = nn.Linear(D, D, bias=False)
         self.W_V = nn.Linear(D, D, bias=False)
-        # Optional output norm (paper uses LN before output; some variants
-        # use it on Q as well).
+        # Optional output norm (paper uses LN on the post-update output).
         self.ln = nn.LayerNorm(D) if config.use_layer_norm else None
-        # The hidden state W is created/managed at forward time. It has
-        # shape (B, D, D) — one matrix per batch item. Stored on the
-        # cache-like state object passed in.
 
     def init_state(self, batch_size: int, dtype=mx.float32) -> mx.array:
         """Return the initial hidden state ``W_0`` for ``batch_size`` items.
 
-        Paper convention: identity-like initialization so that the first
-        few tokens' outputs are roughly ``Q``, before any K/V history
-        accumulates.
+        Identity-scaled-by-1/sqrt(D) init: small but non-zero so the first
+        few tokens' outputs are roughly proportional to ``Q`` before any
+        K/V history accumulates. Subject to revision based on distillation
+        results in Phase 0 step 3.
         """
         D = self.config.head_dim
-        # Identity init scaled by 1/sqrt(D) — small but non-zero. Subject
-        # to revision based on distillation results in Phase 0 step 3.
         W = mx.broadcast_to(
             mx.eye(D, dtype=dtype) / (D ** 0.5),
             (batch_size, D, D),
@@ -111,28 +101,54 @@ class TTTLinear(nn.Module):
         Returns
         -------
         outputs : (B, L, D)
-            Per-token output ``o_t = W_t Q_t``.
+            Per-token output ``o_t = LN(W_t Q_t)`` where ``W_t`` is the
+            post-update hidden state for the mini-batch containing token t.
         new_state : (B, D, D)
-            Final hidden state after consuming all ``L`` tokens. Returned
-            so the caller can resume on the next chunk.
-
-        Phase 0 implementation TODO (this stub raises NotImplementedError):
-            1. Compute Q, K, V for the whole sequence in one matmul.
-            2. Iterate over mini-batches of size ``mini_batch_size``:
-               - For each mini-batch, compute the closed-form gradient
-                 averaged over the batch.
-               - Apply the inner SGD step to W.
-               - Compute outputs ``W Q`` for the batch (vectorized).
-            3. Return concatenated outputs + final W.
-
-        The vectorized mini-batch update is the load-bearing optimization
-        — without it, this is a slow per-token Python loop. With it, the
-        inner loop is two matmuls per mini-batch and the throughput is
-        comparable to attention's QK^T.
+            Final hidden state after consuming all ``L`` tokens. Pass this
+            as ``state`` on the next chunk to resume the recurrence.
         """
-        raise NotImplementedError(
-            "TTT-Linear forward pass not yet implemented. See Task 388 "
-            "Phase 0 step 1 for the scope. The scaffolding (config, "
-            "shape contract, init_state) is in place; the inner-loop "
-            "update + mini-batch vectorization is the remaining work."
-        )
+        B, L, D = x.shape
+        if D != self.config.head_dim:
+            raise ValueError(
+                f"input head_dim={D} does not match config "
+                f"head_dim={self.config.head_dim}"
+            )
+        if state is None:
+            W = self.init_state(B, dtype=x.dtype)
+        else:
+            W = state
+
+        Q = self.W_Q(x)  # (B, L, D)
+        K = self.W_K(x)  # (B, L, D)
+        V = self.W_V(x)  # (B, L, D)
+
+        b = self.config.mini_batch_size
+        eta = self.config.eta
+
+        outputs = []
+        start = 0
+        while start < L:
+            end = min(start + b, L)
+            Qb = Q[:, start:end, :]                      # (B, b', D)
+            Kb = K[:, start:end, :]                      # (B, b', D)
+            Vb = V[:, start:end, :]                      # (B, b', D)
+            # Closed-form gradient against W_{t-b} (the pre-update state
+            # for this mini-batch). Compute residual R = W K - V with K
+            # transposed to (B, D, b'); then grad = 2 R K^T summed over b'.
+            Kb_T = mx.transpose(Kb, (0, 2, 1))           # (B, D, b')
+            Vb_T = mx.transpose(Vb, (0, 2, 1))           # (B, D, b')
+            Rb = mx.matmul(W, Kb_T) - Vb_T               # (B, D, b')
+            grad = 2.0 * mx.matmul(Rb, Kb)               # (B, D, D)
+            bs_actual = end - start
+            W = W - (eta / bs_actual) * grad
+            # Outputs use the post-update W (paper: "outputs in a mini-batch
+            # all use the same W_t"). o = W Q_i, vectorized over b'.
+            Qb_T = mx.transpose(Qb, (0, 2, 1))           # (B, D, b')
+            out_T = mx.matmul(W, Qb_T)                   # (B, D, b')
+            out = mx.transpose(out_T, (0, 2, 1))         # (B, b', D)
+            if self.ln is not None:
+                out = self.ln(out)
+            outputs.append(out)
+            start = end
+
+        return mx.concatenate(outputs, axis=1), W

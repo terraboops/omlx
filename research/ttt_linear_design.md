@@ -56,12 +56,22 @@ The state-threading API mirrors how MLX's `KVCache` is used in `mlx_lm` model fo
 
 ## Implementation strategy
 
-**Phase 0 step 1 (this filing — done)**: scaffolding module + design note.
+**Phase 0 step 1 (done)**: scaffolding module + design note.
 
-**Phase 0 step 2 (next cycle)**: implement the core forward pass.
-- Online (mini_batch_size=1) version first — easy to verify correctness.
-- Vectorized mini-batch (size=B) version next — the performance path.
-- Numerical-correctness test: a hand-computed 3-token reference (D=4) where I work out W_1, W_2, W_3 by hand and compare against the implementation.
+**Phase 0 step 2 (done — 2026-05-03)**: core forward pass implemented in `omlx/state_space/ttt_linear.py`. The mini-batch update collapses to two batched matmuls per chunk:
+
+```python
+Kb_T = mx.transpose(Kb, (0, 2, 1))           # (B, D, b)
+Vb_T = mx.transpose(Vb, (0, 2, 1))           # (B, D, b)
+Rb   = mx.matmul(W, Kb_T) - Vb_T             # residual r = WK - V
+grad = 2.0 * mx.matmul(Rb, Kb)               # ∇L_b summed over the batch
+W    = W - (eta / bs_actual) * grad          # one SGD step per chunk
+out  = mx.transpose(mx.matmul(W, Qb_T), (0,2,1))  # outputs use post-update W
+```
+
+A single inner-loop iteration is two matmuls (one (D×D) @ (D×b) for residual, one (D×b) @ (b×D) for gradient), structurally comparable in cost to softmax attention's QK^T + AV at chunk granularity.
+
+Test gate: hand-computed 3-token reference at D=2, η=0.5, identity Q/K/V projections, no LN pins the SGD update direction and magnitude. Reference computation in `tests/test_ttt_linear.py::test_forward_three_token_hand_computed_reference`. State-threading equivalence test catches off-by-one errors in the chunked-resume bookkeeping. 14/14 tests pass.
 
 **Phase 0 step 3 (subsequent cycle)**: single-head distillation.
 - Pick one (layer, head) tagged as streaming in the DuoAttention policy.
