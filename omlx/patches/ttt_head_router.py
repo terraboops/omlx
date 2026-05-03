@@ -166,24 +166,42 @@ class TTTHeadRouter:
         *,
         original_sdpa,
     ) -> mx.array:
-        """Per-head split-and-dispatch path. NOT IMPLEMENTED until cycle 2.
+        """Per-head split-and-dispatch.
 
-        Plan: extract per-head ``Q_h`` slices (queries[:, h, :, :]) for
-        each h in ``ttt_heads``, run them through the per-(layer, head)
-        TTT-Linear (with the recurrence state from ``self.ttt_states``,
-        updating it on return), then reassemble the per-head outputs
-        with the original-SDPA output for retrieval heads. The reassembly
-        must be along the H_q axis without copying the retrieval-head
-        slice, so the patch must compute original SDPA over the SAME
-        (queries, keys, values) and overwrite the TTT-routed head slots.
+        For TTT-routed heads (those in ``ttt_heads``), feed ``Q_h`` to
+        the corresponding TTT-Linear block, threading recurrence state
+        through ``self.ttt_states[(layer, head)]`` so chunked prefill +
+        decode resume correctly.
+
+        For retrieval heads, use the slot from the original-SDPA call.
+        Reassembly walks the H_q axis once, picking either the TTT
+        output or the original-SDPA slot at each head index, then
+        ``mx.concatenate`` along the head axis.
+
+        Implementation note: this currently calls ``original_sdpa`` over
+        ALL heads (including the TTT-routed ones, whose outputs we then
+        overwrite). The retrieval-head slots are the only ones we keep
+        from that call. A future optimization could split Q/K/V along
+        the head axis and run SDPA only on retrieval heads, avoiding
+        the wasted compute on TTT-routed slots — left for cycle 3 once
+        we have prefill-time profile data.
         """
-        raise NotImplementedError(
-            f"TTT routing for layer {layer_idx}, heads {ttt_heads} is not "
-            "implemented yet. Cycle 1 ships only the bit-equivalence "
-            "(no-TTT-blocks) path. Until distillation produces trained "
-            "TTT-Linear weights (Phase 0 step 3 gate cleared), the "
-            "router runs in passthrough mode only."
-        )
+        out_full = original_sdpa(queries, keys, values, cache, scale, mask,
+                                 sinks)                          # (B, H_q, L, D)
+        ttt_set = set(ttt_heads)
+        head_outputs = []
+        for h in range(queries.shape[1]):
+            if h in ttt_set:
+                key = (layer_idx, h)
+                Q_h = queries[:, h, :, :]                        # (B, L, D)
+                ttt_block = self.ttt_blocks[key]
+                prior_state = self.ttt_states.get(key)
+                o_h, new_state = ttt_block(Q_h, state=prior_state)
+                self.ttt_states[key] = new_state
+                head_outputs.append(o_h[:, None, :, :])          # (B, 1, L, D)
+            else:
+                head_outputs.append(out_full[:, h:h + 1, :, :])
+        return mx.concatenate(head_outputs, axis=1)
 
 
 _PATCHED_ROUTER: Optional[TTTHeadRouter] = None

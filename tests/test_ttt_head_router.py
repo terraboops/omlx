@@ -230,20 +230,160 @@ def test_reset_state_clears_layer_counter_and_states():
 
 
 # ---------------------------------------------------------------------------
-# TTT-routed path stub (cycle 2 deliverable)
+# TTT-routed path (cycle 2 — split-and-reassemble using a TTTLinear instance)
 # ---------------------------------------------------------------------------
 
 
-def test_route_with_ttt_raises_until_cycle2():
-    """Loaded TTT block on a streaming head → router calls _route_with_ttt
-    which is a NotImplementedError stub until distillation produces
-    real weights. Pinning this contract so we notice when cycle 2 lands."""
+def _make_ttt_block(D=16, eta=0.05, mini_batch_size=64):
+    """Build an untrained TTT-Linear instance for routing tests."""
+    from omlx.state_space import TTTLinear, TTTLinearConfig
+    cfg = TTTLinearConfig(head_dim=D, eta=eta,
+                          mini_batch_size=mini_batch_size,
+                          use_layer_norm=True)
+    return TTTLinear(cfg)
+
+
+def test_ttt_routed_output_differs_from_original_sdpa_at_routed_head():
+    """Loading a TTT block on head 1 must change head 1's output (vs
+    bit-equivalence-to-SDPA), confirming the dispatcher actually
+    executes the TTT path. Other heads must remain bit-equivalent."""
+    D = 16
+    H = 4
     classification = {(0, 1): "streaming"}
-    blocks = {(0, 1): "stub_ttt_block"}
-    router = TTTHeadRouter(n_layers=1, n_heads=4,
+    blocks = {(0, 1): _make_ttt_block(D=D)}
+    router = TTTHeadRouter(n_layers=1, n_heads=H,
                            head_classification=classification,
                            ttt_blocks=blocks)
-    q, k, v = _make_q_k_v(H=4)
-    with pytest.raises(NotImplementedError, match="Cycle 1 ships only"):
-        router.route_sdpa(q, k, v, None, 1.0, None,
-                          original_sdpa=_stub_sdpa)
+    q, k, v = _make_q_k_v(H=H, L=8, D=D, seed=42)
+
+    plain = _stub_sdpa(q, k, v, None, 1.0, None)
+    routed = router.route_sdpa(q, k, v, None, 1.0, None,
+                               original_sdpa=_stub_sdpa)
+
+    # Head 1: TTT-routed → must differ.
+    diff_routed = mx.max(mx.abs(routed[:, 1, :, :] - plain[:, 1, :, :])).item()
+    assert diff_routed > 1e-3, (
+        f"head 1 should be TTT-routed (different from SDPA). diff={diff_routed}"
+    )
+
+    # Heads 0, 2, 3: not routed → must bit-match SDPA.
+    for h in (0, 2, 3):
+        diff_h = mx.max(mx.abs(routed[:, h, :, :] - plain[:, h, :, :])).item()
+        assert diff_h == 0.0, (
+            f"head {h} not TTT-routed but diverged from SDPA. diff={diff_h}"
+        )
+
+
+def test_ttt_routed_head_matches_direct_ttt_call_on_query_slice():
+    """The TTT-routed head's output slot must equal the TTTLinear block
+    called directly on Q_h (with no prior state). Pins the dispatcher's
+    input-passing contract."""
+    D = 16
+    H = 4
+    ttt = _make_ttt_block(D=D)
+    classification = {(0, 1): "streaming"}
+    blocks = {(0, 1): ttt}
+    router = TTTHeadRouter(n_layers=1, n_heads=H,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+    q, k, v = _make_q_k_v(H=H, L=8, D=D, seed=11)
+
+    out = router.route_sdpa(q, k, v, None, 1.0, None,
+                            original_sdpa=_stub_sdpa)
+
+    # Reference: call the SAME ttt block directly on Q for head 1, fresh state.
+    o_ref, _ = ttt(q[:, 1, :, :])
+    diff = mx.max(mx.abs(out[:, 1, :, :] - o_ref)).item()
+    assert diff < 1e-5, f"routed slot diverges from direct TTT call: {diff}"
+
+
+def test_ttt_state_threads_across_calls():
+    """Two route calls with state threading must equal one route call on
+    the concatenated input — confirms ``self.ttt_states`` correctly
+    persists the TTT recurrence across SDPA invocations."""
+    D = 8
+    H = 2
+    L_chunk = 4
+    classification = {(0, 0): "streaming"}
+    ttt = _make_ttt_block(D=D, mini_batch_size=L_chunk)
+    blocks = {(0, 0): ttt}
+    router = TTTHeadRouter(n_layers=1, n_heads=H,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+
+    q_full, _, _ = _make_q_k_v(H=H, L=2 * L_chunk, D=D, seed=99)
+    k_full = mx.zeros_like(q_full)
+    v_full = mx.zeros_like(q_full)
+    q_a = q_full[:, :, :L_chunk, :]
+    q_b = q_full[:, :, L_chunk:, :]
+    k_a, k_b = k_full[:, :, :L_chunk, :], k_full[:, :, L_chunk:, :]
+    v_a, v_b = v_full[:, :, :L_chunk, :], v_full[:, :, L_chunk:, :]
+
+    router.reset_state()
+    out_a = router.route_sdpa(q_a, k_a, v_a, None, 1.0, None,
+                              original_sdpa=_stub_sdpa)
+    out_b = router.route_sdpa(q_b, k_b, v_b, None, 1.0, None,
+                              original_sdpa=_stub_sdpa)
+    routed_combined = mx.concatenate([out_a, out_b], axis=2)
+
+    # Reference: the same ttt block called once on the full sequence.
+    o_ref, _ = ttt(q_full[:, 0, :, :])
+    diff = mx.max(mx.abs(routed_combined[:, 0, :, :] - o_ref)).item()
+    assert diff < 1e-4, f"state-threading diverges from single call: {diff}"
+
+
+def test_reset_state_actually_resets_ttt_recurrence():
+    """After ``reset_state()``, replaying the same input must produce
+    the same output as the first call — i.e., the state cache really
+    cleared, leaving TTT to re-init from scratch."""
+    D = 8
+    H = 2
+    classification = {(0, 0): "streaming"}
+    ttt = _make_ttt_block(D=D, mini_batch_size=4)
+    blocks = {(0, 0): ttt}
+    router = TTTHeadRouter(n_layers=1, n_heads=H,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+    q, k, v = _make_q_k_v(H=H, L=4, D=D, seed=7)
+
+    out_first = router.route_sdpa(q, k, v, None, 1.0, None,
+                                  original_sdpa=_stub_sdpa)
+    router.reset_state()
+    out_after_reset = router.route_sdpa(q, k, v, None, 1.0, None,
+                                        original_sdpa=_stub_sdpa)
+
+    diff = mx.max(mx.abs(out_first - out_after_reset)).item()
+    assert diff == 0.0, (
+        f"reset_state should restore equivalent input to same output. "
+        f"diff={diff}"
+    )
+
+
+def test_ttt_state_persists_across_layer_dispatch_within_one_chunk():
+    """Different (layer, head) keys must NOT interfere — head (0,0) and
+    head (1,0) maintain independent ``self.ttt_states`` entries."""
+    D = 8
+    H = 2
+    classification = {(0, 0): "streaming", (1, 0): "streaming"}
+    ttt0 = _make_ttt_block(D=D, mini_batch_size=4)
+    ttt1 = _make_ttt_block(D=D, mini_batch_size=4)
+    blocks = {(0, 0): ttt0, (1, 0): ttt1}
+    router = TTTHeadRouter(n_layers=2, n_heads=H,
+                           head_classification=classification,
+                           ttt_blocks=blocks)
+    q, k, v = _make_q_k_v(H=H, L=4, D=D, seed=3)
+
+    router.reset_state()
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+    router.route_sdpa(q, k, v, None, 1.0, None, original_sdpa=_stub_sdpa)
+
+    # Both keys should now have populated state.
+    assert (0, 0) in router.ttt_states
+    assert (1, 0) in router.ttt_states
+    # And they must differ — different TTT blocks, different states.
+    s0 = router.ttt_states[(0, 0)]
+    s1 = router.ttt_states[(1, 0)]
+    diff = mx.max(mx.abs(s0 - s1)).item()
+    assert diff > 1e-6, (
+        f"per-(layer,head) state collision: states identical at diff={diff}"
+    )
