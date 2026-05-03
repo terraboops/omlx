@@ -76,16 +76,51 @@ _SAFE_WITHOUT_MLX = {
     "test_hypercar_server_spec_decode.py",
 }
 
+def _has_omlx_import(path: Path) -> bool:
+    """Return True iff ``path`` contains an ``import omlx*`` or
+    ``from omlx... import ...`` statement anywhere in its AST.
+
+    The previous implementation used a substring check — ``"from omlx"
+    in _content or "import omlx" in _content`` — which produced false
+    positives on docstrings, comments, and string literals. Three test
+    files were silently dropped from the default run before this fix:
+    ``test_ttt_linear``, ``test_ttt_head_router``,
+    ``test_hypercar_server_spec_decode``.
+
+    AST-based detection eliminates the docstring false-positives but
+    must still walk the entire tree (not just the top-level body),
+    because tests routinely import omlx lazily from inside test
+    function bodies and those still execute at test-run time —
+    matching the substring filter's true-positive coverage.
+    """
+    import ast
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "omlx" or alias.name.startswith("omlx."):
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "omlx" or module.startswith("omlx."):
+                return True
+    return False
+
+
 collect_ignore = []
 if not os.environ.get("MLX_AVAILABLE"):
-    # Build ignore list: any test_*.py that imports omlx (chains to MLX SIGABRT)
+    # Build ignore list: any test_*.py whose TOP-LEVEL imports touch omlx
+    # (which chains to MLX device init, SIGABRT on Metal-less environments).
+    # AST-based — won't false-positive on docstrings or lazy imports.
     _tests_dir = Path(__file__).parent
     for _f in _tests_dir.rglob("test_*.py"):
         if _f.name in _SAFE_WITHOUT_MLX:
             continue
         try:
-            _content = _f.read_text(encoding="utf-8")
-            if "from omlx" in _content or "import omlx" in _content:
+            if _has_omlx_import(_f):
                 collect_ignore.append(str(_f))
         except Exception:
             pass

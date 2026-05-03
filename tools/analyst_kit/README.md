@@ -8,6 +8,29 @@ when investigating a specific question.
 Run with `.venv/bin/python -m tools.analyst_kit.<tool>`. Most accept
 `--help` for the full flag list.
 
+## Symptom → tool decision table
+
+Use this when you don't know which tool fits the question. Tools below
+the line have detailed sections later in the README.
+
+| Symptom / question | Tool |
+|---|---|
+| Decode tok/s regressed; need component breakdown | `decode_op_ablation.py` |
+| Decode template — copy-and-adapt for a new probe | `decode_template.py` |
+| Validate int4 weight quantization saves what we think | `int4_decode_speedup.py` |
+| Compare two observability registry dumps | `registry_diff.py` |
+| Audit an MLX behavior assumption (broadcast, in-place, etc.) | `mlx_invariant_claims.py` |
+| Microbench DuoKVCache update_and_fetch / trim hot path | `duokv_microbench.py` |
+| Hunt a DuoKVCache memory leak across decode iterations | `duokv_leak_test.py` |
+| Microbench SnapKV gather + scatter at long context | `snapkv_microbench.py` |
+| Microbench TQ3 fused quantize + dequantize codec | `tq3_microbench.py` |
+| O proj kernel — synthetic matmul at varied bit-widths | `oproj_kernel_microbench.py` |
+| Real-model O proj quantization + decode delta | `oproj_int4_patch.py` |
+| Real-model MoE quantization + decode delta | `moe_int4_patch.py` |
+| Stack MoE + O proj quantization, three-stage validator | `stacked_int4_patch.py` |
+| Per-layer expert routing frequency calibration | `expert_frequency_probe.py` |
+| Pareto curves over expert coverage | `expert_coverage_analysis.py` |
+
 ## Decode-side decomposition
 
 Where does decode wall-time go? These tools answer the question without
