@@ -270,19 +270,69 @@ def test_bench_argparse_includes_ttt_router_flags():
     Phase 3 A/B validation runs through the gate runner: bench with
     bit-equivalence first, then bench with TTT blocks loaded.
 
-    Source-level grep — the bench's argparse is constructed inside
-    main() rather than a separate build_parser, so a runtime parser
-    introspection isn't trivial. The grep is sufficient as a pin."""
-    from pathlib import Path
-    src = (Path(__file__).parent.parent / "omlx" / "bench" /
-           "hypercar_bench.py").read_text()
-    assert '"--ttt-router-policy"' in src, (
-        "bench main() must register --ttt-router-policy. Without it "
-        "the gate runner can't validate the Phase 2 router."
-    )
-    assert '"--ttt-router-blocks-dir"' in src, (
-        "bench main() must register --ttt-router-blocks-dir."
-    )
+    Uses ``build_parser()`` (extracted from main()) for runtime parser
+    introspection — same pattern as ``omlx/server/cli_args.py``."""
+    from omlx.bench.hypercar_bench import build_parser
+    parser = build_parser()
+    help_text = parser.format_help()
+    for flag in ("--ttt-router-policy", "--ttt-router-blocks-dir"):
+        assert flag in help_text, (
+            f"bench build_parser() missing flag {flag!r}. Without it "
+            f"the gate runner can't validate the Phase 2 router."
+        )
+
+
+def test_bench_build_parser_defaults_ttt_router_to_none():
+    """Default-off semantics: bench runs without TTT routing unless the
+    user opts in. Pinning so a future refactor doesn't accidentally
+    flip them required or non-None default."""
+    from omlx.bench.hypercar_bench import build_parser
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert args.ttt_router_policy is None
+    assert args.ttt_router_blocks_dir is None
+
+
+def test_bench_build_parser_accepts_both_ttt_flags():
+    """Both flags accept string paths together — Phase 3 step (B) needs
+    this to enable TTT block routing via the gate runner."""
+    from omlx.bench.hypercar_bench import build_parser
+    parser = build_parser()
+    args = parser.parse_args([
+        "--ttt-router-policy", "policies/qwen3_coder.json",
+        "--ttt-router-blocks-dir", "phase0_ttt/",
+    ])
+    assert args.ttt_router_policy == "policies/qwen3_coder.json"
+    assert args.ttt_router_blocks_dir == "phase0_ttt/"
+
+
+def test_bench_build_parser_preserves_baseline_flags():
+    """The build_parser extraction must preserve every production flag
+    that existed before the refactor. Spot-check the load-bearing ones
+    (mirrors the server-side `test_cli_args_module_extracted` pattern)."""
+    from omlx.bench.hypercar_bench import build_parser
+    parser = build_parser()
+    help_text = parser.format_help()
+    for flag in (
+        "--quick",            # smoke mode
+        "--full",             # HumanEval mode
+        "--kv-mode",          # KV strategy
+        "--kv-bits",          # KV bit width
+        "--max-metal-pct",    # memory watchdog
+        "--niah-only",        # Goal 1 escape hatch
+        "--niah-context",     # focused Goal 1 probe
+        "--prefill-sparse",   # MInference lever
+        "--ttt-router-policy",        # Task 388 Phase 3 validation
+        "--ttt-router-blocks-dir",
+        "--warmup",
+        "--no-warmup",
+        "--force",
+        "--json",
+    ):
+        assert flag in help_text, (
+            f"bench build_parser() must preserve {flag!r} after the "
+            f"main() → build_parser extraction."
+        )
 
 
 def test_bench_invokes_apply_ttt_head_router_patch():

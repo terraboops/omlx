@@ -2181,7 +2181,13 @@ def _print_summary(phases: List[PhaseResult], total_elapsed: float):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the hypercar-bench argparse parser.
+
+    Extracted from ``main()`` so tests can introspect the CLI surface
+    (default values, --help text, choices) without subprocess-execing
+    the bench. Mirrors the pattern in ``omlx/server/cli_args.py``.
+    """
     parser = argparse.ArgumentParser(
         description="Hypercar gated benchmark — run before every commit",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2268,7 +2274,11 @@ Examples:
     parser.add_argument("--json", type=str,
                         default="/tmp/hypercar_bench_results.json",
                         help="Path for results JSON")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     # Exclusive lock: only one bench instance at a time on this machine.
     # Running two model loads concurrently on 48GB causes catastrophic swap.
