@@ -270,6 +270,51 @@ def test_minibatch_b_equals_1_takes_L_updates():
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-block save/load — round-trip correctness
+# ---------------------------------------------------------------------------
+
+
+def test_save_load_block_roundtrip(tmp_path):
+    """Saving a TTTLinear and reloading must return a module that
+    produces bit-identical outputs on the same input."""
+    from omlx.state_space.ttt_linear import save_block, load_block
+
+    cfg = TTTLinearConfig(head_dim=8, eta=0.05, mini_batch_size=4,
+                          use_layer_norm=True)
+    ttt = TTTLinear(cfg)
+    x = mx.random.normal((1, 4, 8), key=mx.random.key(123))
+    out_orig, _ = ttt(x)
+
+    stem = tmp_path / "block"
+    save_block(ttt, stem)
+    assert (tmp_path / "block.safetensors").exists()
+    assert (tmp_path / "block.json").exists()
+
+    ttt2 = load_block(stem)
+    out_loaded, _ = ttt2(x)
+    diff = mx.max(mx.abs(out_orig - out_loaded)).item()
+    assert diff == 0.0, f"roundtrip not bit-identical: {diff}"
+
+
+def test_save_load_block_preserves_config(tmp_path):
+    """Config sidecar JSON must round-trip every field of
+    ``TTTLinearConfig`` so reconstruction picks up eta / mini_batch
+    / use_layer_norm correctly."""
+    from omlx.state_space.ttt_linear import save_block, load_block
+
+    cfg = TTTLinearConfig(head_dim=12, eta=0.123, mini_batch_size=128,
+                          use_layer_norm=False)
+    ttt = TTTLinear(cfg)
+    save_block(ttt, tmp_path / "blk")
+    ttt2 = load_block(tmp_path / "blk")
+    assert ttt2.config.head_dim == 12
+    assert abs(ttt2.config.eta - 0.123) < 1e-9
+    assert ttt2.config.mini_batch_size == 128
+    assert ttt2.config.use_layer_norm is False
+    assert ttt2.ln is None  # use_layer_norm=False propagated
+
+
 def test_layer_norm_applied_when_enabled():
     """LN-enabled outputs must be unit-variance per token (within tol)."""
     D = 16

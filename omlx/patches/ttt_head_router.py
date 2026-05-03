@@ -76,15 +76,25 @@ class TTTHeadRouter:
         cls,
         policy_path: Path,
         ttt_blocks: Optional[dict] = None,
+        ttt_dir: Optional[Path] = None,
     ) -> "TTTHeadRouter":
         """Construct from a DuoAttention policy JSON.
 
-        ``ttt_blocks`` is a ``{(layer, head): TTTLinear}`` dict; pass
-        ``None`` (the default) to build a bit-equivalence router with no
-        TTT blocks installed. Useful for Phase 3 validation: install the
-        router with no TTT, confirm bench-output unchanged, then add TTT
-        blocks one (layer, head) at a time.
+        ``ttt_blocks`` is a ``{(layer, head): TTTLinear}`` dict — pass
+        in-memory blocks directly for testing.
+
+        ``ttt_dir`` is an alternative: load blocks via ``load_blocks``
+        from a directory previously written by ``save_blocks``. Useful
+        once Phase 1 distillation produces a corpus of trained blocks
+        on disk.
+
+        Both unset → bit-equivalence router (no TTT blocks installed).
+        Specifying both is an error.
         """
+        if ttt_blocks is not None and ttt_dir is not None:
+            raise ValueError("Pass either ttt_blocks or ttt_dir, not both")
+        if ttt_dir is not None:
+            ttt_blocks = load_blocks(ttt_dir)
         data = json.loads(Path(policy_path).read_text())
         classification = {
             (h["layer"], h["head"]): h["policy"]
@@ -202,6 +212,53 @@ class TTTHeadRouter:
             else:
                 head_outputs.append(out_full[:, h:h + 1, :, :])
         return mx.concatenate(head_outputs, axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Persistence helpers — round-trip a (layer, head) → TTTLinear dict to disk
+# ---------------------------------------------------------------------------
+
+
+def save_blocks(blocks: dict, dir_path: str | Path) -> None:
+    """Persist a ``{(layer, head): TTTLinear}`` dict to disk.
+
+    Layout:
+      ``<dir>/manifest.json`` — list of {"layer", "head", "stem"} entries
+      ``<dir>/L{layer}_H{head}.safetensors`` — per-block weights
+      ``<dir>/L{layer}_H{head}.json``        — per-block config
+
+    The manifest is the source of truth for which (layer, head) pairs
+    exist. Per-block sidecars carry config so a single block can be
+    reloaded independently if needed.
+    """
+    from omlx.state_space.ttt_linear import save_block
+
+    d = Path(dir_path)
+    d.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for (layer, head), ttt in blocks.items():
+        stem = f"L{layer}_H{head}"
+        save_block(ttt, d / stem)
+        entries.append({"layer": int(layer), "head": int(head), "stem": stem})
+    manifest = {
+        "version": 1,
+        "n_blocks": len(entries),
+        "blocks": sorted(entries, key=lambda e: (e["layer"], e["head"])),
+    }
+    (d / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
+def load_blocks(dir_path: str | Path) -> dict:
+    """Reconstruct a ``{(layer, head): TTTLinear}`` dict from disk."""
+    from omlx.state_space.ttt_linear import load_block
+
+    d = Path(dir_path)
+    manifest = json.loads((d / "manifest.json").read_text())
+    blocks = {}
+    for entry in manifest["blocks"]:
+        key = (entry["layer"], entry["head"])
+        blocks[key] = load_block(d / entry["stem"])
+    return blocks
 
 
 _PATCHED_ROUTER: Optional[TTTHeadRouter] = None

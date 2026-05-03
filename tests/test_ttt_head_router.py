@@ -359,6 +359,120 @@ def test_reset_state_actually_resets_ttt_recurrence():
     )
 
 
+# ---------------------------------------------------------------------------
+# Persistence — save_blocks / load_blocks round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_save_load_blocks_roundtrip_preserves_outputs(tmp_path):
+    """Saving a dict of TTT blocks and reloading must produce blocks
+    that, when called on the same input, return bit-identical outputs."""
+    from omlx.patches.ttt_head_router import save_blocks, load_blocks
+
+    D = 8
+    block_a = _make_ttt_block(D=D, mini_batch_size=4)
+    block_b = _make_ttt_block(D=D, mini_batch_size=4)
+    blocks = {(0, 1): block_a, (5, 12): block_b}
+
+    save_blocks(blocks, tmp_path)
+    # Files: manifest + 2 safetensors + 2 sidecar JSONs.
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert "manifest.json" in files
+    assert "L0_H1.safetensors" in files
+    assert "L0_H1.json" in files
+    assert "L5_H12.safetensors" in files
+    assert "L5_H12.json" in files
+
+    loaded = load_blocks(tmp_path)
+    assert set(loaded.keys()) == set(blocks.keys())
+
+    x = mx.random.normal((1, 4, D), key=mx.random.key(0))
+    for key in blocks:
+        out_orig, _ = blocks[key](x)
+        out_loaded, _ = loaded[key](x)
+        diff = mx.max(mx.abs(out_orig - out_loaded)).item()
+        assert diff == 0.0, f"key {key} not bit-identical: diff={diff}"
+
+
+def test_save_blocks_manifest_format(tmp_path):
+    """Manifest schema is the on-disk contract Phase 1 will load
+    against; pin it explicitly so we notice a breaking change."""
+    from omlx.patches.ttt_head_router import save_blocks
+
+    D = 4
+    blocks = {(2, 7): _make_ttt_block(D=D, mini_batch_size=2)}
+    save_blocks(blocks, tmp_path)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["version"] == 1
+    assert manifest["n_blocks"] == 1
+    assert manifest["blocks"] == [
+        {"layer": 2, "head": 7, "stem": "L2_H7"}
+    ]
+
+
+def test_load_blocks_sorted_keys_independent_of_save_order(tmp_path):
+    """Manifest is written sorted by (layer, head) so two save_blocks
+    calls with different dict iteration orders produce identical files
+    (helps reproducibility + git diffs)."""
+    from omlx.patches.ttt_head_router import save_blocks
+
+    D = 4
+    block_a = _make_ttt_block(D=D, mini_batch_size=2)
+    block_b = _make_ttt_block(D=D, mini_batch_size=2)
+    block_c = _make_ttt_block(D=D, mini_batch_size=2)
+    # Insert in reverse "expected" order
+    blocks = {(5, 1): block_a, (0, 0): block_b, (3, 8): block_c}
+    save_blocks(blocks, tmp_path)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    layers_heads = [(b["layer"], b["head"]) for b in manifest["blocks"]]
+    assert layers_heads == [(0, 0), (3, 8), (5, 1)]
+
+
+def test_from_policy_loads_ttt_blocks_from_directory(tmp_path):
+    """`from_policy(ttt_dir=...)` is the production path — loads blocks
+    from a Phase 1 distillation directory and routes through them."""
+    from omlx.patches.ttt_head_router import save_blocks
+
+    # Save one block keyed (0, 1).
+    D = 8
+    block = _make_ttt_block(D=D, mini_batch_size=2)
+    save_blocks({(0, 1): block}, tmp_path / "blocks")
+
+    # Build a policy file marking (0, 1) as streaming.
+    policy = _toy_policy_dict(streaming_layer=0, streaming_heads=(1,))
+    (tmp_path / "policy.json").write_text(json.dumps(policy))
+
+    router = TTTHeadRouter.from_policy(
+        tmp_path / "policy.json", ttt_dir=tmp_path / "blocks",
+    )
+    assert (0, 1) in router.ttt_blocks
+    assert router.head_classification[(0, 1)] == "streaming"
+
+    # Bit-identity to a router built with the in-memory block.
+    q, k, v = _make_q_k_v(H=4, L=4, D=D, seed=5)
+    out_loaded = router.route_sdpa(q, k, v, None, 1.0, None,
+                                   original_sdpa=_stub_sdpa)
+    expected_router = TTTHeadRouter.from_policy(
+        tmp_path / "policy.json", ttt_blocks={(0, 1): block},
+    )
+    out_inmem = expected_router.route_sdpa(q, k, v, None, 1.0, None,
+                                           original_sdpa=_stub_sdpa)
+    diff = mx.max(mx.abs(out_loaded - out_inmem)).item()
+    assert diff == 0.0, f"loaded vs in-memory differ at diff={diff}"
+
+
+def test_from_policy_rejects_both_blocks_and_dir(tmp_path):
+    """Specifying both ttt_blocks and ttt_dir is an error — ambiguous."""
+    policy = _toy_policy_dict()
+    (tmp_path / "policy.json").write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="not both"):
+        TTTHeadRouter.from_policy(
+            tmp_path / "policy.json",
+            ttt_blocks={(0, 1): "stub"},
+            ttt_dir=tmp_path / "blocks",
+        )
+
+
 def test_ttt_state_persists_across_layer_dispatch_within_one_chunk():
     """Different (layer, head) keys must NOT interfere — head (0,0) and
     head (1,0) maintain independent ``self.ttt_states`` entries."""

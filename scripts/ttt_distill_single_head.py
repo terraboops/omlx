@@ -528,10 +528,17 @@ def run_capture(model_id: str, policy_path: Path, context_len: int,
                 n_steps: int, lr: float, eta: float,
                 mini_batch_size: int,
                 prompts: Optional[list[str]] = None,
-                n_val_prompts: int = 2) -> dict:
+                n_val_prompts: int = 2,
+                save_block_dir: Optional[Path] = None) -> dict:
     """Capture per-head pairs across N prompts, train/val-split across
     prompts (not within), train via the multi-sequence path that cleared
     the synthetic gate at 0.9997.
+
+    If ``save_block_dir`` is given, the trained TTT-Linear (with the
+    early-stop-restored best-val params) is written via
+    ``omlx.patches.ttt_head_router.save_blocks`` keyed by the picked
+    ``(layer, head)``. A ``TTTHeadRouter.from_policy(ttt_dir=...)`` can
+    then load it directly.
     """
     sel = pick_streaming_head(policy_path)
     logger.info(f"Selected streaming head: layer={sel.layer} head={sel.head} "
@@ -568,6 +575,16 @@ def run_capture(model_id: str, policy_path: Path, context_len: int,
     }
     out["n_train_prompts"] = int(x_train.shape[0])
     out["n_val_prompts"] = int(x_val.shape[0])
+
+    if save_block_dir is not None:
+        from omlx.patches.ttt_head_router import save_blocks
+        save_blocks({(sel.layer, sel.head): ttt}, save_block_dir)
+        logger.info(
+            f"  trained block written to {save_block_dir}/L{sel.layer}_H{sel.head}.* "
+            "(load via TTTHeadRouter.from_policy(ttt_dir=...))"
+        )
+        out["save_block_dir"] = str(save_block_dir)
+
     return out
 
 
@@ -598,6 +615,11 @@ def main():
                              "val. Train uses the rest.")
     parser.add_argument("--output", type=Path, default=None,
                         help="Write JSON results to this path.")
+    parser.add_argument("--save-block-dir", type=Path, default=None,
+                        help="Capture mode: write trained TTT-Linear "
+                             "weights to this directory using "
+                             "save_blocks() so a TTTHeadRouter can load "
+                             "them later via from_policy(ttt_dir=...).")
     args = parser.parse_args()
 
     if not (args.synthetic or args.capture):
@@ -615,6 +637,7 @@ def main():
             n_steps=args.n_steps, lr=args.lr,
             eta=args.eta, mini_batch_size=args.mini_batch_size,
             n_val_prompts=args.n_val_prompts,
+            save_block_dir=args.save_block_dir,
         )
 
     s = result["summary"]

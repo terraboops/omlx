@@ -30,7 +30,9 @@ patches module, not here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Optional
 
 import mlx.core as mx
@@ -152,3 +154,45 @@ class TTTLinear(nn.Module):
             start = end
 
         return mx.concatenate(outputs, axis=1), W
+
+
+# ---------------------------------------------------------------------------
+# Per-block save/load helpers
+# ---------------------------------------------------------------------------
+
+
+def save_block(ttt: TTTLinear, path: str | Path) -> None:
+    """Persist a single TTT-Linear block to disk.
+
+    Two files are written:
+      - ``<path>.safetensors`` — module weights via ``nn.Module.save_weights``
+      - ``<path>.json``        — config (head_dim, eta, mini_batch_size,
+                                  use_layer_norm) for reconstructing the
+                                  module on load
+
+    Splitting weights from config keeps the safetensors file
+    inspector-friendly (other tools can read it directly) and makes the
+    manifest format compatible with router-level ``save_blocks``.
+    """
+    p = Path(path)
+    weights_path = p.with_suffix(".safetensors")
+    config_path = p.with_suffix(".json")
+    weights_path.parent.mkdir(parents=True, exist_ok=True)
+    ttt.save_weights(str(weights_path))
+    config_path.write_text(json.dumps(asdict(ttt.config), indent=2))
+
+
+def load_block(path: str | Path) -> TTTLinear:
+    """Reconstruct a single TTT-Linear block from disk.
+
+    ``path`` is the stem (i.e., without ``.safetensors`` / ``.json``);
+    both files must exist alongside.
+    """
+    p = Path(path)
+    weights_path = p.with_suffix(".safetensors")
+    config_path = p.with_suffix(".json")
+    cfg_dict = json.loads(config_path.read_text())
+    cfg = TTTLinearConfig(**cfg_dict)
+    ttt = TTTLinear(cfg)
+    ttt.load_weights(str(weights_path))
+    return ttt
