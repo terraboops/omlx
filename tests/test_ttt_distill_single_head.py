@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.ttt_distill_single_head import (
     DEFAULT_CALIBRATION_PROMPTS,
     HeadSelection,
+    attention_layer_indices,
     cos_sim_per_token,
     make_synthetic_pairs,
     make_synthetic_pairs_multi,
@@ -278,6 +279,72 @@ def test_tile_prompt_to_length_rejects_empty():
     tok = _StubTokenizer()
     with pytest.raises(ValueError, match="Empty token list"):
         tile_prompt_to_length(tok, "", target_len=10)
+
+
+# ---------------------------------------------------------------------------
+# attention_layer_indices — hybrid-model SDPA-call mapping
+# ---------------------------------------------------------------------------
+
+
+class _StubLayer:
+    def __init__(self, has_attn: bool):
+        if has_attn:
+            self.self_attn = object()
+
+
+class _StubDenseModel:
+    """Mimics Qwen3-Coder's all-attention layout (every layer has self_attn)."""
+    def __init__(self, n_layers: int):
+        self.layers = [_StubLayer(has_attn=True) for _ in range(n_layers)]
+
+
+class _StubHybridModel:
+    """Mimics Qwen3.6's hybrid layout (every-Nth-layer is attention)."""
+    def __init__(self, n_layers: int, full_attention_interval: int):
+        self.layers = [
+            _StubLayer(has_attn=((i + 1) % full_attention_interval == 0))
+            for i in range(n_layers)
+        ]
+
+
+def test_attention_layer_indices_dense_model():
+    """Dense model: every index is an attention layer."""
+    model = _StubDenseModel(n_layers=48)
+    assert attention_layer_indices(model) == list(range(48))
+
+
+def test_attention_layer_indices_hybrid_model_qwen36_pattern():
+    """Qwen3.6 hybrid: 40 layers with attention at every 4th (i.e.,
+    indices 3, 7, 11, ..., 39). Confirms the helper picks up the
+    sparse subset correctly."""
+    model = _StubHybridModel(n_layers=40, full_attention_interval=4)
+    indices = attention_layer_indices(model)
+    assert indices == [3, 7, 11, 15, 19, 23, 27, 31, 35, 39]
+    assert len(indices) == 10
+
+
+def test_attention_layer_indices_handles_no_self_attn_attribute():
+    """Layers missing the ``self_attn`` attribute entirely (not just
+    ``self_attn = None``) must also be treated as non-attention."""
+    class _BareLayer:
+        pass
+
+    class _MixedModel:
+        layers = [_StubLayer(has_attn=True), _BareLayer(), _StubLayer(has_attn=True)]
+
+    assert attention_layer_indices(_MixedModel()) == [0, 2]
+
+
+def test_attention_layer_indices_treats_none_self_attn_as_non_attention():
+    """A layer with ``self_attn = None`` (which the SSM-layer scaffolding
+    might leave) is not an attention layer."""
+    layer = _StubLayer(has_attn=False)
+    layer.self_attn = None  # type: ignore[attr-defined]
+
+    class _Model:
+        layers = [layer, _StubLayer(has_attn=True)]
+
+    assert attention_layer_indices(_Model()) == [1]
 
 
 def test_early_stop_restores_best_params():

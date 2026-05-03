@@ -337,12 +337,38 @@ def tile_prompt_to_length(tokenizer, prompt: str, target_len: int) -> list[int]:
     return (tokens * reps)[:target_len]
 
 
+def attention_layer_indices(model) -> list[int]:
+    """Return the sorted list of indices in ``model.layers`` whose layer
+    has a ``self_attn`` module.
+
+    On dense-attention models (Qwen3-Coder) this is just ``list(range(
+    len(model.layers)))``. On hybrid SSM+attention models (Qwen3.6,
+    every-4th-attention layout) it's a sparse subset, e.g.,
+    ``[3, 7, 11, ..., 39]``. The capturing SDPA hook fires once per
+    attention layer per forward, so the hook's call counter must be
+    interpreted relative to THIS list, not ``len(model.layers)``.
+    """
+    indices = []
+    for i, layer in enumerate(model.layers):
+        if getattr(layer, "self_attn", None) is not None:
+            indices.append(i)
+    return indices
+
+
 def _patch_sdpa_for_capture(
-    layer_idx: int, head_idx: int, n_layers: int,
+    target_call_idx: int, head_idx: int, n_attn_calls_per_forward: int,
 ) -> tuple[dict, list[int], object]:
     """Install a capturing SDPA that records (Q_h, o_h) for one chosen
-    (layer, head) pair. Returns (captured_dict, layer_counter,
+    attention call. Returns (captured_dict, layer_counter,
     original_sdpa); call ``_unpatch_sdpa(original)`` when done.
+
+    ``target_call_idx`` is the position (0-indexed) within the per-
+    forward attention-call sequence to capture. For Qwen3-Coder this
+    equals ``layer_idx`` since every layer is attention. For Qwen3.6
+    it's ``attention_layer_indices(model).index(layer_idx)``.
+
+    ``n_attn_calls_per_forward`` is the modulo for wraparound across
+    multi-prompt loops — equals ``len(attention_layer_indices(model))``.
 
     The capturing SDPA mirrors ``duoattention_calibrate.py`` — handles
     GQA expansion, ``mask='causal'`` string sentinel, and array masks.
@@ -376,9 +402,9 @@ def _patch_sdpa_for_capture(
         weights = mx.softmax(scores, axis=-1)
         out = weights @ values_exp                 # (B, H_q, L, D)
 
-        cur_layer = layer_counter[0] % n_layers
+        cur_call = layer_counter[0] % n_attn_calls_per_forward
         layer_counter[0] += 1
-        if cur_layer == layer_idx:
+        if cur_call == target_call_idx:
             captured["Q_h"] = queries[:, head_idx, :, :]   # (B, L, D)
             captured["o_h"] = out[:, head_idx, :, :]       # (B, L, D)
             captured["head_dim"] = D
@@ -432,10 +458,26 @@ def capture_attention_pairs_multi(
 
     logger.info(f"Loading model: {model_id}")
     model, tokenizer = load(model_id)
-    n_layers = len(model.layers)
+
+    # Hybrid-safe: SDPA only fires on attention layers. Convert the
+    # policy-file `layer_idx` (model.layers index) to the position
+    # within the per-forward attention-call sequence.
+    attn_indices = attention_layer_indices(model)
+    if layer_idx not in attn_indices:
+        raise ValueError(
+            f"layer_idx={layer_idx} is not an attention layer in this "
+            f"model (attention layers are at {attn_indices}). The policy "
+            f"file may have been calibrated for a different architecture."
+        )
+    target_call_idx = attn_indices.index(layer_idx)
+    logger.info(
+        f"Hybrid-aware capture: model has {len(model.layers)} layers, "
+        f"{len(attn_indices)} attention. Target layer {layer_idx} = "
+        f"attention call {target_call_idx} of {len(attn_indices)}."
+    )
 
     captured, layer_counter, original_sdpa = _patch_sdpa_for_capture(
-        layer_idx, head_idx, n_layers)
+        target_call_idx, head_idx, len(attn_indices))
 
     Q_h_list: list[mx.array] = []
     o_h_list: list[mx.array] = []
